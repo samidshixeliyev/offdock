@@ -12,12 +12,6 @@ const SHELL_COMPLETIONS = [
   'cat /etc/offdock/config.yaml', 'nginx -t', 'systemctl reload nginx',
 ]
 
-function humanSize(bytes: number) {
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1e6) return (bytes / 1024).toFixed(1) + ' KB'
-  if (bytes < 1e9) return (bytes / 1e6).toFixed(1) + ' MB'
-  return (bytes / 1e9).toFixed(2) + ' GB'
-}
 
 export default function TerminalPage() {
   const [lines, setLines] = useState<Line[]>([
