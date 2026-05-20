@@ -26,6 +26,9 @@ export default function USBPage() {
   const [uploading, setUploading] = useState(false)
   const [uploadedPath, setUploadedPath] = useState('')
   const [dragOver, setDragOver] = useState(false)
+  const [uploadPct, setUploadPct] = useState(0)
+  const [uploadLoaded, setUploadLoaded] = useState(0)
+  const [uploadTotal, setUploadTotal] = useState(0)
 
   const notify = (text: string, type: 'ok' | 'err' = 'ok') => { setMsg(text); setMsgType(type) }
 
@@ -70,15 +73,30 @@ export default function USBPage() {
     }
   }
 
+  const MAX_BYTES = 5 * 1024 * 1024 * 1024 // 5 GB
+
   const handleUpload = async (file: File) => {
+    if (file.size > MAX_BYTES) {
+      notify('File too large: ' + humanBytes(file.size) + ' (max 5 GB)', 'err')
+      return
+    }
     setUploading(true)
-    notify('Uploading ' + file.name + '...')
+    setUploadPct(0)
+    setUploadLoaded(0)
+    setUploadTotal(file.size)
+    setUploadedPath('')
+    notify('Starting upload of ' + humanBytes(file.size) + '...')
     try {
-      const result = await api.uploadFile(file)
+      const result = await api.uploadFile(file, (loaded, total, pct) => {
+        setUploadLoaded(loaded)
+        setUploadTotal(total)
+        setUploadPct(pct)
+      })
       setUploadedPath(result.path)
-      notify('Uploaded to ' + result.path + ' (' + humanBytes(result.size) + ')')
+      setUploadPct(100)
+      notify('Uploaded: ' + result.path + ' (' + humanBytes(result.size) + ')')
       if (file.name.endsWith('.tar')) {
-        notify('Loading image from ' + result.path + '...')
+        notify('Loading Docker image from ' + result.path + '...')
         const img = await api.loadImage({ tar_file_path: result.path })
         notify('Image loaded: ' + img.image_name + ':' + img.image_tag)
       }
@@ -171,32 +189,81 @@ export default function USBPage() {
       {/* Upload mode */}
       {mode === 'upload' && (
         <section className="mb-6">
-          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Upload from your computer</h2>
+          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">
+            Upload from your computer
+            <span className="ml-2 text-gray-600 normal-case font-normal">max 5 GB</span>
+          </h2>
+
+          {/* Drop zone */}
           <div
-            className={`card border-2 border-dashed text-center py-12 transition-colors cursor-pointer ${dragOver ? 'border-blue-500 bg-blue-900/10' : 'border-gray-700 hover:border-gray-500'}`}
-            onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+            className={`card border-2 border-dashed text-center py-10 transition-colors ${uploading ? 'border-blue-600 bg-blue-900/10 cursor-wait' : dragOver ? 'border-blue-500 bg-blue-900/10 cursor-copy' : 'border-gray-700 hover:border-gray-500 cursor-pointer'}`}
+            onDragOver={e => { e.preventDefault(); if (!uploading) setDragOver(true) }}
             onDragLeave={() => setDragOver(false)}
-            onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handleUpload(f) }}
-            onClick={() => fileRef.current?.click()}
+            onDrop={e => { e.preventDefault(); setDragOver(false); if (!uploading) { const f = e.dataTransfer.files[0]; if (f) handleUpload(f) } }}
+            onClick={() => { if (!uploading) fileRef.current?.click() }}
           >
-            <p className="text-gray-400 text-sm">Drag & drop a file here, or click to select</p>
-            <p className="text-gray-600 text-xs mt-1">Supported: .tar .yml .yaml .env .pem .crt .key</p>
-            {uploading && <p className="text-blue-400 text-xs mt-3 animate-pulse">Uploading...</p>}
+            {!uploading && !uploadedPath && (
+              <>
+                <p className="text-3xl mb-3">📂</p>
+                <p className="text-gray-300 text-sm font-medium">Drag &amp; drop a file here</p>
+                <p className="text-gray-500 text-xs mt-1">or click to select &nbsp;·&nbsp; .tar .yml .yaml .env .pem .crt .key</p>
+              </>
+            )}
+
+            {/* Progress bar */}
+            {uploading && (
+              <div className="px-6">
+                <p className="text-blue-300 text-sm font-medium mb-3">
+                  Uploading... {uploadPct}%
+                </p>
+                <div className="h-2 bg-gray-800 rounded-full overflow-hidden mb-2">
+                  <div
+                    className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                    style={{ width: `${uploadPct}%` }}
+                  />
+                </div>
+                <p className="text-gray-500 text-xs">
+                  {humanBytes(uploadLoaded)} / {humanBytes(uploadTotal)}
+                </p>
+              </div>
+            )}
+
+            {/* Done state */}
             {uploadedPath && !uploading && (
-              <div className="mt-3">
-                <p className="text-green-400 text-xs">Saved to: {uploadedPath}</p>
+              <div>
+                <p className="text-2xl mb-2">✅</p>
+                <p className="text-green-400 text-sm font-medium">Upload complete</p>
+                <p className="text-gray-500 text-xs mt-1 font-mono">{uploadedPath}</p>
                 {uploadedPath.endsWith('.tar') && (
                   <button
-                    className="btn-primary text-xs mt-2"
-                    onClick={e => { e.stopPropagation(); api.loadImage({ tar_file_path: uploadedPath }).then(img => notify('Loaded: ' + img.image_name + ':' + img.image_tag)).catch(err => notify(String(err), 'err')) }}
+                    className="btn-primary text-xs mt-3"
+                    onClick={e => {
+                      e.stopPropagation()
+                      api.loadImage({ tar_file_path: uploadedPath })
+                        .then(img => notify('Loaded: ' + img.image_name + ':' + img.image_tag))
+                        .catch(err => notify(String(err), 'err'))
+                    }}
                   >
                     Load as Docker Image
                   </button>
                 )}
+                <button
+                  className="btn-ghost text-xs mt-2 block mx-auto"
+                  onClick={e => { e.stopPropagation(); setUploadedPath(''); setUploadPct(0) }}
+                >
+                  Upload another
+                </button>
               </div>
             )}
           </div>
-          <input ref={fileRef} type="file" className="hidden" accept=".tar,.yml,.yaml,.env,.pem,.crt,.key" onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); e.target.value = '' }} />
+
+          <input
+            ref={fileRef}
+            type="file"
+            className="hidden"
+            accept=".tar,.yml,.yaml,.env,.pem,.crt,.key"
+            onChange={e => { const f = e.target.files?.[0]; if (f) handleUpload(f); e.target.value = '' }}
+          />
         </section>
       )}
 

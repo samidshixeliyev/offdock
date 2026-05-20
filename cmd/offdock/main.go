@@ -118,11 +118,13 @@ func run() error {
 
 	// 9. HTTP server with graceful shutdown.
 	srv := &http.Server{
-		Addr:         fmt.Sprintf("0.0.0.0:%d", cfg.Port),
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 0, // SSE streams must not time out
-		IdleTimeout:  120 * time.Second,
+		Addr: fmt.Sprintf("0.0.0.0:%d", cfg.Port),
+		Handler: mux,
+		// ReadHeaderTimeout only — ReadTimeout is intentionally omitted so
+		// large uploads (up to 5 GB) are not killed mid-transfer.
+		ReadHeaderTimeout: 15 * time.Second,
+		WriteTimeout:      0, // SSE streams must not time out
+		IdleTimeout:       120 * time.Second,
 	}
 
 	errCh := make(chan error, 1)

@@ -240,13 +240,41 @@ export const api = {
   browseDrive: (mount: string, path?: string) =>
     request<FileEntry[]>(`/api/v1/usb/browse?mount=${encodeURIComponent(mount)}${path ? `&path=${encodeURIComponent(path)}` : ''}`),
 
-  // File upload (multipart)
-  uploadFile: (file: File): Promise<{ path: string; name: string; size: number }> => {
-    const form = new FormData()
-    form.append('file', file)
-    return fetch('/api/v1/upload', { method: 'POST', body: form }).then(async res => {
-      if (!res.ok) { const b = await res.json().catch(() => ({ error: res.statusText })); throw new ApiError(res.status, b.error) }
-      return res.json()
+  // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
+  uploadFile: (
+    file: File,
+    onProgress?: (loaded: number, total: number, pct: number) => void,
+  ): Promise<{ path: string; name: string; size: number }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.timeout = 0 // no timeout — 5 GB over a slow link may take hours
+
+      if (onProgress) {
+        xhr.upload.onprogress = (e: ProgressEvent) => {
+          if (e.lengthComputable) {
+            onProgress(e.loaded, e.total, Math.round((e.loaded / e.total) * 100))
+          }
+        }
+      }
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)) }
+          catch { reject(new ApiError(xhr.status, 'invalid server response')) }
+        } else {
+          try { reject(new ApiError(xhr.status, JSON.parse(xhr.responseText).error ?? xhr.statusText)) }
+          catch { reject(new ApiError(xhr.status, xhr.statusText)) }
+        }
+      }
+
+      xhr.onerror = () => reject(new Error('Network error during upload'))
+      xhr.ontimeout = () => reject(new Error('Upload timed out'))
+      xhr.onabort = () => reject(new Error('Upload cancelled'))
+
+      const form = new FormData()
+      form.append('file', file)
+      xhr.open('POST', '/api/v1/upload')
+      xhr.send(form)
     })
   },
 }
