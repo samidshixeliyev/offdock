@@ -100,6 +100,7 @@ func NewRouter(deps Deps) http.Handler {
 		// Images
 		r.Get("/api/v1/images", h.ListImages)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/images/load", h.LoadImage)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/images/sync", h.SyncImages)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/images/{id}", h.DeleteImage)
 
 		// USB

@@ -6,36 +6,69 @@ export default function ImagesPage() {
   const [loading, setLoading] = useState(true)
   const [msg, setMsg] = useState('')
   const [msgType, setMsgType] = useState<'ok' | 'err'>('ok')
+  const [syncing, setSyncing] = useState(false)
 
-  const reload = () => api.listImages().then(d => setImages(d ?? [])).catch(() => {}).finally(() => setLoading(false))
+  const notify = (text: string, type: 'ok' | 'err' = 'ok') => { setMsg(text); setMsgType(type) }
+
+  const reload = () =>
+    api.listImages()
+      .then(d => setImages(d ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+
   useEffect(() => { reload() }, [])
 
-  const handleDelete = async (img: DockerImage) => {
-    if (!confirm(`Remove image ${img.image_name}:${img.image_tag}?`)) return
+  const handleSync = async () => {
+    setSyncing(true)
     try {
-      await api.deleteImage(img.id)
-      setMsg('Deleted')
-      setMsgType('ok')
+      const res = await api.syncImages()
+      notify(`Synced ${res.synced} new image${res.synced !== 1 ? 's' : ''} from Docker`)
       reload()
     } catch (e: unknown) {
-      setMsg('Error: ' + (e instanceof Error ? e.message : 'unknown'))
-      setMsgType('err')
+      notify('Sync failed: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const handleDelete = async (img: DockerImage) => {
+    if (!confirm(`Remove ${img.image_name}:${img.image_tag} from Docker and database?`)) return
+    try {
+      await api.deleteImage(img.id)
+      notify('Deleted')
+      reload()
+    } catch (e: unknown) {
+      notify('Error: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
     }
   }
 
   return (
     <div className="p-6 max-w-5xl">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <h1 className="text-xl font-semibold text-white">Docker Images</h1>
-        {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-gray-400'}`}>{msg}</span>}
+        <div className="flex items-center gap-3">
+          {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-green-400'}`}>{msg}</span>}
+          <button onClick={handleSync} disabled={syncing} className="btn-ghost">
+            {syncing ? '↻ Syncing…' : '↻ Sync from Docker'}
+          </button>
+        </div>
       </div>
 
+      <p className="text-xs text-gray-600 mb-4">
+        Use "Sync from Docker" to register images already loaded on the host.
+        Use the <a href="/usb" className="text-blue-500">Import</a> page to load new .tar files.
+      </p>
+
       {loading ? (
-        <div className="text-gray-500">Loading…</div>
+        <div className="text-gray-500 text-sm">Loading…</div>
       ) : images.length === 0 ? (
         <div className="card text-center py-10">
-          <p className="text-gray-500 mb-2">No images loaded.</p>
-          <p className="text-xs text-gray-600">Use the Import page to load .tar images.</p>
+          <p className="text-gray-500 mb-2">No images tracked.</p>
+          <div className="flex gap-3 justify-center mt-3">
+            <button onClick={handleSync} disabled={syncing} className="btn-primary">
+              Sync from Docker
+            </button>
+          </div>
         </div>
       ) : (
         <div className="card overflow-x-auto p-0">
@@ -54,10 +87,16 @@ export default function ImagesPage() {
                 <tr key={img.id} className="border-b border-gray-800/50 hover:bg-gray-800/20">
                   <td className="px-4 py-2.5 font-mono text-xs text-gray-300">{img.image_name}</td>
                   <td className="px-4 py-2.5 text-gray-400 text-xs">{img.image_tag}</td>
-                  <td className="px-4 py-2.5 text-gray-600 text-xs font-mono">{(img.docker_image_id ?? '').slice(0, 16)}</td>
-                  <td className="px-4 py-2.5 text-gray-500 text-xs">{new Date(img.loaded_at).toLocaleString()}</td>
+                  <td className="px-4 py-2.5 text-gray-600 text-xs font-mono">
+                    {(img.docker_image_id ?? '').replace('sha256:', '').slice(0, 12)}
+                  </td>
+                  <td className="px-4 py-2.5 text-gray-500 text-xs">
+                    {new Date(img.loaded_at).toLocaleString()}
+                  </td>
                   <td className="px-4 py-2.5">
-                    <button onClick={() => handleDelete(img)} className="text-xs text-red-500 hover:text-red-400">Delete</button>
+                    <button onClick={() => handleDelete(img)} className="text-xs text-red-500 hover:text-red-400">
+                      Delete
+                    </button>
                   </td>
                 </tr>
               ))}

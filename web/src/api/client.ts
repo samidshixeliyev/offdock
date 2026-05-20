@@ -233,6 +233,8 @@ export const api = {
   listImages: () => request<DockerImage[]>('/api/v1/images'),
   loadImage: (data: { tar_file_path: string; project_id?: string; image_name?: string; image_tag?: string }) =>
     request<DockerImage>('/api/v1/images/load', { method: 'POST', body: JSON.stringify(data) }),
+  syncImages: () =>
+    request<{ synced: number; images: DockerImage[] }>('/api/v1/images/sync', { method: 'POST' }),
   deleteImage: (id: string) => request<void>(`/api/v1/images/${id}`, { method: 'DELETE' }),
 
   // USB
