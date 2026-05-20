@@ -1,6 +1,6 @@
-# Build output
-offdock
-offdock.exe
+# Build output (root-anchored so cmd/offdock/ is NOT excluded)
+/offdock
+/offdock.exe
 web/dist/
 !web/dist/index.html
 
