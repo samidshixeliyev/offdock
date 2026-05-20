@@ -606,7 +606,7 @@ function DeployTab({ projectId }: { projectId: string }) {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">Deploy</h2>
-        <button onClick={handleDeploy} disabled={deploying} className="btn-primary">
+        <button onClick={() => handleDeploy()} disabled={deploying} className="btn-primary">
           {deploying ? '⟳ Deploying…' : '▶ Trigger Deploy'}
         </button>
       </div>
