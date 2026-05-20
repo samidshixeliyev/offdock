@@ -15,9 +15,11 @@ function Msg({ text, type }: { text: string; type: MsgT }) {
 }
 
 // ─── File Browser Modal ───────────────────────────────────────────────────────
-function FileBrowser({ onSelect, onClose }: {
-  onSelect: (content: string, filename: string) => void
+// mode='content' reads file and returns its text; mode='path' returns the file path
+function FileBrowser({ onSelect, onClose, mode = 'content' }: {
+  onSelect: (value: string, filename: string) => void
   onClose: () => void
+  mode?: 'content' | 'path'
 }) {
   const [mount, setMount] = useState('/var/offdock')
   const [path, setPath] = useState('/var/offdock')
@@ -47,6 +49,11 @@ function FileBrowser({ onSelect, onClose }: {
 
   const selectFile = async (entry: FileEntry) => {
     setErr('')
+    if (mode === 'path') {
+      onSelect(entry.path, entry.name)
+      onClose()
+      return
+    }
     try {
       const res = await api.readFile(mount, entry.path)
       onSelect(res.content, entry.name)
@@ -59,7 +66,9 @@ function FileBrowser({ onSelect, onClose }: {
       <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl"
         onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
-          <h3 className="text-sm font-semibold text-white">Browse Server Filesystem</h3>
+          <h3 className="text-sm font-semibold text-white">
+            {mode === 'path' ? 'Select File Path' : 'Browse Server Filesystem'}
+          </h3>
           <button onClick={onClose} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
         </div>
         <div className="px-4 py-3 border-b border-gray-800 space-y-2 shrink-0">
@@ -93,7 +102,7 @@ function FileBrowser({ onSelect, onClose }: {
               </button>
               {!e.is_dir && (
                 <button onClick={() => selectFile(e)} className="btn-primary text-xs py-1 shrink-0 ml-2">
-                  Use file
+                  {mode === 'path' ? 'Use path' : 'Use file'}
                 </button>
               )}
             </div>
@@ -437,7 +446,9 @@ function EnvTab({ projectId }: { projectId: string }) {
 type NginxForm = Omit<NginxConfig, 'id' | 'project_id' | 'generated_config' | 'active' | 'created_at'>
 const defaultNginx: NginxForm = {
   domain: '', ssl_enabled: false, ssl_cert_path: '', ssl_key_path: '',
-  upstream_host: 'localhost', upstream_port: 3000, custom_directives: '',
+  upstream_host: 'localhost', upstream_port: 3000,
+  client_max_body_size: '1m', proxy_read_timeout: 60,
+  gzip_enabled: false, custom_directives: '',
 }
 
 function NginxTab({ projectId }: { projectId: string }) {
@@ -447,12 +458,31 @@ function NginxTab({ projectId }: { projectId: string }) {
   const [msgType, setMsgType] = useState<MsgT>('ok')
   const [saving, setSaving] = useState(false)
   const [applying, setApplying] = useState(false)
+  const [generatingCert, setGeneratingCert] = useState(false)
+  const [certDays, setCertDays] = useState(365)
+  const [certBrowser, setCertBrowser] = useState<'cert' | 'key' | null>(null)
 
   const notify = (text: string, type: MsgT = 'ok') => { setMsg(text); setMsgType(type) }
   const set = <K extends keyof NginxForm>(key: K, val: NginxForm[K]) => setForm(f => ({ ...f, [key]: val }))
 
+  const sanitizeDomain = (d: string) =>
+    d.replace(/^https?:\/\//i, '').replace(/^https?\/\//i, '').replace(/\/.*$/, '').trim()
+
   useEffect(() => {
-    api.getNginx(projectId).then(cfg => { if (cfg) setForm(cfg as unknown as NginxForm) }).catch(() => {})
+    api.getNginx(projectId).then(cfg => {
+      if (cfg) setForm({
+        domain: cfg.domain,
+        ssl_enabled: cfg.ssl_enabled,
+        ssl_cert_path: cfg.ssl_cert_path,
+        ssl_key_path: cfg.ssl_key_path,
+        upstream_host: cfg.upstream_host,
+        upstream_port: cfg.upstream_port,
+        client_max_body_size: cfg.client_max_body_size || '1m',
+        proxy_read_timeout: cfg.proxy_read_timeout || 60,
+        gzip_enabled: cfg.gzip_enabled || false,
+        custom_directives: cfg.custom_directives,
+      })
+    }).catch(() => {})
     api.previewNginx(projectId).then(r => setPreview(r.config)).catch(() => {})
   }, [projectId])
 
@@ -462,7 +492,7 @@ function NginxTab({ projectId }: { projectId: string }) {
       await api.saveNginx(projectId, form)
       const r = await api.previewNginx(projectId)
       setPreview(r.config)
-      notify('Saved')
+      notify('Saved successfully')
     } catch (e) {
       notify('Error: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
     } finally { setSaving(false) }
@@ -471,18 +501,30 @@ function NginxTab({ projectId }: { projectId: string }) {
   const handleApply = async () => {
     setApplying(true); notify('')
     try {
-      const r = await api.applyNginx(projectId)
-      const firstLine = r.nginx_test_output.trim().split('\n')[0]
-      notify('Applied — ' + firstLine)
+      await api.applyNginx(projectId)
+      notify('Applied to host — nginx reloaded')
     } catch (e) {
       notify('Error: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
     } finally { setApplying(false) }
   }
 
+  const handleGenerateCert = async () => {
+    if (!form.domain) { notify('Enter a domain first', 'err'); return }
+    setGeneratingCert(true); notify('')
+    try {
+      const r = await api.generateCert(projectId, form.domain, certDays)
+      setForm(f => ({ ...f, ssl_cert_path: r.cert_path, ssl_key_path: r.key_path, ssl_enabled: true }))
+      notify(`Self-signed cert generated for ${r.domain} (${r.days} days)`)
+    } catch (e) {
+      notify('Error: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
+    } finally { setGeneratingCert(false) }
+  }
+
   return (
     <div className="space-y-4">
+      {/* Header */}
       <div className="flex items-center gap-2 flex-wrap">
-        <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider flex-1">Nginx Config</h2>
+        <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider flex-1">Nginx Reverse Proxy</h2>
         <Msg text={msg} type={msgType} />
         <button onClick={handleSave} disabled={saving} className="btn-ghost">
           {saving ? 'Saving…' : 'Save'}
@@ -491,54 +533,157 @@ function NginxTab({ projectId }: { projectId: string }) {
           {applying ? 'Applying…' : 'Apply to Host'}
         </button>
       </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="card space-y-4">
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Domain</label>
-            <input className="input" value={form.domain} onChange={e => set('domain', e.target.value)} placeholder="app.example.com" />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-4">
+          {/* Basic settings */}
+          <div className="card space-y-4">
+            <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Routing</p>
             <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Upstream Host</label>
-              <input className="input" value={form.upstream_host} onChange={e => set('upstream_host', e.target.value)} />
+              <label className="block text-xs text-gray-400 mb-1.5">Domain</label>
+              <input
+                className="input"
+                value={form.domain}
+                onChange={e => set('domain', e.target.value)}
+                onBlur={e => set('domain', sanitizeDomain(e.target.value))}
+                placeholder="app.example.com"
+              />
+              <p className="text-xs text-gray-600 mt-1">Protocol and trailing slashes are stripped automatically.</p>
             </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Upstream Port</label>
-              <input className="input" type="number" value={form.upstream_port}
-                onChange={e => set('upstream_port', Number(e.target.value))} />
-            </div>
-          </div>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={form.ssl_enabled} onChange={e => set('ssl_enabled', e.target.checked)} />
-            <span className="text-sm text-gray-300">Enable SSL</span>
-          </label>
-          {form.ssl_enabled && (
-            <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5">Certificate Path</label>
-                <input className="input font-mono text-xs" value={form.ssl_cert_path}
-                  onChange={e => set('ssl_cert_path', e.target.value)} placeholder="/var/offdock/certs/cert.pem" />
+                <label className="block text-xs text-gray-400 mb-1.5">Upstream Host</label>
+                <input className="input" value={form.upstream_host}
+                  onChange={e => set('upstream_host', e.target.value)} placeholder="localhost" />
               </div>
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5">Key Path</label>
-                <input className="input font-mono text-xs" value={form.ssl_key_path}
-                  onChange={e => set('ssl_key_path', e.target.value)} placeholder="/var/offdock/certs/key.pem" />
+                <label className="block text-xs text-gray-400 mb-1.5">Upstream Port</label>
+                <input className="input" type="number" min={1} max={65535} value={form.upstream_port}
+                  onChange={e => set('upstream_port', Number(e.target.value))} />
               </div>
             </div>
-          )}
-          <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Custom Directives</label>
-            <textarea className="input font-mono text-xs h-24 resize-none" value={form.custom_directives}
-              onChange={e => set('custom_directives', e.target.value)} placeholder="client_max_body_size 50m;" />
+          </div>
+
+          {/* SSL */}
+          <div className="card space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">SSL / TLS</p>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={form.ssl_enabled}
+                  onChange={e => set('ssl_enabled', e.target.checked)} />
+                <span className="text-sm text-gray-300">Enable SSL</span>
+              </label>
+            </div>
+
+            {form.ssl_enabled && (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1.5">Certificate Path (.crt / .pem)</label>
+                  <div className="flex gap-2">
+                    <input className="input font-mono text-xs flex-1" value={form.ssl_cert_path}
+                      onChange={e => set('ssl_cert_path', e.target.value)}
+                      placeholder="/var/offdock/certs/project.crt" />
+                    <button onClick={() => setCertBrowser('cert')} className="btn-ghost text-xs shrink-0">Browse</button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1.5">Private Key Path (.key)</label>
+                  <div className="flex gap-2">
+                    <input className="input font-mono text-xs flex-1" value={form.ssl_key_path}
+                      onChange={e => set('ssl_key_path', e.target.value)}
+                      placeholder="/var/offdock/certs/project.key" />
+                    <button onClick={() => setCertBrowser('key')} className="btn-ghost text-xs shrink-0">Browse</button>
+                  </div>
+                </div>
+
+                {/* Generate self-signed cert */}
+                <div className="pt-2 border-t border-gray-800">
+                  <p className="text-xs text-gray-500 mb-2">Generate a self-signed certificate (for internal / development use)</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <label className="text-xs text-gray-400 shrink-0">Valid for</label>
+                    <input
+                      type="number" min={1} max={3650}
+                      value={certDays}
+                      onChange={e => setCertDays(Number(e.target.value))}
+                      className="input text-xs w-20"
+                    />
+                    <label className="text-xs text-gray-400 shrink-0">days</label>
+                    <button
+                      onClick={handleGenerateCert}
+                      disabled={generatingCert || !form.domain}
+                      className="btn-ghost text-xs ml-auto"
+                    >
+                      {generatingCert ? 'Generating…' : 'Generate Self-Signed Cert'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Performance */}
+          <div className="card space-y-4">
+            <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Performance</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Max Body Size</label>
+                <input className="input font-mono text-xs" value={form.client_max_body_size}
+                  onChange={e => set('client_max_body_size', e.target.value)}
+                  placeholder="1m" />
+                <p className="text-xs text-gray-600 mt-1">e.g. 10m, 500k, 1g</p>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1.5">Proxy Timeout (s)</label>
+                <input className="input" type="number" min={1} value={form.proxy_read_timeout}
+                  onChange={e => set('proxy_read_timeout', Number(e.target.value))} />
+              </div>
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={form.gzip_enabled}
+                onChange={e => set('gzip_enabled', e.target.checked)} />
+              <span className="text-sm text-gray-300">Enable Gzip Compression</span>
+            </label>
+          </div>
+
+          {/* Custom directives */}
+          <div className="card space-y-2">
+            <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">Custom Directives</p>
+            <p className="text-xs text-gray-600">Added inside the <code className="text-gray-500">location /</code> block. Semicolons are added automatically.</p>
+            <textarea
+              className="input font-mono text-xs resize-y"
+              style={{ minHeight: '6rem' }}
+              value={form.custom_directives}
+              onChange={e => set('custom_directives', e.target.value)}
+              placeholder={'add_header X-Frame-Options DENY\nadd_header X-Content-Type-Options nosniff'}
+              spellCheck={false}
+            />
           </div>
         </div>
+
+        {/* Preview */}
         <div>
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Generated Config Preview</p>
-          <pre className="card font-mono text-xs text-green-400 overflow-auto whitespace-pre-wrap min-h-48 max-h-96">
+          <pre className="card font-mono text-xs text-green-400 overflow-auto whitespace-pre-wrap"
+            style={{ minHeight: '20rem', maxHeight: '60vh' }}>
             {preview || '# Save config to generate preview'}
           </pre>
+          <p className="text-xs text-gray-600 mt-2">
+            Written to <code className="text-gray-500">/etc/nginx/sites-available/</code> on Apply.
+          </p>
         </div>
       </div>
+
+      {certBrowser && (
+        <FileBrowser
+          mode="path"
+          onSelect={(p) => {
+            if (certBrowser === 'cert') set('ssl_cert_path', p)
+            else set('ssl_key_path', p)
+            setCertBrowser(null)
+          }}
+          onClose={() => setCertBrowser(null)}
+        />
+      )}
     </div>
   )
 }
@@ -550,6 +695,7 @@ function DeployTab({ projectId }: { projectId: string }) {
   const [deploying, setDeploying] = useState(false)
   const [streamKey, setStreamKey] = useState('')
   const [rollbackTarget, setRollbackTarget] = useState<DeploymentRecord | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<DeploymentRecord | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
   const esRef = useRef<EventSource | null>(null)
 
@@ -595,6 +741,16 @@ function DeployTab({ projectId }: { projectId: string }) {
       setLog(['Error: ' + (e instanceof Error ? e.message : 'unknown')])
       setDeploying(false)
     }
+  }
+
+  const handleDeleteDeployment = async (dep: DeploymentRecord) => {
+    try {
+      await api.deleteDeployment(projectId, dep.id)
+      setDeployments(prev => prev.filter(d => d.id !== dep.id))
+    } catch (e) {
+      // If delete fails (e.g., still running), silently ignore — user sees status
+    }
+    setDeleteTarget(null)
   }
 
   const statusBadge = (s: string) => ({
@@ -652,15 +808,25 @@ function DeployTab({ projectId }: { projectId: string }) {
                         : '—'}
                     </td>
                     <td className="px-4 py-2.5">
-                      {d.status === 'success' && (
-                        <button
-                          onClick={() => setRollbackTarget(d)}
-                          disabled={deploying}
-                          className="text-xs text-blue-500 hover:text-blue-400 disabled:opacity-40"
-                        >
-                          Rollback
-                        </button>
-                      )}
+                      <div className="flex items-center gap-3">
+                        {d.status === 'success' && (
+                          <button
+                            onClick={() => setRollbackTarget(d)}
+                            disabled={deploying}
+                            className="text-xs text-blue-500 hover:text-blue-400 disabled:opacity-40"
+                          >
+                            Rollback
+                          </button>
+                        )}
+                        {(d.status === 'success' || d.status === 'failed') && (
+                          <button
+                            onClick={() => setDeleteTarget(d)}
+                            className="text-xs text-gray-600 hover:text-red-400 transition-colors"
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -676,6 +842,17 @@ function DeployTab({ projectId }: { projectId: string }) {
             confirmLabel="Rollback"
             onConfirm={() => handleDeploy(rollbackTarget.new_compose_version)}
             onCancel={() => setRollbackTarget(null)}
+          />
+        )}
+
+        {deleteTarget && (
+          <ConfirmModal
+            title="Delete Deployment Record"
+            message={`Delete the ${deleteTarget.status} deployment from ${new Date(deleteTarget.started_at).toLocaleString()}? This only removes the record — it does not affect running containers.`}
+            confirmLabel="Delete"
+            danger
+            onConfirm={() => handleDeleteDeployment(deleteTarget)}
+            onCancel={() => setDeleteTarget(null)}
           />
         )}
       </section>

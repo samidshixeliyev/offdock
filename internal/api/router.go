@@ -86,12 +86,14 @@ func NewRouter(deps Deps) http.Handler {
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/nginx", h.SaveNginx)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/nginx/apply", h.ApplyNginx)
 		r.Get("/api/v1/projects/{id}/nginx/preview", h.PreviewNginx)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/nginx/cert", h.GenerateCert)
 
 		// Deploy
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/deploy", h.TriggerDeploy)
 		r.Get("/api/v1/projects/{id}/deployments", h.ListDeployments)
 		r.Get("/api/v1/projects/{id}/deployments/{dep_id}", h.GetDeployment)
 		r.Get("/api/v1/projects/{id}/deployments/{dep_id}/stream", h.DeployStream) // SSE
+		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/projects/{id}/deployments/{dep_id}", h.DeleteDeployment)
 
 		// Containers & logs
 		r.Get("/api/v1/projects/{id}/containers", h.ListContainers)

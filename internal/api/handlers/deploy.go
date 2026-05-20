@@ -88,3 +88,22 @@ func (h *H) DeployStream(w http.ResponseWriter, r *http.Request) {
 	depID := chi.URLParam(r, "dep_id")
 	h.hub.Subscribe(w, r, "deploy:"+depID)
 }
+
+// DeleteDeployment removes a deployment record. Running/pending deployments cannot be deleted.
+func (h *H) DeleteDeployment(w http.ResponseWriter, r *http.Request) {
+	depID := chi.URLParam(r, "dep_id")
+	dep, err := h.db.Deployments.FindByID(depID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "deployment not found")
+		return
+	}
+	if dep.Status == store.DeployStatusRunning || dep.Status == store.DeployStatusPending {
+		writeError(w, http.StatusConflict, "cannot delete a running deployment")
+		return
+	}
+	if err := h.db.Deployments.Delete(depID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete deployment")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

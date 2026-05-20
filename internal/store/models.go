@@ -104,18 +104,21 @@ func (e EnvVarSet) GetID() string { return e.ID }
 
 // NginxConfig holds the nginx reverse-proxy settings for a project.
 type NginxConfig struct {
-	ID               string    `json:"id"`
-	ProjectID        string    `json:"project_id"`
-	Domain           string    `json:"domain"`
-	SSLEnabled       bool      `json:"ssl_enabled"`
-	SSLCertPath      string    `json:"ssl_cert_path"`
-	SSLKeyPath       string    `json:"ssl_key_path"`
-	UpstreamHost     string    `json:"upstream_host"`
-	UpstreamPort     int       `json:"upstream_port"`
-	CustomDirectives string    `json:"custom_directives"`
-	GeneratedConfig  string    `json:"generated_config"`
-	Active           bool      `json:"active"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID                string    `json:"id"`
+	ProjectID         string    `json:"project_id"`
+	Domain            string    `json:"domain"`
+	SSLEnabled        bool      `json:"ssl_enabled"`
+	SSLCertPath       string    `json:"ssl_cert_path"`
+	SSLKeyPath        string    `json:"ssl_key_path"`
+	UpstreamHost      string    `json:"upstream_host"`
+	UpstreamPort      int       `json:"upstream_port"`
+	ClientMaxBodySize string    `json:"client_max_body_size"` // e.g. "10m", "1g"; empty = "1m"
+	ProxyReadTimeout  int       `json:"proxy_read_timeout"`   // seconds; 0 = 60
+	GzipEnabled       bool      `json:"gzip_enabled"`
+	CustomDirectives  string    `json:"custom_directives"`
+	GeneratedConfig   string    `json:"generated_config"`
+	Active            bool      `json:"active"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 func (n NginxConfig) GetID() string { return n.ID }

@@ -52,6 +52,9 @@ export interface NginxConfig {
   ssl_key_path: string
   upstream_host: string
   upstream_port: number
+  client_max_body_size: string
+  proxy_read_timeout: number
+  gzip_enabled: boolean
   custom_directives: string
   generated_config: string
   active: boolean
@@ -213,6 +216,11 @@ export const api = {
     ),
   previewNginx: (projectId: string) =>
     request<{ config: string }>(`/api/v1/projects/${projectId}/nginx/preview`),
+  generateCert: (projectId: string, domain: string, days?: number) =>
+    request<{ cert_path: string; key_path: string; domain: string; days: string }>(
+      `/api/v1/projects/${projectId}/nginx/cert`,
+      { method: 'POST', body: JSON.stringify({ domain, days: days ?? 365 }) }
+    ),
 
   // Deploy
   triggerDeploy: (projectId: string, composeVersion?: number) =>
@@ -224,6 +232,8 @@ export const api = {
     request<DeploymentRecord[]>(`/api/v1/projects/${projectId}/deployments`),
   getDeployment: (projectId: string, depId: string) =>
     request<DeploymentRecord>(`/api/v1/projects/${projectId}/deployments/${depId}`),
+  deleteDeployment: (projectId: string, depId: string) =>
+    request<void>(`/api/v1/projects/${projectId}/deployments/${depId}`, { method: 'DELETE' }),
 
   // Containers
   listContainers: (projectId: string) =>

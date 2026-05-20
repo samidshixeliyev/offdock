@@ -1,7 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -92,6 +99,61 @@ func (h *H) ApplyNginx(w http.ResponseWriter, r *http.Request) {
 		"config_path":       result.ConfigPath,
 		"symlink_path":      result.SymlinkPath,
 		"nginx_test_output": result.NginxTestOutput,
+	})
+}
+
+// GenerateCert generates a self-signed SSL certificate for a project using openssl.
+func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+
+	var req struct {
+		Domain string `json:"domain"`
+		Days   int    `json:"days"`
+	}
+	if err := decodeJSON(r, &req); err != nil || strings.TrimSpace(req.Domain) == "" {
+		writeError(w, http.StatusBadRequest, "domain is required")
+		return
+	}
+	domain := nginxpkg.SanitizeDomain(req.Domain)
+	if domain == "" {
+		writeError(w, http.StatusBadRequest, "invalid domain")
+		return
+	}
+	days := req.Days
+	if days <= 0 {
+		days = 365
+	}
+
+	certsDir := "/var/offdock/certs"
+	if err := os.MkdirAll(certsDir, 0o700); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create certs directory")
+		return
+	}
+
+	keyPath := filepath.Join(certsDir, projectID+".key")
+	certPath := filepath.Join(certsDir, projectID+".crt")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "openssl", "req", "-x509", "-nodes",
+		"-days", strconv.Itoa(days),
+		"-newkey", "rsa:2048",
+		"-keyout", keyPath,
+		"-out", certPath,
+		"-subj", "/CN="+domain,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "openssl failed: "+strings.TrimSpace(string(out)))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"cert_path": certPath,
+		"key_path":  keyPath,
+		"domain":    domain,
+		"days":      strconv.Itoa(days),
 	})
 }
 
