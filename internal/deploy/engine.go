@@ -174,16 +174,24 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	// Step 5: Cutover — bring down old stack.
 	appendLog("[5/7] Cutting over — stopping %s", project.Name)
 	downOut, _ := e.docker.ComposeDown(ctx, project.Name, composePath)
-	appendLog("  docker output: %s", strings.TrimSpace(downOut))
-
-	// Step 6: Promote _next to canonical name.
-	appendLog("[6/7] Promoting %s → %s", nextProject, project.Name)
-	promoteOut, err := e.docker.ComposeUp(ctx, project.Name, composePath)
-	appendLog("  docker output: %s", strings.TrimSpace(promoteOut))
-	if err != nil {
-		return fail(fmt.Errorf("promote: %w", err))
+	if t := strings.TrimSpace(downOut); t != "" {
+		appendLog("  docker output: %s", t)
 	}
+
+	// Step 6: Free ports by tearing down _next, then start canonical.
+	// _next must be stopped first so its port bindings are released before
+	// the canonical stack tries to bind the same ports.
+	appendLog("[6/7] Releasing %s ports", nextProject)
 	e.docker.ComposeDown(context.Background(), nextProject, composePath) //nolint:errcheck
+
+	appendLog("[6/7] Starting %s (canonical)", project.Name)
+	promoteOut, err := e.docker.ComposeUp(ctx, project.Name, composePath)
+	if t := strings.TrimSpace(promoteOut); t != "" {
+		appendLog("  docker output: %s", t)
+	}
+	if err != nil {
+		return fail(fmt.Errorf("promote: %w\n%s", err, strings.TrimSpace(promoteOut)))
+	}
 
 	// Step 7: Reload nginx if config exists.
 	nginxCfgs, _ := e.db.Nginx.FindWhere(func(n store.NginxConfig) bool {
