@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, DockerImage } from '../api/client'
+import ConfirmModal from '../components/ConfirmModal'
 
 export default function ImagesPage() {
   const [images, setImages] = useState<DockerImage[]>([])
@@ -7,6 +8,7 @@ export default function ImagesPage() {
   const [msg, setMsg] = useState('')
   const [msgType, setMsgType] = useState<'ok' | 'err'>('ok')
   const [syncing, setSyncing] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState<DockerImage | null>(null)
 
   const notify = (text: string, type: 'ok' | 'err' = 'ok') => { setMsg(text); setMsgType(type) }
 
@@ -32,13 +34,14 @@ export default function ImagesPage() {
   }
 
   const handleDelete = async (img: DockerImage) => {
-    if (!confirm(`Remove ${img.image_name}:${img.image_tag} from Docker and database?`)) return
     try {
       await api.deleteImage(img.id)
       notify('Deleted')
       reload()
     } catch (e: unknown) {
       notify('Error: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
+    } finally {
+      setConfirmDelete(null)
     }
   }
 
@@ -94,7 +97,7 @@ export default function ImagesPage() {
                     {new Date(img.loaded_at).toLocaleString()}
                   </td>
                   <td className="px-4 py-2.5">
-                    <button onClick={() => handleDelete(img)} className="text-xs text-red-500 hover:text-red-400">
+                    <button onClick={() => setConfirmDelete(img)} className="text-xs text-red-500 hover:text-red-400">
                       Delete
                     </button>
                   </td>
@@ -103,6 +106,17 @@ export default function ImagesPage() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete Image"
+          message={`Remove ${confirmDelete.image_name}:${confirmDelete.image_tag} from Docker and database?`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => handleDelete(confirmDelete)}
+          onCancel={() => setConfirmDelete(null)}
+        />
       )}
     </div>
   )

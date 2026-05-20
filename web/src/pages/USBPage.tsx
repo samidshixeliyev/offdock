@@ -21,6 +21,10 @@ export default function USBPage() {
   const [diskMount, setDiskMount] = useState('/var/offdock')
   const [diskPath, setDiskPath] = useState('/var/offdock')
 
+  // Docker load progress
+  const [loadingImage, setLoadingImage] = useState(false)
+  const [loadingImageName, setLoadingImageName] = useState('')
+
   // Upload mode
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
@@ -54,12 +58,17 @@ export default function USBPage() {
   const browseDisk = () => browse(null, diskPath)
 
   const loadTar = async (entry: FileEntry) => {
-    notify('Loading ' + entry.name + '...')
+    setLoadingImage(true)
+    setLoadingImageName(entry.name)
+    notify('')
     try {
       const img = await api.loadImage({ tar_file_path: entry.path })
       notify('Loaded: ' + img.image_name + ':' + img.image_tag)
     } catch (e) {
       notify('Load failed: ' + (e instanceof Error ? e.message : String(e)), 'err')
+    } finally {
+      setLoadingImage(false)
+      setLoadingImageName('')
     }
   }
 
@@ -130,6 +139,18 @@ export default function USBPage() {
           </span>
         )}
       </div>
+
+      {/* Docker load progress — persists across mode tabs */}
+      {loadingImage && (
+        <div className="card border border-blue-800 bg-blue-900/10 flex items-center gap-3 mb-4">
+          <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-blue-300 text-sm font-medium">Loading Docker image…</p>
+            <p className="text-xs text-gray-500 font-mono truncate">{loadingImageName}</p>
+          </div>
+          <p className="text-xs text-gray-600 shrink-0">may take a few minutes</p>
+        </div>
+      )}
 
       {/* Mode tabs */}
       <div className="flex gap-2 mb-6 flex-wrap">
@@ -243,14 +264,23 @@ export default function USBPage() {
                 {uploadedPath.endsWith('.tar') && (
                   <button
                     className="btn-primary text-xs"
-                    onClick={() => {
-                      notify('Loading Docker image...')
-                      api.loadImage({ tar_file_path: uploadedPath })
-                        .then(img => notify('Loaded: ' + img.image_name + ':' + img.image_tag))
-                        .catch(e => notify('Load failed: ' + (e instanceof Error ? e.message : String(e)), 'err'))
+                    disabled={loadingImage}
+                    onClick={async () => {
+                      setLoadingImage(true)
+                      setLoadingImageName(uploadedPath.split('/').pop() ?? uploadedPath)
+                      notify('')
+                      try {
+                        const img = await api.loadImage({ tar_file_path: uploadedPath })
+                        notify('Loaded: ' + img.image_name + ':' + img.image_tag)
+                      } catch (e) {
+                        notify('Load failed: ' + (e instanceof Error ? e.message : String(e)), 'err')
+                      } finally {
+                        setLoadingImage(false)
+                        setLoadingImageName('')
+                      }
                     }}
                   >
-                    Load as Docker Image
+                    {loadingImage ? '⟳ Loading…' : 'Load as Docker Image'}
                   </button>
                 )}
                 <button

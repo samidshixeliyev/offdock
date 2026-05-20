@@ -13,6 +13,7 @@ import (
 )
 
 // TriggerDeploy starts an async deployment and returns an SSE stream URL.
+// Optional body: { "compose_version": N } — if omitted, the latest version is used (rollback support).
 func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	claims := authmw.ClaimsFromContext(r.Context())
@@ -22,17 +23,22 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var req struct {
+		ComposeVersion int `json:"compose_version"`
+	}
+	// Ignore decode errors — body is optional.
+	decodeJSON(r, &req) //nolint:errcheck
+
 	depID := store.NewULID()
 	streamKey := "deploy:" + depID
+	composeVersion := req.ComposeVersion // 0 means use latest
 
 	go func() {
-		// Use context.Background() — r.Context() is cancelled as soon as the
-		// HTTP handler returns its 202, which would abort the deployment goroutine.
 		logFn := func(line string) {
 			msg, _ := json.Marshal(map[string]string{"log": line})
 			h.hub.Publish(streamKey, string(msg))
 		}
-		rec, err := h.deployer.Deploy(context.Background(), projectID, claims.UserID, logFn)
+		rec, err := h.deployer.DeployVersion(context.Background(), projectID, claims.UserID, composeVersion, logFn)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			h.hub.Publish(streamKey, string(msg))

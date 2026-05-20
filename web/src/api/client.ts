@@ -215,10 +215,10 @@ export const api = {
     request<{ config: string }>(`/api/v1/projects/${projectId}/nginx/preview`),
 
   // Deploy
-  triggerDeploy: (projectId: string) =>
+  triggerDeploy: (projectId: string, composeVersion?: number) =>
     request<{ deployment_id: string; stream: string }>(
       `/api/v1/projects/${projectId}/deploy`,
-      { method: 'POST' }
+      { method: 'POST', body: JSON.stringify(composeVersion ? { compose_version: composeVersion } : {}) }
     ),
   listDeployments: (projectId: string) =>
     request<DeploymentRecord[]>(`/api/v1/projects/${projectId}/deployments`),
@@ -241,6 +241,8 @@ export const api = {
   listDrives: () => request<UsbDrive[]>('/api/v1/usb/drives'),
   browseDrive: (mount: string, path?: string) =>
     request<FileEntry[]>(`/api/v1/usb/browse?mount=${encodeURIComponent(mount)}${path ? `&path=${encodeURIComponent(path)}` : ''}`),
+  readFile: (mount: string, path: string) =>
+    request<{ content: string }>(`/api/v1/usb/file?mount=${encodeURIComponent(mount)}&path=${encodeURIComponent(path)}`),
 
   // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
   uploadFile: (

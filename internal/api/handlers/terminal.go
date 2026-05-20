@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -31,7 +32,10 @@ func (h *H) ExecCommand(w http.ResponseWriter, r *http.Request) {
 
 	startDir := req.Cwd
 	if startDir == "" {
-		startDir = "/root"
+		startDir = os.Getenv("HOME")
+		if startDir == "" {
+			startDir = "/root"
+		}
 	}
 
 	// Wrap the user command so we can capture the final working directory.

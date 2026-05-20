@@ -54,11 +54,24 @@ func (h *H) LoadImage(w http.ResponseWriter, r *http.Request) {
 
 	// Find newly added images by diffing the image list.
 	after, _ := h.docker.ImageList()
-	var newImages []store.DockerImage
 
+	// Build a set of already-tracked Docker image IDs to prevent duplicates.
+	existingImages, _ := h.db.Images.FindAll()
+	trackedDockerIDs := make(map[string]bool, len(existingImages))
+	for _, img := range existingImages {
+		trackedDockerIDs[img.DockerImageID] = true
+	}
+
+	var newImages []store.DockerImage
 	for _, img := range after {
 		if beforeIDs[img.ID] {
-			continue // already existed
+			continue // existed before load
+		}
+		if img.Repository == "<none>" && img.Tag == "<none>" {
+			continue // untagged intermediate layer artifact
+		}
+		if trackedDockerIDs[img.ID] {
+			continue // already tracked (e.g. re-loading same tar)
 		}
 		name, tag := splitImageRef(img.Repository + ":" + img.Tag)
 		if req.ImageName != "" {

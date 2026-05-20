@@ -44,10 +44,13 @@ func New(db *store.DB, dockerClient *docker.Client, enc *crypto.Encryptor, proje
 	}
 }
 
-// Deploy runs a full healthcheck-cutover deployment for projectID.
-// All log lines are emitted to logFn (called from the same goroutine).
-// The returned DeploymentRecord is already saved to the database.
+// Deploy runs a full healthcheck-cutover deployment using the latest compose version.
 func (e *Engine) Deploy(ctx context.Context, projectID, triggeredBy string, logFn LogFunc) (*store.DeploymentRecord, error) {
+	return e.DeployVersion(ctx, projectID, triggeredBy, 0, logFn)
+}
+
+// DeployVersion deploys a specific compose version (0 = latest). Used for rollbacks.
+func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy string, composeVersion int, logFn LogFunc) (*store.DeploymentRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, deployTimeout)
 	defer cancel()
 
@@ -64,14 +67,31 @@ func (e *Engine) Deploy(ctx context.Context, projectID, triggeredBy string, logF
 		return nil, fmt.Errorf("project not found: %w", err)
 	}
 
-	// Fetch latest compose config and env var set.
+	// Fetch the specified compose config version (or latest if version == 0).
 	composeVersions, err := e.db.Compose.FindWhere(func(c store.ComposeConfig) bool {
 		return c.ProjectID == projectID
 	})
 	if err != nil || len(composeVersions) == 0 {
 		return nil, fmt.Errorf("no compose config for project %s", projectID)
 	}
-	latestCompose := latestComposeConfig(composeVersions)
+
+	var selectedCompose store.ComposeConfig
+	if composeVersion > 0 {
+		found := false
+		for _, c := range composeVersions {
+			if c.Version == composeVersion {
+				selectedCompose = c
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("compose version %d not found", composeVersion)
+		}
+	} else {
+		selectedCompose = latestComposeConfig(composeVersions)
+	}
+	latestCompose := selectedCompose
 
 	envSets, _ := e.db.EnvVars.FindWhere(func(v store.EnvVarSet) bool {
 		return v.ProjectID == projectID

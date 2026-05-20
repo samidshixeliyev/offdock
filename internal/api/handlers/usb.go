@@ -19,6 +19,23 @@ func (h *H) ListDrives(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, drives)
 }
 
+// ReadFile returns the text content of a single file within a mount boundary.
+// Query params: mount (security boundary), path (file to read).
+func (h *H) ReadFile(w http.ResponseWriter, r *http.Request) {
+	mount := r.URL.Query().Get("mount")
+	path := r.URL.Query().Get("path")
+	if mount == "" || path == "" {
+		writeError(w, http.StatusBadRequest, "mount and path query parameters are required")
+		return
+	}
+	content, err := usb.ReadFile(mount, path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"content": content})
+}
+
 // BrowseDrive lists files at the given path within a known mount point.
 // Query params:
 //   - mount: security boundary / base directory (e.g. /media/usb0 or /home/ubuntu)

@@ -106,6 +106,7 @@ func NewRouter(deps Deps) http.Handler {
 		// USB
 		r.Get("/api/v1/usb/drives", h.ListDrives)
 		r.Get("/api/v1/usb/browse", h.BrowseDrive)
+		r.Get("/api/v1/usb/file", h.ReadFile)
 
 		// System stats (SSE)
 		r.Get("/api/v1/system/stats", h.SystemStats)

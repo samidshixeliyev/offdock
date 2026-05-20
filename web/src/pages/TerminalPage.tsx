@@ -47,7 +47,7 @@ export default function TerminalPage() {
   ])
   const [input, setInput]     = useState('')
   const [hint, setHint]       = useState('')
-  const [cwd, setCwd]         = useState('/root')
+  const [cwd, setCwd]         = useState('')
   const [host, setHost]       = useState('server')
   const [running, setRunning] = useState(false)
   const [cmdHist, setCmdHist] = useState<string[]>([])
@@ -65,7 +65,7 @@ export default function TerminalPage() {
 
   /* ── initial cwd / hostname ───────────────────────────────────────────── */
   useEffect(() => {
-    exec('hostname', '/root').then(r => {
+    exec('hostname', '').then(r => {
       setHost(r.stdout.trim() || 'server')
       setCwd(r.cwd || '/root')
     }).catch(() => {})
@@ -110,7 +110,7 @@ export default function TerminalPage() {
 
     abortRef.current = new AbortController()
     try {
-      const data = await exec(trimmed, cwd, abortRef.current.signal)
+      const data = await exec(trimmed, cwd || '/root', abortRef.current.signal)
       if (data.cwd) setCwd(data.cwd)
 
       setLines(prev => {

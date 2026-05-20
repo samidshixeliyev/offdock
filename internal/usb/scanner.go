@@ -5,6 +5,7 @@ package usb
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,6 +102,36 @@ func Browse(mountPoint, path string) ([]FileEntry, error) {
 		})
 	}
 	return result, nil
+}
+
+// ReadFile reads and returns the text content of a file within the mount boundary.
+// Only files with allowedExtensions may be read; max 10 MB.
+func ReadFile(mountPoint, path string) (string, error) {
+	if err := validatePath(mountPoint, path); err != nil {
+		return "", err
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if !allowedExtensions[ext] {
+		return "", fmt.Errorf("file type %q not allowed", ext)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open file: %w", err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	const maxSize = 10 << 20
+	if fi.Size() > maxSize {
+		return "", fmt.Errorf("file too large (%d MB, max 10 MB)", fi.Size()>>20)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", fmt.Errorf("read file: %w", err)
+	}
+	return string(data), nil
 }
 
 // validatePath ensures that target is within mountPoint (prevents path traversal).
