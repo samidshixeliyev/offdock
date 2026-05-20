@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"offdock/internal/docker"
+	"offdock/internal/store"
 )
 
 // ContainerLogs streams container logs via SSE using docker logs --follow.
@@ -62,7 +64,7 @@ func (h *H) ContainerLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ListContainers returns all running containers for a project.
+// ListContainers returns all containers for a project.
 func (h *H) ListContainers(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	project, err := h.db.Projects.FindByID(projectID)
@@ -80,4 +82,61 @@ func (h *H) ListContainers(w http.ResponseWriter, r *http.Request) {
 		containers = []docker.ContainerInfo{}
 	}
 	writeJSON(w, http.StatusOK, containers)
+}
+
+// SyncProjectStatus queries Docker and updates the project status to reflect actual container state.
+func (h *H) SyncProjectStatus(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	project, err := h.db.Projects.FindByID(projectID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	containers, _ := h.docker.PS(r.Context(), project.Name)
+	total := len(containers)
+	running := 0
+	for _, c := range containers {
+		if strings.ToLower(c.State) == "running" {
+			running++
+		}
+	}
+
+	switch {
+	case total == 0:
+		project.Status = store.ProjectStatusStopped
+	case running == 0:
+		project.Status = store.ProjectStatusStopped
+	case running < total:
+		project.Status = store.ProjectStatusDegraded
+	default:
+		project.Status = store.ProjectStatusRunning
+	}
+	project.UpdatedAt = timeNow()
+	h.db.Projects.Save(project) //nolint:errcheck
+	writeJSON(w, http.StatusOK, project)
+}
+
+// ContainerAction performs restart, stop, or start on a named container.
+func (h *H) ContainerAction(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	action := chi.URLParam(r, "action")
+
+	var err error
+	switch action {
+	case "restart":
+		err = h.docker.RestartContainer(r.Context(), name)
+	case "stop":
+		err = h.docker.StopContainer(r.Context(), name)
+	case "start":
+		err = h.docker.StartContainer(r.Context(), name)
+	default:
+		writeError(w, http.StatusBadRequest, "unknown action: "+action)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, action+" failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": action, "container": name})
 }

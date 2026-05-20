@@ -184,6 +184,30 @@ func (c *Client) Stats(ctx context.Context) ([]ContainerStats, error) {
 	return result, nil
 }
 
+// RestartContainer runs docker restart on a single container.
+func (c *Client) RestartContainer(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	_, err := run(ctx, "restart", name)
+	return err
+}
+
+// StopContainer runs docker stop on a single container.
+func (c *Client) StopContainer(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	_, err := run(ctx, "stop", name)
+	return err
+}
+
+// StartContainer runs docker start on a single container.
+func (c *Client) StartContainer(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	_, err := run(ctx, "start", name)
+	return err
+}
+
 // ComposeUp runs docker compose up -d.
 func (c *Client) ComposeUp(ctx context.Context, project, composePath string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", "compose", "-p", project, "-f", composePath, "up", "-d", "--remove-orphans")

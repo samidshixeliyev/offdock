@@ -117,9 +117,14 @@ function FileBrowser({ onSelect, onClose, mode = 'content' }: {
 }
 
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
-function OverviewTab({ projectId }: { projectId: string }) {
+function OverviewTab({ projectId, onStatusSync }: {
+  projectId: string
+  onStatusSync: (p: import('../api/client').Project) => void
+}) {
   const [containers, setContainers] = useState<ContainerInfo[]>([])
   const [loading, setLoading] = useState(true)
+  const [actionBusy, setActionBusy] = useState<string>('')
+  const [syncing, setSyncing] = useState(false)
 
   const refresh = () => {
     setLoading(true)
@@ -131,18 +136,46 @@ function OverviewTab({ projectId }: { projectId: string }) {
 
   useEffect(() => { refresh() }, [projectId])
 
+  const syncStatus = async () => {
+    setSyncing(true)
+    try {
+      const updated = await api.syncProjectStatus(projectId)
+      onStatusSync(updated)
+      refresh()
+    } catch {}
+    finally { setSyncing(false) }
+  }
+
+  const doAction = async (name: string, action: 'restart' | 'stop' | 'start') => {
+    setActionBusy(name + ':' + action)
+    try {
+      await api.containerAction(projectId, name, action)
+      await new Promise(r => setTimeout(r, 800))
+      refresh()
+    } catch {}
+    finally { setActionBusy('') }
+  }
+
   return (
     <section>
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">Running Containers</h2>
-        <button onClick={refresh} className="btn-ghost text-xs">Refresh</button>
+        <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">Containers</h2>
+        <div className="flex gap-2">
+          <button onClick={syncStatus} disabled={syncing} className="btn-ghost text-xs">
+            {syncing ? 'Syncing…' : 'Sync Status'}
+          </button>
+          <button onClick={refresh} className="btn-ghost text-xs">Refresh</button>
+        </div>
       </div>
       {loading ? (
         <div className="card text-gray-500 text-sm py-6 text-center">Loading…</div>
       ) : containers.length === 0 ? (
         <div className="card text-gray-500 text-sm py-8 text-center">
-          No containers running for this project.
+          No containers found for this project.
           <p className="text-xs text-gray-600 mt-1">Go to Deploy tab to start the project.</p>
+          <button onClick={syncStatus} disabled={syncing} className="btn-ghost text-xs mt-3">
+            {syncing ? 'Syncing…' : 'Sync Status from Docker'}
+          </button>
         </div>
       ) : (
         <div className="card overflow-x-auto p-0">
@@ -153,6 +186,7 @@ function OverviewTab({ projectId }: { projectId: string }) {
                 <th className="text-left px-4 py-2.5">Image</th>
                 <th className="text-left px-4 py-2.5">Status</th>
                 <th className="text-left px-4 py-2.5">Ports</th>
+                <th className="px-4 py-2.5"></th>
               </tr>
             </thead>
             <tbody>
@@ -162,10 +196,40 @@ function OverviewTab({ projectId }: { projectId: string }) {
                   <td className="px-4 py-2.5 text-gray-400 text-xs">{c.Image}</td>
                   <td className="px-4 py-2.5">
                     <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      c.State === 'running' ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-gray-400'
+                      c.State === 'running' ? 'bg-green-900 text-green-300' :
+                      c.State === 'exited' ? 'bg-red-900/50 text-red-400' :
+                      'bg-gray-800 text-gray-400'
                     }`}>{c.Status}</span>
                   </td>
                   <td className="px-4 py-2.5 text-xs text-gray-500 font-mono">{c.Ports}</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => doAction(c.Names, 'restart')}
+                        disabled={!!actionBusy}
+                        className="text-xs text-blue-500 hover:text-blue-400 disabled:opacity-40"
+                      >
+                        {actionBusy === c.Names + ':restart' ? '…' : 'Restart'}
+                      </button>
+                      {c.State === 'running' ? (
+                        <button
+                          onClick={() => doAction(c.Names, 'stop')}
+                          disabled={!!actionBusy}
+                          className="text-xs text-red-500 hover:text-red-400 disabled:opacity-40"
+                        >
+                          {actionBusy === c.Names + ':stop' ? '…' : 'Stop'}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => doAction(c.Names, 'start')}
+                          disabled={!!actionBusy}
+                          className="text-xs text-green-500 hover:text-green-400 disabled:opacity-40"
+                        >
+                          {actionBusy === c.Names + ':start' ? '…' : 'Start'}
+                        </button>
+                      )}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -924,7 +988,7 @@ export default function ProjectDashboardPage() {
       </div>
 
       {/* Tab content */}
-      {tab === 'overview' && id && <OverviewTab projectId={id} />}
+      {tab === 'overview' && id && <OverviewTab projectId={id} onStatusSync={p => setProject(p)} />}
       {tab === 'compose' && id && <ComposeTab projectId={id} />}
       {tab === 'env' && id && <EnvTab projectId={id} />}
       {tab === 'nginx' && id && <NginxTab projectId={id} />}

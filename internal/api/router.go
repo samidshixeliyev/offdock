@@ -97,6 +97,8 @@ func NewRouter(deps Deps) http.Handler {
 
 		// Containers & logs
 		r.Get("/api/v1/projects/{id}/containers", h.ListContainers)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/sync", h.SyncProjectStatus)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/containers/{name}/{action}", h.ContainerAction)
 		r.Get("/api/v1/projects/{id}/containers/{name}/logs", h.ContainerLogs) // SSE
 
 		// Images

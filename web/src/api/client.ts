@@ -238,6 +238,13 @@ export const api = {
   // Containers
   listContainers: (projectId: string) =>
     request<ContainerInfo[]>(`/api/v1/projects/${projectId}/containers`),
+  syncProjectStatus: (projectId: string) =>
+    request<Project>(`/api/v1/projects/${projectId}/sync`, { method: 'POST' }),
+  containerAction: (projectId: string, name: string, action: 'restart' | 'stop' | 'start') =>
+    request<{ status: string; action: string; container: string }>(
+      `/api/v1/projects/${projectId}/containers/${encodeURIComponent(name)}/${action}`,
+      { method: 'POST' }
+    ),
 
   // Images
   listImages: () => request<DockerImage[]>('/api/v1/images'),
