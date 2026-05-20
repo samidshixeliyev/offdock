@@ -38,15 +38,14 @@ var allowedExtensions = map[string]bool{
 	".pem":  true,
 }
 
-// ScanDrives scans /media and /mnt for real (non-virtual) mounted filesystems
-// by reading /proc/mounts and filtering out virtual fs types.
+// ScanDrives scans /media and /mnt for real (non-virtual) mounted filesystems.
 func ScanDrives() ([]Drive, error) {
 	mounts, err := parseMounts()
 	if err != nil {
-		return nil, err
+		return []Drive{}, err
 	}
 
-	var drives []Drive
+	drives := []Drive{}
 	for _, m := range mounts {
 		if !isRealFS(m.fsType) {
 			continue
@@ -72,8 +71,9 @@ func ScanDrives() ([]Drive, error) {
 	return drives, nil
 }
 
-// Browse lists files and directories at path, restricted to allowedExtensions
-// for files.  The path must reside within mountPoint to prevent traversal.
+// Browse lists files and directories at path that are within mountPoint.
+// mountPoint acts as the security boundary — path traversal outside it is rejected.
+// Only allowedExtensions are returned for files; directories are always included.
 func Browse(mountPoint, path string) ([]FileEntry, error) {
 	if err := validatePath(mountPoint, path); err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func Browse(mountPoint, path string) ([]FileEntry, error) {
 		return nil, fmt.Errorf("read dir: %w", err)
 	}
 
-	var result []FileEntry
+	result := []FileEntry{}
 	for _, e := range entries {
 		fi, err := e.Info()
 		if err != nil {
@@ -103,12 +103,12 @@ func Browse(mountPoint, path string) ([]FileEntry, error) {
 	return result, nil
 }
 
-// validatePath ensures that target is a clean path within mountPoint.
+// validatePath ensures that target is within mountPoint (prevents path traversal).
 func validatePath(mountPoint, target string) error {
-	clean := filepath.Clean(target)
-	mountClean := filepath.Clean(mountPoint)
-	if !strings.HasPrefix(clean+"/", mountClean+"/") && clean != mountClean {
-		return fmt.Errorf("path %q is outside mount point %q", target, mountPoint)
+	cleanMount := filepath.Clean(mountPoint)
+	cleanTarget := filepath.Clean(target)
+	if cleanTarget != cleanMount && !strings.HasPrefix(cleanTarget+"/", cleanMount+"/") {
+		return fmt.Errorf("path %q is outside base directory %q", target, mountPoint)
 	}
 	return nil
 }

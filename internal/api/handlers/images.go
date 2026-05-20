@@ -17,6 +17,9 @@ func (h *H) ListImages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not list images")
 		return
 	}
+	if images == nil {
+		images = []store.DockerImage{}
+	}
 	writeJSON(w, http.StatusOK, images)
 }
 

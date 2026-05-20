@@ -12,7 +12,14 @@
       "Bash(git init *)",
       "Bash(git remote *)",
       "Bash(git config *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git commit -m 'fix: add cmd/offdock/main.go \\(was excluded by overly broad .gitignore pattern\\) *)",
+      "Bash(git commit -m 'docs: add offline installation guide *)",
+      "Bash(git commit -m 'fix: spaHandler must strip leading / before fs.FS.Open *)",
+      "Bash(git commit -m 'fix: serve /setup as SPA page, not JSON API endpoint *)",
+      "Bash(git commit -m 'fix: null crash, deploy context cancel, add disk-browse mode *)"
     ]
   }
 }

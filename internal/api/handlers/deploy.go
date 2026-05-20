@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -25,11 +26,13 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 	streamKey := "deploy:" + depID
 
 	go func() {
+		// Use context.Background() — r.Context() is cancelled as soon as the
+		// HTTP handler returns its 202, which would abort the deployment goroutine.
 		logFn := func(line string) {
 			msg, _ := json.Marshal(map[string]string{"log": line})
 			h.hub.Publish(streamKey, string(msg))
 		}
-		rec, err := h.deployer.Deploy(r.Context(), projectID, claims.UserID, logFn)
+		rec, err := h.deployer.Deploy(context.Background(), projectID, claims.UserID, logFn)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			h.hub.Publish(streamKey, string(msg))
@@ -56,6 +59,9 @@ func (h *H) ListDeployments(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list deployments")
 		return
+	}
+	if deps == nil {
+		deps = []store.DeploymentRecord{}
 	}
 	sort.Slice(deps, func(i, j int) bool { return deps[i].StartedAt.After(deps[j].StartedAt) })
 	writeJSON(w, http.StatusOK, deps)

@@ -13,13 +13,16 @@ func (h *H) ListDrives(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not scan drives: "+err.Error())
 		return
 	}
+	if drives == nil {
+		drives = []usb.Drive{}
+	}
 	writeJSON(w, http.StatusOK, drives)
 }
 
 // BrowseDrive lists files at the given path within a known mount point.
 // Query params:
-//   - mount: the drive's mount point (e.g. /media/usb0)
-//   - path:  sub-path within the mount point (defaults to mount point root)
+//   - mount: security boundary / base directory (e.g. /media/usb0 or /home/ubuntu)
+//   - path:  sub-path within mount (defaults to mount)
 func (h *H) BrowseDrive(w http.ResponseWriter, r *http.Request) {
 	mount := r.URL.Query().Get("mount")
 	path := r.URL.Query().Get("path")
@@ -36,6 +39,9 @@ func (h *H) BrowseDrive(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if entries == nil {
+		entries = []usb.FileEntry{}
 	}
 	writeJSON(w, http.StatusOK, entries)
 }

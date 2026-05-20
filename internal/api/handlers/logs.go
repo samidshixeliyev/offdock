@@ -9,6 +9,8 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+
+	"offdock/internal/docker"
 )
 
 // ContainerLogs streams container logs via SSE using docker logs --follow.
@@ -73,6 +75,9 @@ func (h *H) ListContainers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "could not list containers: "+err.Error())
 		return
+	}
+	if containers == nil {
+		containers = []docker.ContainerInfo{}
 	}
 	writeJSON(w, http.StatusOK, containers)
 }
