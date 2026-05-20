@@ -111,8 +111,9 @@ func run() error {
 		return fmt.Errorf("static fs: %w", err)
 	}
 	mux := http.NewServeMux()
+	// Only /api/ routes go to the Chi router; everything else (including /setup,
+	// /login, /projects/...) is served as index.html for client-side routing.
 	mux.Handle("/api/", router)
-	mux.Handle("/setup", router)
 	mux.Handle("/", spaHandler(staticFS))
 
 	// 9. HTTP server with graceful shutdown.

@@ -153,9 +153,9 @@ export const api = {
     }),
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   me: () => request<User>('/api/v1/auth/me'),
-  setupStatus: () => request<{ setup_required: boolean }>('/setup'),
+  setupStatus: () => request<{ setup_required: boolean }>('/api/v1/setup'),
   setupCreate: (username: string, password: string) =>
-    request<User>('/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
+    request<User>('/api/v1/setup', { method: 'POST', body: JSON.stringify({ username, password }) }),
 
   // Users
   listUsers: () => request<User[]>('/api/v1/users'),

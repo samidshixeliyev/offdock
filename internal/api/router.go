@@ -47,8 +47,10 @@ func NewRouter(deps Deps) http.Handler {
 	// --- Public routes ---
 	r.Post("/api/v1/auth/login", h.Login)
 	r.Post("/api/v1/auth/logout", h.Logout)
-	r.Get("/setup", h.SetupStatus)
-	r.Post("/setup", h.SetupCreate)
+	// Setup endpoints live under /api/v1 so the /setup path is served
+	// by the SPA handler (index.html), not the API router.
+	r.Get("/api/v1/setup", h.SetupStatus)
+	r.Post("/api/v1/setup", h.SetupCreate)
 
 	// --- Authenticated routes ---
 	r.Group(func(r chi.Router) {
