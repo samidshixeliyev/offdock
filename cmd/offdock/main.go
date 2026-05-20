@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"strings"
 	"net/http"
 	"os"
 	"os/signal"
@@ -145,17 +146,23 @@ func run() error {
 
 // spaHandler serves the React SPA, falling back to index.html for unknown paths
 // so that client-side routing works correctly.
+//
+// fs.FS paths must NOT start with "/" — strip it before stat-ing.
 func spaHandler(fsys fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(fsys))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		f, err := fsys.Open(r.URL.Path)
-		if err != nil {
+		// Normalise to a clean fs.FS-compatible path (no leading slash).
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		if name == "" {
+			name = "."
+		}
+		if _, err := fs.Stat(fsys, name); err != nil {
+			// Path not found in embedded FS → serve index.html for SPA routes.
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = "/"
 			fileServer.ServeHTTP(w, r2)
 			return
 		}
-		f.Close()
 		fileServer.ServeHTTP(w, r)
 	})
 }
