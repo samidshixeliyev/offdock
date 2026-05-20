@@ -106,10 +106,11 @@ func (c *Collection[T]) FindAll() ([]T, error) {
 }
 
 // FindWhere returns all entities for which predicate returns true.
+// Always returns a non-nil slice so JSON encoding produces [] not null.
 func (c *Collection[T]) FindWhere(predicate func(T) bool) ([]T, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	var out []T
+	out := []T{} // never nil
 	for _, v := range c.data {
 		if predicate(v) {
 			out = append(out, v)

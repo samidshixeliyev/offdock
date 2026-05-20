@@ -8,8 +8,9 @@ export default function UsersPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [form, setForm] = useState({ username: '', password: '', role: 'viewer' as User['role'] })
   const [msg, setMsg] = useState('')
+  const [msgType, setMsgType] = useState<'ok' | 'err'>('ok')
 
-  const reload = () => api.listUsers().then(setUsers)
+  const reload = () => api.listUsers().then(d => setUsers(d ?? [])).catch(() => {})
   useEffect(() => { reload() }, [])
 
   const handleCreate = async () => {
@@ -19,19 +20,21 @@ export default function UsersPage() {
       setForm({ username: '', password: '', role: 'viewer' })
       reload()
       setMsg('User created')
+      setMsgType('ok')
     } catch (e: unknown) {
       setMsg('Error: ' + (e instanceof Error ? e.message : 'unknown'))
+      setMsgType('err')
     }
   }
 
   const handleToggleActive = async (u: User) => {
-    await api.updateUser(u.id, { active: !u.active })
+    await api.updateUser(u.id, { active: !u.active }).catch(() => {})
     reload()
   }
 
   const handleDelete = async (u: User) => {
     if (!confirm(`Delete user ${u.username}?`)) return
-    await api.deleteUser(u.id)
+    await api.deleteUser(u.id).catch(() => {})
     reload()
   }
 
@@ -44,7 +47,7 @@ export default function UsersPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-white">Users</h1>
         <div className="flex items-center gap-3">
-          {msg && <span className="text-sm text-gray-400">{msg}</span>}
+          {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-gray-400'}`}>{msg}</span>}
           <button onClick={() => setShowCreate(!showCreate)} className="btn-primary">+ Add User</button>
         </div>
       </div>
@@ -84,16 +87,12 @@ export default function UsersPage() {
                 <td className="px-4 py-2.5 text-gray-300">{u.username}</td>
                 <td className="px-4 py-2.5 text-gray-400 text-xs">{u.role}</td>
                 <td className="px-4 py-2.5">
-                  <span className={u.active ? 'badge-running' : 'badge-stopped'}>
-                    {u.active ? 'active' : 'inactive'}
-                  </span>
+                  <span className={u.active ? 'badge-running' : 'badge-stopped'}>{u.active ? 'active' : 'inactive'}</span>
                 </td>
                 <td className="px-4 py-2.5">
                   {u.id !== me?.id && (
                     <div className="flex gap-2 justify-end">
-                      <button onClick={() => handleToggleActive(u)} className="text-xs text-gray-400 hover:text-white">
-                        {u.active ? 'Deactivate' : 'Activate'}
-                      </button>
+                      <button onClick={() => handleToggleActive(u)} className="text-xs text-gray-400 hover:text-white">{u.active ? 'Deactivate' : 'Activate'}</button>
                       <button onClick={() => handleDelete(u)} className="text-xs text-red-500 hover:text-red-400">Delete</button>
                     </div>
                   )}

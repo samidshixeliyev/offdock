@@ -10,11 +10,12 @@ export default function ComposePage() {
   const [selected, setSelected] = useState<ComposeConfig | null>(null)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState('')
+  const [msgType, setMsgType] = useState<'ok' | 'err'>('ok')
 
   useEffect(() => {
     if (!id) return
-    api.getCompose(id).then(c => { if (c) { setYaml(c.raw_yaml); setSelected(c) } })
-    api.composeHistory(id).then(setHistory)
+    api.getCompose(id).then(c => { if (c) { setYaml(c.raw_yaml); setSelected(c) } }).catch(() => {})
+    api.composeHistory(id).then(d => setHistory(d ?? [])).catch(() => {})
   }, [id])
 
   const save = async () => {
@@ -25,10 +26,12 @@ export default function ComposePage() {
       const cfg = await api.saveCompose(id, yaml)
       setSelected(cfg)
       const hist = await api.composeHistory(id)
-      setHistory(hist)
+      setHistory(hist ?? [])
       setMsg('Saved as version ' + cfg.version)
+      setMsgType('ok')
     } catch (e: unknown) {
       setMsg('Error: ' + (e instanceof Error ? e.message : 'unknown'))
+      setMsgType('err')
     } finally {
       setSaving(false)
     }
@@ -39,7 +42,7 @@ export default function ComposePage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-white">docker-compose.yml</h1>
         <div className="flex items-center gap-3">
-          {msg && <span className="text-sm text-gray-400">{msg}</span>}
+          {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-gray-400'}`}>{msg}</span>}
           <button onClick={save} disabled={saving} className="btn-primary">
             {saving ? 'Saving…' : 'Save Version'}
           </button>
@@ -60,6 +63,7 @@ export default function ComposePage() {
 
         <div>
           <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Version History</h2>
+          {history.length === 0 && <p className="text-xs text-gray-600 px-1">No versions yet</p>}
           <div className="space-y-1.5">
             {history.map(cfg => (
               <button

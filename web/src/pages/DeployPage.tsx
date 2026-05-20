@@ -13,7 +13,7 @@ export default function DeployPage() {
 
   useEffect(() => {
     if (!id) return
-    api.listDeployments(id).then(setDeployments).catch(() => {})
+    api.listDeployments(id).then(d => setDeployments(d ?? [])).catch(() => {})
   }, [id])
 
   useEffect(() => {
@@ -26,13 +26,13 @@ export default function DeployPage() {
     esRef.current = es
     es.onmessage = e => {
       try {
-        const data = JSON.parse(e.data) as Record<string, string>
+        const data = JSON.parse(e.data as string) as Record<string, string>
         if (data.log) setLog(prev => [...prev, data.log])
         if (data.status) {
           setLog(prev => [...prev, `\n✓ Deployment ${data.status}`])
           setDeploying(false)
           es.close()
-          if (id) api.listDeployments(id).then(setDeployments)
+          if (id) api.listDeployments(id).then(d => setDeployments(d ?? []))
         }
         if (data.error) {
           setLog(prev => [...prev, `\n✗ Error: ${data.error}`])
@@ -58,10 +58,7 @@ export default function DeployPage() {
     }
   }
 
-  const statusBadge = (s: string) => ({
-    pending: 'badge-pending', running: 'badge-pending',
-    success: 'badge-running', failed: 'badge-error',
-  }[s] ?? 'badge-stopped')
+  const statusBadge = (s: string) => ({ pending: 'badge-pending', running: 'badge-pending', success: 'badge-running', failed: 'badge-error' } as Record<string, string>)[s] ?? 'badge-stopped'
 
   return (
     <div className="p-6 max-w-5xl">
@@ -72,7 +69,6 @@ export default function DeployPage() {
         </button>
       </div>
 
-      {/* Live terminal */}
       {log.length > 0 && (
         <div className="card mb-6">
           <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Live Output</h2>
@@ -83,7 +79,6 @@ export default function DeployPage() {
         </div>
       )}
 
-      {/* History */}
       <section>
         <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Deployment History</h2>
         {deployments.length === 0 ? (

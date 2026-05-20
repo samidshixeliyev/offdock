@@ -20,22 +20,16 @@ export default function ProjectDashboardPage() {
   useEffect(() => {
     if (!id) return
     api.getProject(id).then(setProject).catch(() => setError('Project not found'))
-    api.listContainers(id).then(setContainers).catch(() => {})
+    api.listContainers(id).then(d => setContainers(d ?? [])).catch(() => {})
   }, [id])
 
   if (error) return <div className="p-6 text-red-400">{error}</div>
   if (!project) return <div className="p-6 text-gray-500">Loading…</div>
 
-  const statusBadge = {
-    running: 'badge-running',
-    stopped: 'badge-stopped',
-    error: 'badge-error',
-    degraded: 'badge-degraded',
-  }[project.status] ?? 'badge-stopped'
+  const statusBadge = ({ running: 'badge-running', stopped: 'badge-stopped', error: 'badge-error', degraded: 'badge-degraded' } as Record<string, string>)[project.status] ?? 'badge-stopped'
 
   return (
     <div className="p-6 max-w-5xl">
-      {/* Header */}
       <div className="flex items-center gap-4 mb-6">
         <div>
           <div className="flex items-center gap-3">
@@ -49,16 +43,12 @@ export default function ProjectDashboardPage() {
         </div>
       </div>
 
-      {/* Quick nav */}
       <div className="flex gap-2 mb-6 flex-wrap">
         {projectLinks.map(({ to, label }) => (
-          <Link key={to} to={`/projects/${id}/${to}`} className="btn-ghost border border-gray-700">
-            {label}
-          </Link>
+          <Link key={to} to={`/projects/${id}/${to}`} className="btn-ghost border border-gray-700">{label}</Link>
         ))}
       </div>
 
-      {/* Containers */}
       <section>
         <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Containers</h2>
         {containers.length === 0 ? (
@@ -81,16 +71,11 @@ export default function ProjectDashboardPage() {
                     <td className="px-4 py-2.5 font-mono text-xs text-gray-300">{c.Names}</td>
                     <td className="px-4 py-2.5 text-gray-400 text-xs">{c.Image}</td>
                     <td className="px-4 py-2.5">
-                      <span className={clsx(
-                        'text-xs px-2 py-0.5 rounded-full',
-                        c.State === 'running' ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-gray-400'
-                      )}>{c.Status}</span>
+                      <span className={clsx('text-xs px-2 py-0.5 rounded-full', c.State === 'running' ? 'bg-green-900 text-green-300' : 'bg-gray-800 text-gray-400')}>{c.Status}</span>
                     </td>
                     <td className="px-4 py-2.5 text-xs text-gray-500 font-mono">{c.Ports}</td>
                     <td className="px-4 py-2.5">
-                      <Link to={`/projects/${id}/logs?container=${c.Names}`} className="text-xs text-blue-500 hover:text-blue-400">
-                        Logs →
-                      </Link>
+                      <Link to={`/projects/${id}/logs?container=${c.Names}`} className="text-xs text-blue-500 hover:text-blue-400">Logs →</Link>
                     </td>
                   </tr>
                 ))}

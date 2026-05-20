@@ -17,21 +17,13 @@ function StatGauge({ label, value, total, unit }: { label: string; value: number
           style={{ width: `${pct}%` }}
         />
       </div>
-      <p className="text-xs text-gray-500 mt-1.5">
-        {(value / 1e9).toFixed(1)} / {(total / 1e9).toFixed(1)} {unit}
-      </p>
+      <p className="text-xs text-gray-500 mt-1.5">{(value / 1e9).toFixed(1)} / {(total / 1e9).toFixed(1)} {unit}</p>
     </div>
   )
 }
 
 function ProjectCard({ project }: { project: Project }) {
-  const badgeClass = {
-    running: 'badge-running',
-    stopped: 'badge-stopped',
-    error: 'badge-error',
-    degraded: 'badge-degraded',
-  }[project.status] ?? 'badge-stopped'
-
+  const badgeClass = ({ running: 'badge-running', stopped: 'badge-stopped', error: 'badge-error', degraded: 'badge-degraded' } as Record<string, string>)[project.status] ?? 'badge-stopped'
   return (
     <Link to={`/projects/${project.id}`} className="card hover:border-gray-700 transition-colors block">
       <div className="flex items-start justify-between gap-3">
@@ -50,12 +42,10 @@ export default function DashboardPage() {
   const [stats, setStats] = useState<SystemStats | null>(null)
 
   useEffect(() => {
-    api.listProjects().then(setProjects).catch(console.error)
-
+    api.listProjects().then(d => setProjects(d ?? [])).catch(console.error)
     const es = new EventSource('/api/v1/system/stats')
-    es.onmessage = e => {
-      try { setStats(JSON.parse(e.data)) } catch {}
-    }
+    es.onmessage = e => { try { setStats(JSON.parse(e.data as string)) } catch {} }
+    es.onerror = () => es.close()
     return () => es.close()
   }, [])
 
@@ -66,7 +56,6 @@ export default function DashboardPage() {
         <Link to="/projects/new" className="btn-primary">+ New Project</Link>
       </div>
 
-      {/* System stats */}
       {stats && (
         <section className="mb-8">
           <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">System Resources</h2>
@@ -77,24 +66,20 @@ export default function DashboardPage() {
                 <span className="text-xs text-gray-500">{stats.cpu_percent.toFixed(1)}%</span>
               </div>
               <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                <div
-                  className={clsx('h-full rounded-full', stats.cpu_percent > 85 ? 'bg-red-500' : 'bg-blue-500')}
-                  style={{ width: `${stats.cpu_percent}%` }}
-                />
+                <div className={clsx('h-full rounded-full', stats.cpu_percent > 85 ? 'bg-red-500' : 'bg-blue-500')} style={{ width: `${stats.cpu_percent}%` }} />
               </div>
             </div>
             <StatGauge label="RAM" value={stats.ram_used_bytes} total={stats.ram_total_bytes} unit="GB" />
             <StatGauge label="Disk" value={stats.disk_used_bytes} total={stats.disk_total_bytes} unit="GB" />
             <div className="card">
               <span className="text-sm text-gray-400">Containers</span>
-              <p className="text-2xl font-bold text-white mt-1">{stats.containers?.length ?? 0}</p>
+              <p className="text-2xl font-bold text-white mt-1">{(stats.containers ?? []).length}</p>
               <p className="text-xs text-gray-500">running</p>
             </div>
           </div>
         </section>
       )}
 
-      {/* Projects */}
       <section>
         <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Projects</h2>
         {projects.length === 0 ? (

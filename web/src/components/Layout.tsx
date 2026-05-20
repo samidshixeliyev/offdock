@@ -5,8 +5,9 @@ import clsx from 'clsx'
 const nav = [
   { to: '/', label: 'Dashboard', icon: '⬡' },
   { to: '/images', label: 'Images', icon: '📦' },
-  { to: '/usb', label: 'USB Import', icon: '💾' },
+  { to: '/usb', label: 'Import', icon: '💾' },
   { to: '/system', label: 'System', icon: '📊' },
+  { to: '/terminal', label: 'Terminal', icon: '⌨️' },
   { to: '/users', label: 'Users', icon: '👥' },
 ]
 

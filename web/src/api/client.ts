@@ -239,6 +239,16 @@ export const api = {
   listDrives: () => request<UsbDrive[]>('/api/v1/usb/drives'),
   browseDrive: (mount: string, path?: string) =>
     request<FileEntry[]>(`/api/v1/usb/browse?mount=${encodeURIComponent(mount)}${path ? `&path=${encodeURIComponent(path)}` : ''}`),
+
+  // File upload (multipart)
+  uploadFile: (file: File): Promise<{ path: string; name: string; size: number }> => {
+    const form = new FormData()
+    form.append('file', file)
+    return fetch('/api/v1/upload', { method: 'POST', body: form }).then(async res => {
+      if (!res.ok) { const b = await res.json().catch(() => ({ error: res.statusText })); throw new ApiError(res.status, b.error) }
+      return res.json()
+    })
+  },
 }
 
 export { ApiError }

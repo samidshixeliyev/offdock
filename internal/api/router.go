@@ -108,6 +108,12 @@ func NewRouter(deps Deps) http.Handler {
 
 		// System stats (SSE)
 		r.Get("/api/v1/system/stats", h.SystemStats)
+
+		// Terminal — admin+ only
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/terminal/exec", h.ExecCommand)
+
+		// File upload
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/upload", h.UploadFile)
 	})
 
 	return r
