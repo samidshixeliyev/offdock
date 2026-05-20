@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\samid.sixaliyev\\\\Desktop\\\\workspace\\\\ao-deploy\")",
+      "Bash(Select-Object Name)",
+      "PowerShell(Get-Item *)",
+      "Bash(ssh *)",
+      "Bash(rsync -az --exclude=.claude --exclude=web/node_modules --exclude=web/dist --exclude=*.pem -e 'ssh -i '\\\\''__TRACKED_VAR__/Downloads/Security/aossh.pem'\\\\''' . ubuntu@16.16.71.7:/home/ubuntu/offdock-build/)",
+      "Bash(tar --exclude='.claude' --exclude='web/node_modules' --exclude='web/dist' -czf /tmp/offdock-src.tar.gz .)",
+      "Bash(scp -i __TRACKED_VAR__/Downloads/Security/aossh.pem /tmp/offdock-src.tar.gz ubuntu@16.16.71.7:/home/ubuntu/offdock-build.tar.gz)",
+      "PowerShell(New-Item *)",
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(git config *)",
+      "Bash(git add *)"
+    ]
+  }
+}

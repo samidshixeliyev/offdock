@@ -1,0 +1,25 @@
+# Build output
+offdock
+offdock.exe
+web/dist/
+!web/dist/index.html
+
+# Go
+vendor/
+*.test
+
+# Node
+web/node_modules/
+
+# Runtime data
+/var/offdock/
+
+# Secrets
+*.pem
+.env
+/etc/offdock/
+
+# IDE
+.vscode/
+.idea/
+*.swp
