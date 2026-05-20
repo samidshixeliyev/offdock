@@ -22,7 +22,8 @@
       "Bash(git commit -m 'fix: null crash, deploy context cancel, add disk-browse mode *)",
       "Bash(git commit -m 'fix: null .map\\(\\) crash across all pages + terminal + file upload *)",
       "Bash(git commit -m 'feat: 5 GB upload support + real terminal with autocomplete/cwd *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(sudo cat /var/offdock/data/users.db)"
     ]
   }
 }

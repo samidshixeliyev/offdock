@@ -3,21 +3,23 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"os/exec"
 	"strings"
 	"time"
 )
 
+// pwdSentinel marks the line that carries the new working directory.
+// Must be safe in all shell contexts (no spaces, no special chars).
+const pwdSentinel = "OFFDOCK_CWD:"
+
 // ExecCommand runs a shell command on the host and returns stdout/stderr/exit_code/cwd.
 // Only admin+ roles may call this (enforced in the router).
-//
-// Commands run via bash -c so pipes, redirects, and multi-command chains work.
-// cwd is tracked by wrapping the command: run it, then echo the new pwd.
 func (h *H) ExecCommand(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Command string `json:"command"`
-		Cwd     string `json:"cwd"` // optional: carry working directory across calls
+		Cwd     string `json:"cwd"`
 	}
 	if err := decodeJSON(r, &req); err != nil || strings.TrimSpace(req.Command) == "" {
 		writeError(w, http.StatusBadRequest, "command is required")
@@ -27,19 +29,26 @@ func (h *H) ExecCommand(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	// cd into the client's cwd before running the command, then print new pwd.
 	startDir := req.Cwd
 	if startDir == "" {
 		startDir = "/root"
 	}
 
-	// Wrap: cd to last dir, run the user command, print new pwd to a sentinel line.
-	const sentinel = "\x00__PWD__\x00"
-	wrapped := "cd " + shellQuote(startDir) + " 2>/dev/null; " +
-		req.Command + "; " +
-		"echo '" + sentinel + "'\"$PWD\""
+	// Wrap the user command so we can capture the final working directory.
+	// The sentinel line is printed AFTER the command so we can strip it from stdout.
+	// We preserve the command's original exit code via __ec.
+	script := fmt.Sprintf(
+		`cd %s 2>/dev/null
+%s
+__ec=$?
+printf '\n%s%%s\n' "$PWD"
+exit $__ec`,
+		shellQuote(startDir),
+		req.Command,
+		pwdSentinel,
+	)
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", wrapped)
+	cmd := exec.CommandContext(ctx, "bash", "-c", script)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -53,12 +62,15 @@ func (h *H) ExecCommand(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Extract new cwd from sentinel line at end of stdout.
+	// Strip the sentinel line from stdout and extract the cwd.
 	newCwd := startDir
 	outStr := stdout.String()
-	if idx := strings.LastIndex(outStr, sentinel); idx >= 0 {
-		newCwd = strings.TrimSpace(outStr[idx+len(sentinel):])
-		outStr = outStr[:idx]
+
+	if idx := strings.LastIndex(outStr, "\n"+pwdSentinel); idx >= 0 {
+		sentinelLine := outStr[idx+1:]                        // "OFFDOCK_CWD:/some/path\n"
+		rest := strings.TrimPrefix(sentinelLine, pwdSentinel) // "/some/path\n"
+		newCwd = strings.TrimSpace(rest)
+		outStr = outStr[:idx] // everything before the sentinel
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -69,7 +81,6 @@ func (h *H) ExecCommand(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// shellQuote single-quotes a path so it is safe to embed in a shell command.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

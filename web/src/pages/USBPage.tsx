@@ -85,23 +85,34 @@ export default function USBPage() {
     setUploadLoaded(0)
     setUploadTotal(file.size)
     setUploadedPath('')
-    notify('Starting upload of ' + humanBytes(file.size) + '...')
+    notify('')
+
+    let uploadedFilePath = ''
     try {
       const result = await api.uploadFile(file, (loaded, total, pct) => {
         setUploadLoaded(loaded)
         setUploadTotal(total)
         setUploadPct(pct)
       })
+      uploadedFilePath = result.path
       setUploadedPath(result.path)
       setUploadPct(100)
-      notify('Uploaded: ' + result.path + ' (' + humanBytes(result.size) + ')')
+
       if (file.name.endsWith('.tar')) {
-        notify('Loading Docker image from ' + result.path + '...')
+        notify('Upload complete — loading Docker image...')
         const img = await api.loadImage({ tar_file_path: result.path })
         notify('Image loaded: ' + img.image_name + ':' + img.image_tag)
+      } else {
+        notify('Upload complete: ' + result.path + ' (' + humanBytes(result.size) + ')')
       }
     } catch (e) {
-      notify('Upload failed: ' + (e instanceof Error ? e.message : String(e)), 'err')
+      // If upload succeeded but docker load failed, still show path
+      if (uploadedFilePath) {
+        notify('Docker load failed — file saved at ' + uploadedFilePath + '. Try "Load as Docker Image" below.', 'err')
+        setUploadedPath(uploadedFilePath)
+      } else {
+        notify('Upload failed: ' + (e instanceof Error ? e.message : String(e)), 'err')
+      }
     } finally {
       setUploading(false)
     }
@@ -188,74 +199,85 @@ export default function USBPage() {
 
       {/* Upload mode */}
       {mode === 'upload' && (
-        <section className="mb-6">
-          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">
+        <section className="mb-6 space-y-4">
+          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">
             Upload from your computer
-            <span className="ml-2 text-gray-600 normal-case font-normal">max 5 GB</span>
+            <span className="ml-2 text-gray-600 normal-case font-normal">· max 5 GB</span>
           </h2>
 
-          {/* Drop zone */}
-          <div
-            className={`card border-2 border-dashed text-center py-10 transition-colors ${uploading ? 'border-blue-600 bg-blue-900/10 cursor-wait' : dragOver ? 'border-blue-500 bg-blue-900/10 cursor-copy' : 'border-gray-700 hover:border-gray-500 cursor-pointer'}`}
-            onDragOver={e => { e.preventDefault(); if (!uploading) setDragOver(true) }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={e => { e.preventDefault(); setDragOver(false); if (!uploading) { const f = e.dataTransfer.files[0]; if (f) handleUpload(f) } }}
-            onClick={() => { if (!uploading) fileRef.current?.click() }}
-          >
-            {!uploading && !uploadedPath && (
-              <>
-                <p className="text-3xl mb-3">📂</p>
-                <p className="text-gray-300 text-sm font-medium">Drag &amp; drop a file here</p>
-                <p className="text-gray-500 text-xs mt-1">or click to select &nbsp;·&nbsp; .tar .yml .yaml .env .pem .crt .key</p>
-              </>
-            )}
-
-            {/* Progress bar */}
-            {uploading && (
-              <div className="px-6">
-                <p className="text-blue-300 text-sm font-medium mb-3">
-                  Uploading... {uploadPct}%
-                </p>
-                <div className="h-2 bg-gray-800 rounded-full overflow-hidden mb-2">
-                  <div
-                    className="h-full bg-blue-500 rounded-full transition-all duration-300"
-                    style={{ width: `${uploadPct}%` }}
-                  />
-                </div>
-                <p className="text-gray-500 text-xs">
-                  {humanBytes(uploadLoaded)} / {humanBytes(uploadTotal)}
-                </p>
+          {/* ── Progress panel (visible while uploading) ── */}
+          {uploading && (
+            <div className="card border border-blue-800 bg-blue-900/10 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-blue-300 text-sm font-medium">Uploading…</span>
+                <span className="text-blue-400 text-sm font-mono font-bold">{uploadPct}%</span>
               </div>
-            )}
+              {/* thick progress bar */}
+              <div className="h-3 bg-gray-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 rounded-full transition-all duration-200"
+                  style={{ width: `${uploadPct}%` }}
+                />
+              </div>
+              <div className="flex justify-between text-xs text-gray-500 font-mono">
+                <span>{humanBytes(uploadLoaded)}</span>
+                <span>{humanBytes(uploadTotal)}</span>
+              </div>
+            </div>
+          )}
 
-            {/* Done state */}
-            {uploadedPath && !uploading && (
-              <div>
-                <p className="text-2xl mb-2">✅</p>
-                <p className="text-green-400 text-sm font-medium">Upload complete</p>
-                <p className="text-gray-500 text-xs mt-1 font-mono">{uploadedPath}</p>
+          {/* ── Success / result panel ── */}
+          {uploadedPath && !uploading && (
+            <div className={`card border ${msgType === 'err' ? 'border-red-800 bg-red-900/10' : 'border-green-800 bg-green-900/10'}`}>
+              <div className="flex items-start gap-3">
+                <span className="text-2xl">{msgType === 'err' ? '❌' : '✅'}</span>
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-medium ${msgType === 'err' ? 'text-red-300' : 'text-green-300'}`}>
+                    {msgType === 'err' ? 'Upload issue' : 'Upload complete'}
+                  </p>
+                  <p className="text-xs text-gray-400 font-mono mt-1 truncate">{uploadedPath}</p>
+                  {msg && <p className={`text-xs mt-1 ${msgType === 'err' ? 'text-red-400' : 'text-gray-400'}`}>{msg}</p>}
+                </div>
+              </div>
+              <div className="flex gap-2 mt-3">
                 {uploadedPath.endsWith('.tar') && (
                   <button
-                    className="btn-primary text-xs mt-3"
-                    onClick={e => {
-                      e.stopPropagation()
+                    className="btn-primary text-xs"
+                    onClick={() => {
+                      notify('Loading Docker image...')
                       api.loadImage({ tar_file_path: uploadedPath })
                         .then(img => notify('Loaded: ' + img.image_name + ':' + img.image_tag))
-                        .catch(err => notify(String(err), 'err'))
+                        .catch(e => notify('Load failed: ' + (e instanceof Error ? e.message : String(e)), 'err'))
                     }}
                   >
                     Load as Docker Image
                   </button>
                 )}
                 <button
-                  className="btn-ghost text-xs mt-2 block mx-auto"
-                  onClick={e => { e.stopPropagation(); setUploadedPath(''); setUploadPct(0) }}
+                  className="btn-ghost text-xs"
+                  onClick={() => { setUploadedPath(''); setUploadPct(0); notify('') }}
                 >
-                  Upload another
+                  Upload another file
                 </button>
               </div>
-            )}
-          </div>
+            </div>
+          )}
+
+          {/* ── Drop zone (only shown when not uploading/done) ── */}
+          {!uploading && !uploadedPath && (
+            <div
+              className={`card border-2 border-dashed text-center py-12 transition-colors cursor-pointer ${dragOver ? 'border-blue-500 bg-blue-900/10' : 'border-gray-700 hover:border-gray-600'}`}
+              onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handleUpload(f) }}
+              onClick={() => fileRef.current?.click()}
+            >
+              <p className="text-4xl mb-3">📂</p>
+              <p className="text-gray-300 text-sm font-medium">Drag &amp; drop a file here</p>
+              <p className="text-gray-500 text-xs mt-1">or click to select</p>
+              <p className="text-gray-600 text-xs mt-2">.tar .yml .yaml .env .pem .crt .key · max 5 GB</p>
+            </div>
+          )}
 
           <input
             ref={fileRef}
