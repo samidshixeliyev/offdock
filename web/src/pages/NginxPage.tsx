@@ -11,6 +11,9 @@ const defaultForm: Form = {
   ssl_key_path: '',
   upstream_host: 'localhost',
   upstream_port: 3000,
+  client_max_body_size: '1m',
+  proxy_read_timeout: 60,
+  gzip_enabled: false,
   custom_directives: '',
 }
 
