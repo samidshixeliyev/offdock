@@ -6,6 +6,7 @@ const nav = [
   { to: '/', label: 'Dashboard', icon: '⬡' },
   { to: '/images', label: 'Images', icon: '📦' },
   { to: '/usb', label: 'Import', icon: '💾' },
+  { to: '/proxy', label: 'Reverse Proxy', icon: '🔀' },
   { to: '/system', label: 'System', icon: '📊' },
   { to: '/terminal', label: 'Terminal', icon: '⌨️' },
   { to: '/users', label: 'Users', icon: '👥' },

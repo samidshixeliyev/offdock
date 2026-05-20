@@ -115,6 +115,9 @@ func NewRouter(deps Deps) http.Handler {
 		// System stats (SSE)
 		r.Get("/api/v1/system/stats", h.SystemStats)
 
+		// Reverse proxy status probe (server-side to avoid CORS)
+		r.Get("/api/v1/proxy/status", h.ProxyStatus)
+
 		// Terminal — admin+ only
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/terminal/exec", h.ExecCommand)
 

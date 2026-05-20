@@ -261,6 +261,10 @@ export const api = {
   readFile: (mount: string, path: string) =>
     request<{ content: string }>(`/api/v1/usb/file?mount=${encodeURIComponent(mount)}&path=${encodeURIComponent(path)}`),
 
+  // Proxy status probe (server-side HTTP check to avoid CORS)
+  proxyStatus: (url: string) =>
+    request<{ accessible: boolean; status?: number }>(`/api/v1/proxy/status?url=${encodeURIComponent(url)}`),
+
   // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
   uploadFile: (
     file: File,
