@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +16,53 @@ import (
 	nginxpkg "offdock/internal/nginx"
 	"offdock/internal/store"
 )
+
+// ListAllNginx returns every project paired with its active nginx config (null if unconfigured).
+func (h *H) ListAllNginx(w http.ResponseWriter, r *http.Request) {
+	projects, err := h.db.Projects.FindAll()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list projects")
+		return
+	}
+
+	type entry struct {
+		Project store.Project      `json:"project"`
+		Config  *store.NginxConfig `json:"config"`
+	}
+
+	result := make([]entry, 0, len(projects))
+	for _, p := range projects {
+		cfgs, _ := h.db.Nginx.FindWhere(func(n store.NginxConfig) bool {
+			return n.ProjectID == p.ID && n.Active
+		})
+		var cfg *store.NginxConfig
+		if len(cfgs) > 0 {
+			c := cfgs[0]
+			cfg = &c
+		}
+		result = append(result, entry{Project: p, Config: cfg})
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// RemoveNginx deactivates the nginx config for a project and removes its file from the host.
+func (h *H) RemoveNginx(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	project, err := h.db.Projects.FindByID(projectID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	cfgs, _ := h.db.Nginx.FindWhere(func(n store.NginxConfig) bool {
+		return n.ProjectID == projectID && n.Active
+	})
+	for _, cfg := range cfgs {
+		cfg.Active = false
+		h.db.Nginx.Save(cfg) //nolint:errcheck
+	}
+	nginxpkg.Remove(project.Name) //nolint:errcheck
+	w.WriteHeader(http.StatusNoContent)
+}
 
 // GetNginx returns the active nginx config for a project.
 func (h *H) GetNginx(w http.ResponseWriter, r *http.Request) {
@@ -95,9 +143,15 @@ func (h *H) ApplyNginx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Mark config as applied.
+	now := timeNow()
+	cfg := cfgs[0]
+	cfg.Applied = true
+	cfg.AppliedAt = &now
+	h.db.Nginx.Save(cfg) //nolint:errcheck
+
 	writeJSON(w, http.StatusOK, map[string]string{
 		"config_path":       result.ConfigPath,
-		"symlink_path":      result.SymlinkPath,
 		"nginx_test_output": result.NginxTestOutput,
 	})
 }
@@ -155,6 +209,63 @@ func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
 		"domain":    domain,
 		"days":      strconv.Itoa(days),
 	})
+}
+
+// NginxContainerStatus returns the live status of the offdock-nginx Docker container.
+func (h *H) NginxContainerStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, nginxpkg.GetContainerStatus())
+}
+
+// NginxInstallSecret reads the one-time install secret nginx-ui generates on first run.
+func (h *H) NginxInstallSecret(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile(filepath.Join(nginxpkg.NginxUIDataDir, ".install_secret"))
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"secret": ""})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"secret": strings.TrimSpace(string(data))})
+}
+
+// NginxUIURL returns the URL at which the nginx-ui web interface is reachable.
+// The hostname is derived from the incoming request so it works regardless of
+// the host IP or DNS name used to reach OffDock.
+func (h *H) NginxUIURL(w http.ResponseWriter, r *http.Request) {
+	host := r.Host
+	if idx := strings.Index(host, ":"); idx != -1 {
+		host = host[:idx]
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"url":  fmt.Sprintf("http://%s:%d", host, nginxpkg.UIPort),
+		"port": nginxpkg.UIPort,
+	})
+}
+
+// NginxContainerStart creates (if needed) and starts the offdock-nginx container.
+func (h *H) NginxContainerStart(w http.ResponseWriter, r *http.Request) {
+	if err := nginxpkg.StartNginxContainer(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
+}
+
+// NginxContainerStop stops the offdock-nginx container.
+func (h *H) NginxContainerStop(w http.ResponseWriter, r *http.Request) {
+	if err := nginxpkg.StopNginxContainer(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+}
+
+// NginxContainerReload sends nginx -s reload inside the running container.
+func (h *H) NginxContainerReload(w http.ResponseWriter, r *http.Request) {
+	out, err := nginxpkg.ReloadNginxContainer()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reload failed: "+out)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded", "output": out})
 }
 
 // PreviewNginx returns the generated nginx config text without writing it to disk.

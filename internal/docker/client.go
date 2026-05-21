@@ -121,23 +121,21 @@ func (c *Client) PS(ctx context.Context, project string) ([]ContainerInfo, error
 }
 
 // HealthStatus returns the health/running status of a container.
+// For containers with a HEALTHCHECK it returns "healthy"/"unhealthy"/"starting".
+// For containers without one it returns the raw State.Status ("running", "exited", …).
 func (c *Client) HealthStatus(ctx context.Context, containerName string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 
-	out, err := run(ctx, "inspect", "--format", "{{.State.Health.Status}}", containerName)
+	// Use a conditional template so nil Health doesn't cause an error.
+	out, err := run(ctx, "inspect",
+		"--format", `{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}`,
+		containerName,
+	)
 	if err != nil {
 		return "", err
 	}
-	status := strings.TrimSpace(out)
-	if status == "" || status == "<no value>" {
-		stateOut, err := run(ctx, "inspect", "--format", "{{.State.Status}}", containerName)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(stateOut), nil
-	}
-	return status, nil
+	return strings.TrimSpace(out), nil
 }
 
 // Logs returns a streaming docker logs command (caller must start and manage it).
@@ -214,7 +212,8 @@ func (c *Client) ComposeUp(ctx context.Context, project, composePath string) (st
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	return out.String(), cmd.Run()
+	err := cmd.Run()
+	return out.String(), err
 }
 
 // ComposeDown stops and removes containers for a project.
@@ -223,7 +222,8 @@ func (c *Client) ComposeDown(ctx context.Context, project, composePath string) (
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
-	return out.String(), cmd.Run()
+	err := cmd.Run()
+	return out.String(), err
 }
 
 // ComposePS returns container info for a specific compose project.

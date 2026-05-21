@@ -1,4 +1,4 @@
-// Package offdock exports the compiled React frontend for embedding into the binary.
+// Package offdock exports embedded assets for the binary.
 package offdock
 
 import "embed"

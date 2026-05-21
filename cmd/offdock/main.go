@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"strings"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"offdock/internal/crypto"
 	"offdock/internal/deploy"
 	"offdock/internal/docker"
+	nginxpkg "offdock/internal/nginx"
 	"offdock/internal/store"
 	"offdock/internal/system"
 )
@@ -93,7 +95,13 @@ func run() error {
 	statsCollector := system.New(dockerClient, cfg.DataDir)
 	hub := sse.New()
 
-	// 7. Build router.
+	// 7. Mark any deployments stuck in "running" state as failed (crash recovery).
+	markStuckDeployments(db)
+
+	// 8. Bootstrap nginx: load bundled image → start container → apply project configs.
+	go bootstrapNginx(db)
+
+	// 8. Build router.
 	router := api.NewRouter(api.Deps{
 		DB:          db,
 		Auth:        authSvc,
@@ -105,7 +113,7 @@ func run() error {
 		ProjectsDir: projectsDir,
 	})
 
-	// 8. Serve embedded React frontend for all non-API routes.
+	// 9. Serve embedded React frontend for all non-API routes.
 	staticFS, err := fs.Sub(offdock.Static, "web/dist")
 	if err != nil {
 		return fmt.Errorf("static fs: %w", err)
@@ -116,7 +124,7 @@ func run() error {
 	mux.Handle("/api/", router)
 	mux.Handle("/", spaHandler(staticFS))
 
-	// 9. HTTP server with graceful shutdown.
+	// 10. HTTP server with graceful shutdown.
 	srv := &http.Server{
 		Addr: fmt.Sprintf("0.0.0.0:%d", cfg.Port),
 		Handler: mux,
@@ -145,6 +153,86 @@ func run() error {
 		defer cancel()
 		return srv.Shutdown(ctx)
 	}
+}
+
+// markStuckDeployments finds deployments left in "running" state from a previous
+// process and marks them failed so new deploys are not blocked.
+func markStuckDeployments(db *store.DB) {
+	all, err := db.Deployments.FindWhere(func(d store.DeploymentRecord) bool {
+		return d.Status == store.DeployStatusRunning
+	})
+	if err != nil || len(all) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	for _, d := range all {
+		d.Status = store.DeployStatusFailed
+		d.FinishedAt = &now
+		d.LogText += "\nFAILED: process restarted — deployment interrupted"
+		db.Deployments.Save(d) //nolint:errcheck
+		slog.Warn("startup: marked stuck deployment as failed", "id", d.ID, "project", d.ProjectID)
+	}
+}
+
+// bootstrapNginx runs at startup in a goroutine.
+// It starts the offdock-nginx container (nginx-ui) if the image is already present
+// and the container is not yet running. If the image is absent the user must
+// import uozi-lab/nginx-ui:latest via the Import page first.
+func bootstrapNginx(db *store.DB) {
+	slog.Info("nginx bootstrap: starting")
+
+	// ── Step 0: ensure Docker networks exist ──────────────────────────────────
+	if err := nginxpkg.EnsureNetworks(); err != nil {
+		slog.Warn("nginx bootstrap: could not create networks", "err", err)
+	} else {
+		slog.Info("nginx bootstrap: networks ready")
+	}
+
+	// ── Step 1: check that the nginx-ui image is present ──────────────────────
+	imgCtx, imgCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	imgErr := exec.CommandContext(imgCtx, "docker", "image", "inspect", nginxpkg.ContainerImage).Run()
+	imgCancel()
+
+	if imgErr != nil {
+		slog.Info("nginx bootstrap: image not found — import uozi-lab/nginx-ui:latest via the Import page")
+		return
+	}
+
+	// ── Step 2: start offdock-nginx if not running ────────────────────────────
+	status := nginxpkg.GetContainerStatus()
+	if status.Running {
+		slog.Info("nginx bootstrap: container already running")
+	} else {
+		slog.Info("nginx bootstrap: starting offdock-nginx container")
+		if err := nginxpkg.StartNginxContainer(); err != nil {
+			slog.Warn("nginx bootstrap: container start failed", "err", err)
+		} else {
+			slog.Info("nginx bootstrap: container started")
+		}
+	}
+
+	// ── Step 3: re-apply all active project configs ────────────────────────────
+	projects, err := db.Projects.FindAll()
+	if err != nil {
+		slog.Warn("nginx bootstrap: could not list projects", "err", err)
+		return
+	}
+	applied := 0
+	for _, project := range projects {
+		cfgs, err := db.Nginx.FindWhere(func(n store.NginxConfig) bool {
+			return n.ProjectID == project.ID && n.Active
+		})
+		if err != nil || len(cfgs) == 0 {
+			continue
+		}
+		if _, err := nginxpkg.Apply(cfgs[0], project.Name); err != nil {
+			slog.Warn("nginx bootstrap: apply failed", "project", project.Name, "err", err)
+		} else {
+			applied++
+			slog.Info("nginx bootstrap: applied", "project", project.Name, "domain", cfgs[0].Domain)
+		}
+	}
+	slog.Info("nginx bootstrap: complete", "configs_applied", applied)
 }
 
 // spaHandler serves the React SPA, falling back to index.html for unknown paths

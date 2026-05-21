@@ -19,8 +19,12 @@ type Stats struct {
 	CPU        float64               `json:"cpu_percent"`
 	RAMTotal   uint64                `json:"ram_total_bytes"`
 	RAMUsed    uint64                `json:"ram_used_bytes"`
+	RAMFree    uint64                `json:"ram_free_bytes"`
+	RAMCached  uint64                `json:"ram_cached_bytes"`
 	DiskTotal  uint64                `json:"disk_total_bytes"`
 	DiskUsed   uint64                `json:"disk_used_bytes"`
+	LoadAvg    [3]float64            `json:"load_avg"`    // 1m, 5m, 15m
+	UptimeSecs float64               `json:"uptime_secs"`
 	Containers []docker.ContainerStats `json:"containers"`
 	Timestamp  time.Time             `json:"timestamp"`
 }
@@ -43,7 +47,7 @@ func (c *Collector) Collect() (*Stats, error) {
 		return nil, fmt.Errorf("cpu: %w", err)
 	}
 
-	ramTotal, ramUsed, err := ramBytes()
+	ramTotal, ramUsed, ramFree, ramCached, err := ramBytes()
 	if err != nil {
 		return nil, fmt.Errorf("ram: %w", err)
 	}
@@ -53,6 +57,9 @@ func (c *Collector) Collect() (*Stats, error) {
 		return nil, fmt.Errorf("disk: %w", err)
 	}
 
+	load, _ := loadAvg()
+	uptime, _ := uptimeSecs()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	containers, _ := c.docker.Stats(ctx)
@@ -61,8 +68,12 @@ func (c *Collector) Collect() (*Stats, error) {
 		CPU:        cpu,
 		RAMTotal:   ramTotal,
 		RAMUsed:    ramUsed,
+		RAMFree:    ramFree,
+		RAMCached:  ramCached,
 		DiskTotal:  diskTotal,
 		DiskUsed:   diskUsed,
+		LoadAvg:    load,
+		UptimeSecs: uptime,
 		Containers: containers,
 		Timestamp:  time.Now().UTC(),
 	}, nil
@@ -118,11 +129,11 @@ func readProcStat() (cpuStat, error) {
 	return cpuStat{}, fmt.Errorf("cpu line not found in /proc/stat")
 }
 
-// ramBytes reads MemTotal and MemAvailable from /proc/meminfo.
-func ramBytes() (total, used uint64, err error) {
+// ramBytes reads MemTotal, MemAvailable, MemFree, Cached from /proc/meminfo.
+func ramBytes() (total, used, free, cached uint64, err error) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 	defer f.Close()
 
@@ -140,7 +151,36 @@ func ramBytes() (total, used uint64, err error) {
 
 	totalMem := kv["MemTotal"]
 	avail := kv["MemAvailable"]
-	return totalMem, totalMem - avail, nil
+	freeMem := kv["MemFree"]
+	cachedMem := kv["Cached"] + kv["Buffers"]
+	return totalMem, totalMem - avail, freeMem, cachedMem, nil
+}
+
+// loadAvg reads /proc/loadavg and returns the 1m, 5m, 15m load averages.
+func loadAvg() ([3]float64, error) {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return [3]float64{}, err
+	}
+	fields := strings.Fields(string(data))
+	var avg [3]float64
+	for i := 0; i < 3 && i < len(fields); i++ {
+		avg[i], _ = strconv.ParseFloat(fields[i], 64)
+	}
+	return avg, nil
+}
+
+// uptimeSecs reads /proc/uptime and returns seconds since boot.
+func uptimeSecs() (float64, error) {
+	data, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) == 0 {
+		return 0, fmt.Errorf("empty /proc/uptime")
+	}
+	return strconv.ParseFloat(fields[0], 64)
 }
 
 // diskBytes uses syscall.Statfs on the given path.

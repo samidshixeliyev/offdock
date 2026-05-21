@@ -21,6 +21,7 @@ type templateData struct {
 var httpTmpl = template.Must(template.New("http").Parse(`server {
     listen 80;
     server_name {{ .Domain }};
+    server_tokens off;
     client_max_body_size {{ .MaxBodySize }};
 {{ if .GzipEnabled }}
     gzip on;
@@ -49,6 +50,7 @@ var httpTmpl = template.Must(template.New("http").Parse(`server {
 var httpsTmpl = template.Must(template.New("https").Parse(`server {
     listen 80;
     server_name {{ .Domain }};
+    server_tokens off;
     return 301 https://$host$request_uri;
 }
 
@@ -56,6 +58,7 @@ server {
     listen 443 ssl;
     http2 on;
     server_name {{ .Domain }};
+    server_tokens off;
     client_max_body_size {{ .MaxBodySize }};
 
     ssl_certificate     {{ .SSLCertPath }};
@@ -65,6 +68,11 @@ server {
     ssl_prefer_server_ciphers on;
     ssl_session_cache   shared:SSL:10m;
     ssl_session_timeout 10m;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 {{ if .GzipEnabled }}
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml image/svg+xml;

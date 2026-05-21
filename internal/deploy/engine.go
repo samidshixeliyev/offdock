@@ -19,7 +19,7 @@ import (
 const (
 	healthPollInterval = 3 * time.Second
 	defaultTimeout     = 120 * time.Second
-	runningStableFor   = 15 * time.Second
+	runningStableFor   = 5 * time.Second
 	deployTimeout      = 300 * time.Second
 )
 
@@ -153,39 +153,40 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		return fail(fmt.Errorf("write .env: %w", err))
 	}
 
-	nextProject := project.Name + "_next"
+	safeProject := composeProjectName(project.Name)
+	nextProject := safeProject + "_next"
 
 	// Step 3: Bring up _next stack.
 	appendLog("[3/7] Starting %s stack", nextProject)
 	upOut, err := e.docker.ComposeUp(ctx, nextProject, composePath)
-	appendLog("  docker output: %s", strings.TrimSpace(upOut))
+	if t := strings.TrimSpace(upOut); t != "" {
+		appendLog("  docker output: %s", t)
+	}
 	if err != nil {
-		return fail(fmt.Errorf("compose up: %w", err))
+		return fail(fmt.Errorf("compose up: %w\n%s", err, strings.TrimSpace(upOut)))
 	}
 
 	// Step 4: Health polling.
 	appendLog("[4/7] Polling container health (timeout %s)", defaultTimeout)
 	if err := e.waitHealthy(ctx, nextProject, composePath, appendLog); err != nil {
-		appendLog("[rollback] Tearing down failed %s stack", nextProject)
+		appendLog("  [rollback] Tearing down failed %s stack", nextProject)
 		e.docker.ComposeDown(context.Background(), nextProject, composePath) //nolint:errcheck
 		return fail(fmt.Errorf("health check: %w", err))
 	}
 
 	// Step 5: Cutover — bring down old stack.
-	appendLog("[5/7] Cutting over — stopping %s", project.Name)
-	downOut, _ := e.docker.ComposeDown(ctx, project.Name, composePath)
+	appendLog("[5/7] Cutting over — stopping %s", safeProject)
+	downOut, _ := e.docker.ComposeDown(ctx, safeProject, composePath)
 	if t := strings.TrimSpace(downOut); t != "" {
 		appendLog("  docker output: %s", t)
 	}
 
 	// Step 6: Free ports by tearing down _next, then start canonical.
-	// _next must be stopped first so its port bindings are released before
-	// the canonical stack tries to bind the same ports.
 	appendLog("[6/7] Releasing %s ports", nextProject)
 	e.docker.ComposeDown(context.Background(), nextProject, composePath) //nolint:errcheck
 
-	appendLog("[6/7] Starting %s (canonical)", project.Name)
-	promoteOut, err := e.docker.ComposeUp(ctx, project.Name, composePath)
+	appendLog("[6/7] Starting %s (canonical)", safeProject)
+	promoteOut, err := e.docker.ComposeUp(ctx, safeProject, composePath)
 	if t := strings.TrimSpace(promoteOut); t != "" {
 		appendLog("  docker output: %s", t)
 	}
@@ -288,6 +289,20 @@ func (e *Engine) buildEnvFile(set *store.EnvVarSet) (string, error) {
 		sb.WriteByte('\n')
 	}
 	return sb.String(), nil
+}
+
+// composeProjectName converts an arbitrary project name to a valid Docker
+// Compose project name: lowercase, spaces→hyphens, non-alphanumeric stripped.
+func composeProjectName(name string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else if r == ' ' {
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
 }
 
 func atomicWrite(path string, data []byte) error {

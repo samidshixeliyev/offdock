@@ -2,14 +2,61 @@ import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import clsx from 'clsx'
 
+// ─── SVG icon set (Heroicons-style, 20px) ─────────────────────────────────────
+function Icon({ name }: { name: string }) {
+  const icons: Record<string, React.ReactNode> = {
+    dashboard: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+        <path d="M2 4a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4zM11 4a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1V4zM11 11a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-5a1 1 0 0 1-1-1v-5zM2 11a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-5z" />
+      </svg>
+    ),
+    images: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+      </svg>
+    ),
+    usb: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+      </svg>
+    ),
+    proxy: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+      </svg>
+    ),
+    system: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
+      </svg>
+    ),
+    terminal: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
+      </svg>
+    ),
+    users: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+      </svg>
+    ),
+    logout: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
+      </svg>
+    ),
+  }
+  return <>{icons[name] ?? null}</>
+}
+
 const nav = [
-  { to: '/', label: 'Dashboard', icon: '⬡' },
-  { to: '/images', label: 'Images', icon: '📦' },
-  { to: '/usb', label: 'Import', icon: '💾' },
-  { to: '/proxy', label: 'Reverse Proxy', icon: '🔀' },
-  { to: '/system', label: 'System', icon: '📊' },
-  { to: '/terminal', label: 'Terminal', icon: '⌨️' },
-  { to: '/users', label: 'Users', icon: '👥' },
+  { to: '/', label: 'Dashboard', icon: 'dashboard' },
+  { to: '/images', label: 'Images', icon: 'images' },
+  { to: '/usb', label: 'Import', icon: 'usb' },
+  { to: '/proxy', label: 'Reverse Proxy', icon: 'proxy' },
+  { to: '/system', label: 'System', icon: 'system' },
+  { to: '/terminal', label: 'Terminal', icon: 'terminal' },
+  { to: '/users', label: 'Users', icon: 'users' },
 ]
 
 export default function Layout() {
@@ -25,13 +72,22 @@ export default function Layout() {
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
       <aside className="w-56 bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">
+        {/* Brand */}
         <div className="px-5 py-4 border-b border-gray-800">
-          <Link to="/" className="text-lg font-bold text-white tracking-tight">
-            Off<span className="text-blue-500">Dock</span>
+          <Link to="/" className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded bg-blue-600 flex items-center justify-center shrink-0">
+              <svg viewBox="0 0 12 12" fill="currentColor" className="w-3.5 h-3.5 text-white">
+                <path d="M6 1L11 3.5V8.5L6 11L1 8.5V3.5L6 1Z" fillRule="evenodd" />
+              </svg>
+            </div>
+            <span className="text-sm font-bold text-white tracking-tight">
+              Off<span className="text-blue-400">Dock</span>
+            </span>
           </Link>
-          <p className="text-xs text-gray-500 mt-0.5">Offline deployment manager</p>
+          <p className="text-xs text-gray-600 mt-1.5 pl-8">Offline deploy manager</p>
         </div>
 
+        {/* Nav */}
         <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
           {nav.map(({ to, label, icon }) => (
             <NavLink
@@ -42,27 +98,34 @@ export default function Layout() {
                 clsx(
                   'flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors',
                   isActive
-                    ? 'bg-blue-600/20 text-blue-400 font-medium'
-                    : 'text-gray-400 hover:text-white hover:bg-gray-800'
+                    ? 'bg-blue-600/15 text-blue-400 font-medium'
+                    : 'text-gray-500 hover:text-gray-100 hover:bg-gray-800/70'
                 )
               }
             >
-              <span className="text-base">{icon}</span>
+              <Icon name={icon} />
               {label}
             </NavLink>
           ))}
         </nav>
 
-        <div className="px-4 py-3 border-t border-gray-800">
-          <p className="text-xs text-gray-500 truncate mb-1">{user?.username}</p>
-          <p className="text-xs text-gray-600 mb-2">{user?.role}</p>
-          <button onClick={handleLogout} className="btn-ghost text-xs w-full justify-start">
+        {/* User footer */}
+        <div className="px-3 py-3 border-t border-gray-800">
+          <div className="px-2 mb-2">
+            <p className="text-xs font-medium text-gray-300 truncate">{user?.username}</p>
+            <p className="text-xs text-gray-600 capitalize">{user?.role}</p>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-2 w-full px-2 py-1.5 text-xs text-gray-500 hover:text-red-400 hover:bg-gray-800/50 rounded-lg transition-colors"
+          >
+            <Icon name="logout" />
             Sign out
           </button>
         </div>
       </aside>
 
-      {/* Main content */}
+      {/* Main */}
       <main className="flex-1 overflow-y-auto">
         <Outlet />
       </main>

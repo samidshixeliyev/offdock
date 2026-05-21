@@ -6,29 +6,56 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
+)
+
+const (
+	replayBufSize  = 512           // max messages kept per stream for late subscribers
+	streamTTL      = 2 * time.Minute // how long a closed stream's buffer is kept
 )
 
 // Client is a single connected SSE subscriber.
 type Client struct {
-	ch     chan string
-	done   <-chan struct{}
+	ch   chan string
+	done <-chan struct{}
+}
+
+type stream struct {
+	clients map[*Client]struct{}
+	buf     []string  // replay buffer for late subscribers
+	closed  bool
+	closedAt time.Time
 }
 
 // Hub manages a set of SSE clients for a single logical stream identified
 // by a string key (e.g. deployment ID or container name).
 type Hub struct {
 	mu      sync.Mutex
-	streams map[string]map[*Client]struct{}
+	streams map[string]*stream
 }
 
 // New returns a Hub ready for use.
 func New() *Hub {
-	return &Hub{streams: make(map[string]map[*Client]struct{})}
+	h := &Hub{streams: make(map[string]*stream)}
+	go h.gc()
+	return h
+}
+
+// gc periodically removes streams that have been closed long enough.
+func (h *Hub) gc() {
+	for range time.Tick(30 * time.Second) {
+		h.mu.Lock()
+		for k, s := range h.streams {
+			if s.closed && time.Since(s.closedAt) > streamTTL {
+				delete(h.streams, k)
+			}
+		}
+		h.mu.Unlock()
+	}
 }
 
 // Subscribe registers a new SSE client for the given streamKey and serves
 // it until the client disconnects or the context is done.
-// The HTTP headers must not have been written before calling Subscribe.
 func (h *Hub) Subscribe(w http.ResponseWriter, r *http.Request, streamKey string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -39,14 +66,34 @@ func (h *Hub) Subscribe(w http.ResponseWriter, r *http.Request, streamKey string
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	client := &Client{
-		ch:   make(chan string, 64),
+		ch:   make(chan string, 128),
 		done: r.Context().Done(),
 	}
 
-	h.add(streamKey, client)
+	h.mu.Lock()
+	s := h.getOrCreate(streamKey)
+	// Replay buffered messages to late subscriber.
+	replay := make([]string, len(s.buf))
+	copy(replay, s.buf)
+	alreadyClosed := s.closed
+	if !alreadyClosed {
+		s.clients[client] = struct{}{}
+	}
+	h.mu.Unlock()
+
+	// Send replayed messages before blocking.
+	for _, msg := range replay {
+		fmt.Fprintf(w, "data: %s\n\n", msg)
+	}
+	flusher.Flush()
+
+	if alreadyClosed {
+		return
+	}
+
 	defer h.remove(streamKey, client)
 
 	for {
@@ -63,47 +110,64 @@ func (h *Hub) Subscribe(w http.ResponseWriter, r *http.Request, streamKey string
 	}
 }
 
-// Publish sends a message to all subscribers of streamKey.
+// Publish sends a message to all subscribers of streamKey and appends it to the replay buffer.
 func (h *Hub) Publish(streamKey, message string) {
 	h.mu.Lock()
-	clients := h.streams[streamKey]
+	s := h.getOrCreate(streamKey)
+	if len(s.buf) < replayBufSize {
+		s.buf = append(s.buf, message)
+	}
+	clients := make([]*Client, 0, len(s.clients))
+	for c := range s.clients {
+		clients = append(clients, c)
+	}
 	h.mu.Unlock()
 
-	for c := range clients {
+	for _, c := range clients {
 		select {
 		case c.ch <- message:
 		default:
-			// Slow client — drop message to avoid blocking publisher.
 		}
 	}
 }
 
-// Close closes all clients subscribed to streamKey and removes the stream.
+// Close closes all clients subscribed to streamKey and marks the stream done.
 func (h *Hub) Close(streamKey string) {
 	h.mu.Lock()
-	clients := h.streams[streamKey]
-	delete(h.streams, streamKey)
+	s := h.streams[streamKey]
+	if s == nil {
+		h.mu.Unlock()
+		return
+	}
+	s.closed = true
+	s.closedAt = time.Now()
+	clients := make([]*Client, 0, len(s.clients))
+	for c := range s.clients {
+		clients = append(clients, c)
+	}
+	s.clients = make(map[*Client]struct{})
 	h.mu.Unlock()
 
-	for c := range clients {
+	for _, c := range clients {
 		close(c.ch)
 	}
 }
 
-func (h *Hub) add(key string, c *Client) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.streams[key] == nil {
-		h.streams[key] = make(map[*Client]struct{})
+func (h *Hub) getOrCreate(key string) *stream {
+	s := h.streams[key]
+	if s == nil {
+		s = &stream{clients: make(map[*Client]struct{})}
+		h.streams[key] = s
 	}
-	h.streams[key][c] = struct{}{}
+	return s
 }
 
 func (h *Hub) remove(key string, c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.streams[key], c)
-	if len(h.streams[key]) == 0 {
-		delete(h.streams, key)
+	s := h.streams[key]
+	if s == nil {
+		return
 	}
+	delete(s.clients, c)
 }

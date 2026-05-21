@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api, NginxConfig } from '../api/client'
 
-type Form = Omit<NginxConfig, 'id' | 'project_id' | 'generated_config' | 'active' | 'created_at'>
+type Form = Omit<NginxConfig, 'id' | 'project_id' | 'generated_config' | 'active' | 'applied' | 'applied_at' | 'created_at'>
 
 const defaultForm: Form = {
   domain: '',

@@ -81,14 +81,31 @@ func NewRouter(deps Deps) http.Handler {
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/env", h.SaveEnv)
 		r.Get("/api/v1/projects/{id}/env/history", h.EnvHistory)
 
-		// Nginx
+		// Docker networks
+		r.Get("/api/v1/networks", h.ListNetworks)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/networks/{network}/containers/{container}", h.NetworkConnect)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/networks/{network}/containers/{container}", h.NetworkDisconnect)
+		r.Get("/api/v1/containers/{container}/networks", h.ContainerNetworks)
+
+		// Nginx — Docker container control
+		r.Get("/api/v1/nginx/container", h.NginxContainerStatus)
+		r.Get("/api/v1/nginx/container/ui-url", h.NginxUIURL)
+		r.Get("/api/v1/nginx/container/install-secret", h.NginxInstallSecret)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/start", h.NginxContainerStart)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/stop", h.NginxContainerStop)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/reload", h.NginxContainerReload)
+
+		// Nginx — global view + per-project management
+		r.Get("/api/v1/nginx", h.ListAllNginx)
 		r.Get("/api/v1/projects/{id}/nginx", h.GetNginx)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/nginx", h.SaveNginx)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/nginx/apply", h.ApplyNginx)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/projects/{id}/nginx", h.RemoveNginx)
 		r.Get("/api/v1/projects/{id}/nginx/preview", h.PreviewNginx)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/nginx/cert", h.GenerateCert)
 
-		// Deploy
+		// Deploy — global recent list + per-project
+		r.Get("/api/v1/deployments", h.ListAllDeployments)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/deploy", h.TriggerDeploy)
 		r.Get("/api/v1/projects/{id}/deployments", h.ListDeployments)
 		r.Get("/api/v1/projects/{id}/deployments/{dep_id}", h.GetDeployment)

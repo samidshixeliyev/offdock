@@ -12,6 +12,33 @@ import (
 	"offdock/internal/store"
 )
 
+// ListAllDeployments returns the 25 most recent deployments across all projects, enriched with project name.
+func (h *H) ListAllDeployments(w http.ResponseWriter, r *http.Request) {
+	all, err := h.db.Deployments.FindAll()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list deployments")
+		return
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].StartedAt.After(all[j].StartedAt) })
+	if len(all) > 25 {
+		all = all[:25]
+	}
+
+	type enriched struct {
+		store.DeploymentRecord
+		ProjectName string `json:"project_name"`
+	}
+	result := make([]enriched, 0, len(all))
+	for _, d := range all {
+		name := ""
+		if p, err := h.db.Projects.FindByID(d.ProjectID); err == nil {
+			name = p.Name
+		}
+		result = append(result, enriched{DeploymentRecord: d, ProjectName: name})
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 // TriggerDeploy starts an async deployment and returns an SSE stream URL.
 // Optional body: { "compose_version": N } — if omitted, the latest version is used (rollback support).
 func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
@@ -20,6 +47,15 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := h.db.Projects.FindByID(projectID); err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	// Reject if a deployment is already running for this project.
+	running, _ := h.db.Deployments.FindWhere(func(d store.DeploymentRecord) bool {
+		return d.ProjectID == projectID && d.Status == store.DeployStatusRunning
+	})
+	if len(running) > 0 {
+		writeError(w, http.StatusConflict, "a deployment is already running for this project")
 		return
 	}
 

@@ -58,6 +58,8 @@ export interface NginxConfig {
   custom_directives: string
   generated_config: string
   active: boolean
+  applied: boolean
+  applied_at: string | null
   created_at: string
 }
 
@@ -112,10 +114,46 @@ export interface SystemStats {
   cpu_percent: number
   ram_total_bytes: number
   ram_used_bytes: number
+  ram_free_bytes: number
+  ram_cached_bytes: number
   disk_total_bytes: number
   disk_used_bytes: number
+  load_avg: [number, number, number]
+  uptime_secs: number
   containers: ContainerStats[]
   timestamp: string
+}
+
+export interface NetworkContainer {
+  name: string
+  id: string
+}
+
+export interface NetworkInfo {
+  name: string
+  exists: boolean
+  containers: NetworkContainer[]
+}
+
+export interface Networks {
+  external: NetworkInfo
+  internal: NetworkInfo
+}
+
+export interface NginxEntry {
+  project: Project
+  config: NginxConfig | null
+}
+
+export interface NginxContainerStatus {
+  running: boolean
+  state: 'running' | 'exited' | 'not_found' | 'unknown'
+  status_text: string
+  image: string
+}
+
+export interface RecentDeployment extends DeploymentRecord {
+  project_name: string
 }
 
 export interface ContainerStats {
@@ -201,7 +239,28 @@ export const api = {
   envHistory: (projectId: string) =>
     request<EnvVarSet[]>(`/api/v1/projects/${projectId}/env/history`),
 
-  // Nginx
+  // Docker networks
+  listNetworks: () => request<Networks>('/api/v1/networks'),
+  networkConnect: (network: string, container: string) =>
+    request<{ status: string }>(`/api/v1/networks/${network}/containers/${container}`, { method: 'POST' }),
+  networkDisconnect: (network: string, container: string) =>
+    request<{ status: string }>(`/api/v1/networks/${network}/containers/${container}`, { method: 'DELETE' }),
+  containerNetworks: (container: string) =>
+    request<{ networks: string[] }>(`/api/v1/containers/${container}/networks`),
+
+  // Nginx — Docker container control
+  nginxContainerStatus: () => request<NginxContainerStatus>('/api/v1/nginx/container'),
+  nginxUIURL: () => request<{ url: string; port: number }>('/api/v1/nginx/container/ui-url'),
+  nginxInstallSecret: () => request<{ secret: string }>('/api/v1/nginx/container/install-secret'),
+  nginxContainerStart: () => request<{ status: string }>('/api/v1/nginx/container/start', { method: 'POST' }),
+  nginxContainerStop: () => request<{ status: string }>('/api/v1/nginx/container/stop', { method: 'POST' }),
+  nginxContainerReload: () => request<{ status: string; output: string }>('/api/v1/nginx/container/reload', { method: 'POST' }),
+
+  // Nginx — global view
+  listAllNginx: () => request<NginxEntry[]>('/api/v1/nginx'),
+  removeNginx: (projectId: string) =>
+    request<void>(`/api/v1/projects/${projectId}/nginx`, { method: 'DELETE' }),
+  // Nginx — per project
   getNginx: (projectId: string) =>
     request<NginxConfig | null>(`/api/v1/projects/${projectId}/nginx`),
   saveNginx: (projectId: string, data: Partial<NginxConfig>) =>
@@ -222,7 +281,9 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ domain, days: days ?? 365 }) }
     ),
 
-  // Deploy
+  // Deploy — global recent list
+  listAllDeployments: () => request<RecentDeployment[]>('/api/v1/deployments'),
+  // Deploy — per project
   triggerDeploy: (projectId: string, composeVersion?: number) =>
     request<{ deployment_id: string; stream: string }>(
       `/api/v1/projects/${projectId}/deploy`,
@@ -260,6 +321,13 @@ export const api = {
     request<FileEntry[]>(`/api/v1/usb/browse?mount=${encodeURIComponent(mount)}${path ? `&path=${encodeURIComponent(path)}` : ''}`),
   readFile: (mount: string, path: string) =>
     request<{ content: string }>(`/api/v1/usb/file?mount=${encodeURIComponent(mount)}&path=${encodeURIComponent(path)}`),
+
+  // Terminal / exec
+  execCommand: (command: string, cwd?: string) =>
+    request<{ stdout: string; stderr: string; exit_code: number; cwd: string }>(
+      '/api/v1/terminal/exec',
+      { method: 'POST', body: JSON.stringify({ command, cwd: cwd ?? '' }) }
+    ),
 
   // Proxy status probe (server-side HTTP check to avoid CORS)
   proxyStatus: (url: string) =>
