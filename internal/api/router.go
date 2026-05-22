@@ -86,13 +86,16 @@ func NewRouter(deps Deps) http.Handler {
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/networks/{network}/containers/{container}", h.NetworkConnect)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/networks/{network}/containers/{container}", h.NetworkDisconnect)
 
-		// Global containers (all projects)
-		r.Get("/api/v1/containers", h.ListAllContainers)
-		r.Get("/api/v1/containers/stats", h.ContainerStats)
-		r.Get("/api/v1/containers/{container}/networks", h.ContainerNetworks)
-		r.Get("/api/v1/containers/{name}/logs", h.ContainerLogs)
-		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/containers/{name}/{action}", h.ContainerAction)
-		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/containers/{name}", h.DeleteContainer)
+		// Global containers (all projects) — sub-router isolates the trie so
+		// literal "stats" sub-path does not conflict with {name} param routes.
+		r.Route("/api/v1/containers", func(r chi.Router) {
+			r.Get("/", h.ListAllContainers)
+			r.Get("/stats", h.ContainerStats)
+			r.Get("/{container}/networks", h.ContainerNetworks)
+			r.Get("/{name}/logs", h.ContainerLogs)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Post("/{name}/{action}", h.ContainerAction)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/{name}", h.DeleteContainer)
+		})
 
 		// Nginx — Docker container control (nginx:alpine)
 		r.Get("/api/v1/nginx/container", h.NginxContainerStatus)
