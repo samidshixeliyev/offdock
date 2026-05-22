@@ -378,7 +378,7 @@ export default function DashboardPage() {
   const diskPct  = stats ? Math.round((stats.disk_used_bytes / stats.disk_total_bytes) * 100) : 0
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="flex-1 overflow-y-auto p-6 max-w-7xl mx-auto">
       {deployingProject && (
         <DeployModal projectId={deployingProject} onClose={() => {
           setDeployingProject(null)

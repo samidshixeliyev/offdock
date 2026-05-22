@@ -46,7 +46,7 @@ export default function ImagesPage() {
   }
 
   return (
-    <div className="p-6 max-w-5xl">
+    <div className="flex-1 overflow-y-auto p-6 max-w-5xl">
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <h1 className="text-xl font-semibold text-white">Docker Images</h1>
         <div className="flex items-center gap-3">

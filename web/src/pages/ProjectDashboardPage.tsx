@@ -127,6 +127,32 @@ function ExecModal({ containerName, onClose }: { containerName: string; onClose:
   )
 }
 
+// ─── Server file row helper ───────────────────────────────────────────────────
+function ServerFileRow({ entry, serverMount, onNavigate, onSelect, onPreview, fmtSize }: {
+  entry: FileEntry
+  serverMount: string
+  onNavigate: (mount: string, path: string) => void
+  onSelect: (entry: FileEntry) => void
+  onPreview: (entry: FileEntry) => void
+  fmtSize: (n: number) => string
+}) {
+  return (
+    <div className="flex items-center justify-between px-4 py-1.5 border-b border-gray-800/40 hover:bg-gray-800/30">
+      <button className="flex items-center gap-2.5 text-left min-w-0 flex-1"
+        onClick={() => entry.is_dir ? onNavigate(serverMount, entry.path) : onPreview(entry)}>
+        <span className={`text-xs w-3 shrink-0 ${entry.is_dir ? 'text-blue-400' : 'text-gray-600'}`}>
+          {entry.is_dir ? '▸' : '·'}
+        </span>
+        <span className="font-mono text-xs text-gray-300 truncate">{entry.name}</span>
+        {!entry.is_dir && entry.size > 0 && <span className="text-xs text-gray-700 shrink-0">{fmtSize(entry.size)}</span>}
+      </button>
+      {!entry.is_dir && (
+        <button onClick={() => onSelect(entry)} className="btn-primary text-xs py-0.5 shrink-0 ml-2">Use</button>
+      )}
+    </div>
+  )
+}
+
 // ─── Dual-mode File Browser ───────────────────────────────────────────────────
 // Tab "local" — browser native file picker (reads file from user's computer).
 // Tab "server" — browse server filesystem with a configurable base path.
@@ -145,6 +171,7 @@ function FileBrowser({ onSelect, onClose }: {
   const [serverEntries, setServerEntries] = useState<FileEntry[]>([])
   const [serverLoading, setServerLoading] = useState(false)
   const [serverErr, setServerErr] = useState('')
+  const [serverPreview, setServerPreview] = useState<{ name: string; content: string } | null>(null)
 
   const fmtSize = (bytes: number) => {
     if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB'
@@ -255,34 +282,97 @@ function FileBrowser({ onSelect, onClose }: {
               <p className="text-xs text-gray-600 font-mono truncate">{serverPath}</p>
               {serverErr && <p className="text-xs text-red-400">{serverErr}</p>}
             </div>
-            <div className="flex-1 overflow-y-auto min-h-0">
-              {serverLoading && <p className="px-5 py-6 text-gray-500 text-sm text-center">Loading…</p>}
-              {serverPath !== serverMount.replace(/\/$/, '') && (
-                <button onClick={serverUp}
-                  className="w-full flex items-center gap-2 px-5 py-2.5 text-sm text-gray-400 hover:bg-gray-800 border-b border-gray-800">
-                  <span className="text-gray-600">↑</span> ..
-                </button>
-              )}
-              {serverEntries.map(e => (
-                <div key={e.path} className="flex items-center justify-between px-5 py-2 border-b border-gray-800/40 hover:bg-gray-800/30">
-                  <button className="flex items-center gap-2.5 text-left min-w-0 flex-1"
-                    onClick={() => e.is_dir ? browseServer(serverMount, e.path) : selectServerFile(e)}>
-                    <span className="text-gray-600 text-xs w-3 shrink-0">{e.is_dir ? '▸' : '·'}</span>
-                    <span className="font-mono text-xs text-gray-300 truncate">{e.name}</span>
-                    {!e.is_dir && e.size > 0 && <span className="text-xs text-gray-700 shrink-0">{fmtSize(e.size)}</span>}
+            <div className="flex flex-1 min-h-0 overflow-hidden">
+              {/* File list */}
+              <div className="w-1/2 overflow-y-auto border-r border-gray-800">
+                {serverLoading && <p className="px-5 py-6 text-gray-500 text-sm text-center">Loading…</p>}
+                {serverPath !== serverMount.replace(/\/$/, '') && (
+                  <button onClick={serverUp}
+                    className="w-full flex items-center gap-2 px-5 py-2.5 text-sm text-gray-400 hover:bg-gray-800 border-b border-gray-800">
+                    <span className="text-gray-600">↑</span> ..
                   </button>
-                  {!e.is_dir && (
-                    <button onClick={() => selectServerFile(e)} className="btn-primary text-xs py-1 shrink-0 ml-3">Use file</button>
-                  )}
-                </div>
-              ))}
-              {!serverLoading && serverEntries.length === 0 && (
-                <p className="px-5 py-8 text-gray-600 text-sm text-center">Empty directory</p>
-              )}
+                )}
+                {serverEntries.map(e => (
+                  <ServerFileRow
+                    key={e.path}
+                    entry={e}
+                    serverMount={serverMount}
+                    onNavigate={browseServer}
+                    onSelect={selectServerFile}
+                    onPreview={async (entry) => {
+                      try {
+                        const res = await api.readFile(serverMount, entry.path)
+                        setServerPreview({ name: entry.name, content: res.content })
+                      } catch { setServerPreview({ name: entry.name, content: '[Error reading file]' }) }
+                    }}
+                    fmtSize={fmtSize}
+                  />
+                ))}
+                {!serverLoading && serverEntries.length === 0 && (
+                  <p className="px-5 py-8 text-gray-600 text-sm text-center">Empty directory</p>
+                )}
+              </div>
+
+              {/* Content preview */}
+              <div className="w-1/2 flex flex-col overflow-hidden">
+                {serverPreview ? (
+                  <>
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 shrink-0">
+                      <span className="text-xs font-mono text-gray-400 truncate">{serverPreview.name}</span>
+                      <button onClick={() => setServerPreview(null)} className="text-gray-600 hover:text-gray-300 text-xs ml-2">✕</button>
+                    </div>
+                    <pre className="flex-1 overflow-y-auto p-3 text-xs font-mono text-gray-300 leading-relaxed whitespace-pre-wrap bg-gray-950">
+                      {serverPreview.content}
+                    </pre>
+                  </>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-xs text-gray-700">
+                    Click a file to preview its content
+                  </div>
+                )}
+              </div>
             </div>
           </>
         )}
       </div>
+    </div>
+  )
+}
+
+// ─── Inline Log Viewer ────────────────────────────────────────────────────────
+function InlineLogViewer({ name, projectId }: { name: string; projectId: string }) {
+  const [lines, setLines] = useState<string[]>([])
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const es = new EventSource(
+      `/api/v1/projects/${projectId}/containers/${encodeURIComponent(name)}/logs?tail=50`
+    )
+    es.onmessage = e => {
+      try {
+        const d = JSON.parse(e.data as string) as { line: string }
+        setLines(prev => [...prev.slice(-199), d.line])
+      } catch {}
+    }
+    es.onerror = () => es.close()
+    return () => es.close()
+  }, [name, projectId])
+
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
+  }, [lines])
+
+  return (
+    <div ref={ref} className="terminal p-3 text-green-400 text-xs h-40 overflow-y-auto mt-2">
+      {lines.length === 0
+        ? <span className="text-gray-600 animate-pulse">Connecting…</span>
+        : lines.map((l, i) => {
+            const lc = l.toLowerCase()
+            const cls = lc.includes('error') || lc.includes('err:') ? 'text-red-400'
+              : lc.includes('warn') ? 'text-yellow-400' : ''
+            return <div key={i} className={cls}>{l.replace(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z?\s?/, '') || ' '}</div>
+          })
+      }
     </div>
   )
 }
@@ -298,6 +388,7 @@ function OverviewTab({ projectId, onStatusSync }: {
   const [syncing, setSyncing] = useState(false)
   const [logsFor, setLogsFor] = useState<string | null>(null)
   const [execOpen, setExecOpen] = useState(false)
+  const [inlineLogsFor, setInlineLogsFor] = useState<string | null>(null)
 
   const refresh = () => {
     setLoading(true)
@@ -374,39 +465,53 @@ function OverviewTab({ projectId, onStatusSync }: {
               </thead>
               <tbody>
                 {containers.map(c => (
-                  <tr key={c.ID} className="border-b border-gray-800/50 hover:bg-gray-800/20">
-                    <td className="px-4 py-3 font-mono text-xs text-gray-200">{c.Names}</td>
-                    <td className="px-4 py-3 text-gray-500 text-xs truncate max-w-[160px]">{c.Image}</td>
-                    <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded-full border ${stateColor(c.State)}`}>
-                        {c.Status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-gray-600 font-mono">{c.Ports || '—'}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex gap-3">
-                        <button onClick={() => setLogsFor(c.Names)}
-                          className="text-xs text-gray-500 hover:text-gray-300 transition-colors">
-                          Logs
-                        </button>
-                        <button onClick={() => doAction(c.Names, 'restart')} disabled={!!actionBusy}
-                          className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-40 transition-colors">
-                          {actionBusy === c.Names + ':restart' ? '…' : 'Restart'}
-                        </button>
-                        {c.State === 'running' ? (
-                          <button onClick={() => doAction(c.Names, 'stop')} disabled={!!actionBusy}
-                            className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors">
-                            {actionBusy === c.Names + ':stop' ? '…' : 'Stop'}
+                  <>
+                    <tr key={c.ID} className="border-b border-gray-800/50 hover:bg-gray-800/20">
+                      <td className="px-4 py-3 font-mono text-xs text-gray-200">{c.Names}</td>
+                      <td className="px-4 py-3 text-gray-500 text-xs truncate max-w-[160px]">{c.Image}</td>
+                      <td className="px-4 py-3">
+                        <span className={`text-xs px-2 py-0.5 rounded-full border ${stateColor(c.State)}`}>
+                          {c.Status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-600 font-mono">{c.Ports || '—'}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-3">
+                          <button
+                            onClick={() => setInlineLogsFor(inlineLogsFor === c.Names ? null : c.Names)}
+                            className={`text-xs transition-colors ${inlineLogsFor === c.Names ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'}`}>
+                            {inlineLogsFor === c.Names ? '▲ Logs' : '▼ Logs'}
                           </button>
-                        ) : (
-                          <button onClick={() => doAction(c.Names, 'start')} disabled={!!actionBusy}
-                            className="text-xs text-green-400 hover:text-green-300 disabled:opacity-40 transition-colors">
-                            {actionBusy === c.Names + ':start' ? '…' : 'Start'}
+                          <button onClick={() => setLogsFor(c.Names)}
+                            className="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Full screen logs">
+                            ↗
                           </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
+                          <button onClick={() => doAction(c.Names, 'restart')} disabled={!!actionBusy}
+                            className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-40 transition-colors">
+                            {actionBusy === c.Names + ':restart' ? '…' : 'Restart'}
+                          </button>
+                          {c.State === 'running' ? (
+                            <button onClick={() => doAction(c.Names, 'stop')} disabled={!!actionBusy}
+                              className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40 transition-colors">
+                              {actionBusy === c.Names + ':stop' ? '…' : 'Stop'}
+                            </button>
+                          ) : (
+                            <button onClick={() => doAction(c.Names, 'start')} disabled={!!actionBusy}
+                              className="text-xs text-green-400 hover:text-green-300 disabled:opacity-40 transition-colors">
+                              {actionBusy === c.Names + ':start' ? '…' : 'Start'}
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                    {inlineLogsFor === c.Names && (
+                      <tr key={c.ID + '-logs'} className="border-b border-gray-800/50 bg-gray-950/50">
+                        <td colSpan={5} className="px-4 pb-3 pt-0">
+                          <InlineLogViewer name={c.Names} projectId={projectId} />
+                        </td>
+                      </tr>
+                    )}
+                  </>
                 ))}
               </tbody>
             </table>
@@ -678,11 +783,8 @@ function EnvTab({ projectId }: { projectId: string }) {
 const DEPLOY_STEPS = [
   'Write Compose',
   'Write .env',
-  'Start _next Stack',
+  'Force-Recreate',
   'Health Check',
-  'Cutover Old Stack',
-  'Promote Canonical',
-  'Reload Nginx',
 ]
 
 type StepStatus = 'done' | 'active' | 'failed' | 'pending'
@@ -691,7 +793,7 @@ function parseStepStatuses(log: string[], deploying: boolean): StepStatus[] {
   let maxStep = -1
   const hasFailed = log.some(l => l.includes('FAILED:') || l.startsWith('✗'))
   for (const line of log) {
-    const m = line.match(/\[(\d+)\/7\]/)
+    const m = line.match(/\[(\d+)\/4\]/)
     if (m) {
       const n = parseInt(m[1]) - 1
       if (n > maxStep) maxStep = n
@@ -710,20 +812,26 @@ function parseStepStatuses(log: string[], deploying: boolean): StepStatus[] {
 }
 
 function StepPipeline({ statuses }: { statuses: StepStatus[] }) {
-  const icon: Record<StepStatus, string> = { done: '✓', active: '●', failed: '✕', pending: '○' }
-  const cls: Record<StepStatus, string> = {
-    done: 'step-done', active: 'step-active', failed: 'step-failed', pending: 'step-pending',
+  const icon: Record<StepStatus, React.ReactNode> = {
+    done: <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>,
+    active: <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>,
+    failed: <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5"><path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>,
+    pending: <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 opacity-30"><circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" fill="none"/></svg>,
   }
   return (
-    <div className="grid grid-cols-7 gap-1.5">
+    <div className="flex items-center gap-0">
       {DEPLOY_STEPS.map((label, i) => {
         const s = statuses[i]
+        const cls = { done: 'step-done', active: 'step-active', failed: 'step-failed', pending: 'step-pending' }[s]
         return (
-          <div key={i} className={`border rounded-lg px-1.5 py-2.5 text-center ${cls[s]}`}>
-            <div className={`font-mono text-sm leading-none mb-1.5 ${s === 'active' ? 'animate-pulse' : ''}`}>
-              {icon[s]}
+          <div key={i} className="flex items-center flex-1 min-w-0">
+            <div className={`flex-1 border rounded-lg px-2 py-2.5 text-center ${cls} min-w-0`}>
+              <div className="flex items-center justify-center mb-1">{icon[s]}</div>
+              <div className="text-xs leading-tight truncate">{label}</div>
             </div>
-            <div className="text-xs leading-tight">{label}</div>
+            {i < DEPLOY_STEPS.length - 1 && (
+              <div className={`w-3 h-px shrink-0 ${s === 'done' ? 'bg-green-700' : 'bg-gray-800'}`} />
+            )}
           </div>
         )
       })}
@@ -734,13 +842,16 @@ function StepPipeline({ statuses }: { statuses: StepStatus[] }) {
 const depBadge: Record<string, string> = {
   pending: 'badge-pending', running: 'badge-pending',
   success: 'badge-running', failed: 'badge-error',
+  cancelled: 'badge-stopped',
 }
 
 function DeployTab({ projectId }: { projectId: string }) {
   const [deployments, setDeployments] = useState<DeploymentRecord[]>([])
   const [log, setLog] = useState<string[]>([])
   const [deploying, setDeploying] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
   const [streamKey, setStreamKey] = useState('')
+  const [activeDepId, setActiveDepId] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [rollbackTarget, setRollbackTarget] = useState<DeploymentRecord | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<DeploymentRecord | null>(null)
@@ -762,31 +873,54 @@ function DeployTab({ projectId }: { projectId: string }) {
       try {
         const data = JSON.parse(e.data as string) as Record<string, string>
         if (data.log) setLog(prev => [...prev, data.log])
-        if (data.status) {
-          setLog(prev => [...prev, `✓ Deployment ${data.status}`])
-          setDeploying(false); es.close(); loadHistory()
-        }
         if (data.error) {
           setLog(prev => [...prev, `✗ ${data.error}`])
-          setDeploying(false); es.close()
+          // don't close — wait for the status event that always follows
+        }
+        if (data.status) {
+          const ok = data.status === 'success'
+          setLog(prev => [...prev, ok ? '✓ Deployment complete' : `✗ Deployment ${data.status}`])
+          setDeploying(false)
+          setCancelling(false)
+          es.close()
+          loadHistory()
         }
       } catch {}
     }
-    es.onerror = () => { setDeploying(false); es.close() }
+    es.onerror = () => {
+      setDeploying(false)
+      setCancelling(false)
+      es.close()
+      loadHistory()
+    }
     return () => es.close()
   }, [streamKey, projectId])
 
   const handleDeploy = async (composeVersion?: number) => {
     setDeploying(true)
+    setCancelling(false)
     setLog([composeVersion ? `Rolling back to compose v${composeVersion}…` : 'Starting deployment…'])
     setExpandedId(null)
     setRollbackTarget(null)
     try {
       const { deployment_id } = await api.triggerDeploy(projectId, composeVersion)
       setStreamKey(deployment_id)
+      setActiveDepId(deployment_id)
     } catch (e) {
       setLog(['✗ ' + (e instanceof Error ? e.message : 'unknown error')])
       setDeploying(false)
+    }
+  }
+
+  const handleCancel = async () => {
+    if (!activeDepId || cancelling) return
+    setCancelling(true)
+    try {
+      await api.cancelDeploy(projectId, activeDepId)
+      setLog(prev => [...prev, '⚠ Cancellation requested — waiting for cleanup…'])
+    } catch (e) {
+      setLog(prev => [...prev, '✗ Cancel failed: ' + (e instanceof Error ? e.message : 'unknown')])
+      setCancelling(false)
     }
   }
 
@@ -811,18 +945,35 @@ function DeployTab({ projectId }: { projectId: string }) {
       {/* Action */}
       <div className="flex items-center justify-between">
         <p className="section-heading">Deploy</p>
-        <button onClick={() => handleDeploy()} disabled={deploying} className="btn-primary">
-          {deploying ? (
-            <><span className="animate-spin inline-block">⟳</span> Deploying…</>
-          ) : (
-            <>
-              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-                <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
-              </svg>
-              Trigger Deploy
-            </>
+        <div className="flex items-center gap-2">
+          {deploying && (
+            <button
+              onClick={handleCancel}
+              disabled={cancelling}
+              className="text-xs text-gray-500 hover:text-red-400 disabled:opacity-40 transition-colors px-3 py-1.5 border border-gray-700 hover:border-red-900/60 rounded-lg"
+            >
+              {cancelling ? 'Cancelling…' : 'Cancel'}
+            </button>
           )}
-        </button>
+          <button onClick={() => handleDeploy()} disabled={deploying} className="btn-primary">
+            {deploying ? (
+              <>
+                <svg className="animate-spin w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Deploying…
+              </>
+            ) : (
+              <>
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                  <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+                </svg>
+                Trigger Deploy
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Live pipeline + terminal */}
@@ -851,7 +1002,14 @@ function DeployTab({ projectId }: { projectId: string }) {
 
       {/* Deployment history */}
       <section>
-        <p className="section-heading mb-3">History</p>
+        <div className="flex items-center justify-between mb-3">
+          <p className="section-heading">History</p>
+          {deployments.some(d => d.status === 'success') && (
+            <span className="text-xs text-gray-600">
+              {deployments.filter(d => d.status === 'success').length} successful · click row for logs · Rollback re-deploys a prior compose version
+            </span>
+          )}
+        </div>
         {deployments.length === 0 ? (
           <div className="card text-gray-600 text-sm text-center py-8 border-dashed">
             No deployments yet — trigger one above.
@@ -880,47 +1038,58 @@ function DeployTab({ projectId }: { projectId: string }) {
                       <td className="px-4 py-3">
                         <span className={depBadge[d.status] ?? 'badge-stopped'}>{d.status}</span>
                       </td>
-                      <td className="px-4 py-3 text-gray-500 text-xs font-mono">v{d.new_compose_version}</td>
+                      <td className="px-4 py-3 text-gray-400 text-xs font-mono font-medium">v{d.new_compose_version}</td>
                       <td className="px-4 py-3 text-gray-500 text-xs">{d.triggered_by}</td>
                       <td className="px-4 py-3 text-gray-600 text-xs">{new Date(d.started_at).toLocaleString()}</td>
                       <td className="px-4 py-3 text-gray-600 text-xs tabular-nums">{durStr(d)}</td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-3 justify-end">
-                          <span className="text-xs text-gray-700">
-                            {expandedId === d.id ? '▲' : '▼ Logs'}
-                          </span>
+                        <div className="flex items-center gap-2 justify-end">
+                          <span className="text-xs text-gray-700">{expandedId === d.id ? '▲' : '▼'}</span>
                           {d.status === 'success' && (
                             <button
                               onClick={e => { e.stopPropagation(); setRollbackTarget(d) }}
                               disabled={deploying}
-                              className="text-xs text-blue-400 hover:text-blue-300 disabled:opacity-40"
+                              className="text-xs px-2.5 py-1 rounded border border-blue-900/50 text-blue-400 hover:bg-blue-950/50 disabled:opacity-40 transition-colors"
                             >
-                              Rollback
+                              ↩ Rollback
                             </button>
                           )}
-                          {(d.status === 'success' || d.status === 'failed') && (
+                          {(d.status === 'success' || d.status === 'failed' || d.status === 'cancelled') && (
                             <button
                               onClick={e => { e.stopPropagation(); setDeleteTarget(d) }}
-                              className="text-xs text-gray-600 hover:text-red-400 transition-colors"
+                              className="text-xs text-gray-600 hover:text-red-400 transition-colors px-1"
                             >
-                              Delete
+                              ✕
                             </button>
                           )}
                         </div>
                       </td>
                     </tr>
 
-                    {/* Inline log expansion */}
                     {expandedId === d.id && (
-                      <tr key={d.id + '-log'} className="border-b border-gray-800/50 bg-gray-950/40">
-                        <td colSpan={6} className="px-4 pb-4 pt-2">
-                          <div className="terminal p-4 text-green-400 max-h-64">
+                      <tr key={d.id + '-log'} className="border-b border-gray-800/50 bg-gray-950/60">
+                        <td colSpan={6} className="px-4 pb-4 pt-3">
+                          {d.status === 'success' && (
+                            <div className="mb-3 flex items-center gap-2">
+                              <span className="text-xs text-gray-500">Rollback plan:</span>
+                              <span className="text-xs text-gray-300">Re-deploy compose <code className="text-blue-400 font-mono">v{d.new_compose_version}</code> through the full healthcheck-cutover pipeline</span>
+                              <button
+                                onClick={e => { e.stopPropagation(); setRollbackTarget(d) }}
+                                disabled={deploying}
+                                className="text-xs px-2.5 py-1 rounded border border-blue-900/50 text-blue-400 hover:bg-blue-950/50 disabled:opacity-40 transition-colors ml-auto shrink-0"
+                              >
+                                ↩ Rollback to v{d.new_compose_version}
+                              </button>
+                            </div>
+                          )}
+                          <div className="terminal p-4 text-green-400 max-h-72 overflow-y-auto">
                             {d.log_text
                               ? d.log_text.split('\n').map((line, i) => (
                                   <div key={i} className={
-                                    line.startsWith('FAILED') ? 'text-red-400' :
-                                    line.match(/\[\d+\/7\]/) ? 'text-blue-300' :
+                                    line.startsWith('FAILED') || line.startsWith('CANCELLED') ? 'text-red-400' :
+                                    line.match(/\[\d+\/7\]/) ? 'text-blue-300 font-medium' :
                                     line.includes('complete') ? 'text-green-300 font-medium' :
+                                    line.startsWith('  [cleanup]') || line.startsWith('  [rollback]') ? 'text-yellow-400' :
                                     ''
                                   }>
                                     {line || ' '}
@@ -993,7 +1162,7 @@ export default function ProjectDashboardPage() {
   ]
 
   return (
-    <div className="p-6 max-w-6xl">
+    <div className="flex-1 overflow-y-auto p-6 max-w-6xl">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-xs text-gray-600 mb-5">
         <Link to="/" className="hover:text-gray-400 transition-colors">Dashboard</Link>

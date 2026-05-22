@@ -1,4 +1,5 @@
-// Package deploy implements the healthcheck-cutover deployment strategy.
+// Package deploy implements a direct-replacement deployment strategy.
+// Containers are force-recreated in place using the latest compose + env version.
 package deploy
 
 import (
@@ -45,12 +46,21 @@ func New(db *store.DB, dockerClient *docker.Client, enc *crypto.Encryptor, proje
 	}
 }
 
-// Deploy runs a full healthcheck-cutover deployment using the latest compose version.
+// Deploy runs a deployment using the latest compose version.
 func (e *Engine) Deploy(ctx context.Context, projectID, triggeredBy string, logFn LogFunc) (*store.DeploymentRecord, error) {
 	return e.DeployVersion(ctx, projectID, triggeredBy, 0, logFn)
 }
 
 // DeployVersion deploys a specific compose version (0 = latest). Used for rollbacks.
+//
+// Strategy: direct in-place replacement.
+//  1. Write latest compose + env to disk.
+//  2. docker compose up -d --force-recreate --remove-orphans   (recreates all containers)
+//  3. Poll health until stable or timeout.
+//  4. Reload nginx if a config is active.
+//
+// Force-recreate guarantees that every change — env vars, ports, volumes, images —
+// is applied even if Docker's dependency graph doesn't detect a diff.
 func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy string, composeVersion int, logFn LogFunc) (*store.DeploymentRecord, error) {
 	ctx, cancel := context.WithTimeout(ctx, deployTimeout)
 	defer cancel()
@@ -68,12 +78,12 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		return nil, fmt.Errorf("project not found: %w", err)
 	}
 
-	// Fetch the specified compose config version (or latest if version == 0).
+	// ── Resolve compose version ──────────────────────────────────────────────
 	composeVersions, err := e.db.Compose.FindWhere(func(c store.ComposeConfig) bool {
 		return c.ProjectID == projectID
 	})
 	if err != nil || len(composeVersions) == 0 {
-		return nil, fmt.Errorf("no compose config for project %s", projectID)
+		return nil, fmt.Errorf("no compose config saved for project %q — save one first", project.Name)
 	}
 
 	var selectedCompose store.ComposeConfig
@@ -92,19 +102,20 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	} else {
 		selectedCompose = latestComposeConfig(composeVersions)
 	}
-	latestCompose := selectedCompose
 
+	// ── Resolve env version ──────────────────────────────────────────────────
 	envSets, _ := e.db.EnvVars.FindWhere(func(v store.EnvVarSet) bool {
 		return v.ProjectID == projectID
 	})
 	latestEnv := latestEnvSet(envSets)
 
+	// ── Create deployment record ─────────────────────────────────────────────
 	rec := store.DeploymentRecord{
 		ID:                store.NewULID(),
 		ProjectID:         projectID,
 		TriggeredBy:       triggeredBy,
-		Strategy:          "healthcheck-cutover",
-		NewComposeVersion: latestCompose.Version,
+		Strategy:          "direct-replace",
+		NewComposeVersion: selectedCompose.Version,
 		Status:            store.DeployStatusRunning,
 		StartedAt:         time.Now().UTC(),
 	}
@@ -135,91 +146,71 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		log(line)
 	}
 
+	// ── Prepare project directory ────────────────────────────────────────────
 	projectDir := filepath.Join(e.projectsDir, projectID)
 	if err := os.MkdirAll(projectDir, 0o700); err != nil {
 		return fail(fmt.Errorf("create project dir: %w", err))
 	}
 
-	// Step 1: Write docker-compose.yml.
+	envVer := 0
+	if latestEnv != nil {
+		envVer = latestEnv.Version
+	}
+	appendLog("Deploy started — compose v%d, env v%d, project %q", selectedCompose.Version, envVer, project.Name)
+
+	// ── Step 1: Write docker-compose.yml ─────────────────────────────────────
 	composePath := filepath.Join(projectDir, "docker-compose.yml")
-	appendLog("[1/7] Writing docker-compose.yml (version %d)", latestCompose.Version)
-	if err := atomicWrite(composePath, []byte(latestCompose.RawYAML)); err != nil {
+	appendLog("[1/4] Writing docker-compose.yml (compose v%d)", selectedCompose.Version)
+	if err := atomicWrite(composePath, []byte(selectedCompose.RawYAML)); err != nil {
 		return fail(fmt.Errorf("write compose: %w", err))
 	}
 
-	// Step 2: Write decrypted .env.
-	appendLog("[2/7] Writing .env")
+	// ── Step 2: Write .env ───────────────────────────────────────────────────
+	if latestEnv != nil {
+		appendLog("[2/4] Writing .env (env v%d — %d variables)", latestEnv.Version, len(latestEnv.Vars))
+	} else {
+		appendLog("[2/4] Writing .env (no env vars configured)")
+	}
 	envContent, err := e.buildEnvFile(latestEnv)
 	if err != nil {
 		return fail(fmt.Errorf("build env file: %w", err))
 	}
-	envPath := filepath.Join(projectDir, ".env")
-	if err := atomicWrite(envPath, []byte(envContent)); err != nil {
+	if err := atomicWrite(filepath.Join(projectDir, ".env"), []byte(envContent)); err != nil {
 		return fail(fmt.Errorf("write .env: %w", err))
 	}
 
 	safeProject := composeProjectName(project.Name)
-	nextProject := safeProject + "_next"
 
-	// Step 3: Bring up _next stack with force-recreate so stale containers from
-	// a previous failed deploy are always replaced.
-	appendLog("[3/7] Starting %s stack (force-recreate)", nextProject)
-	upOut, err := e.docker.ComposeUp(ctx, nextProject, composePath, true)
+	// ── Step 3: Force-recreate all containers ────────────────────────────────
+	// --force-recreate rebuilds every container even when the image digest
+	// hasn't changed, ensuring env vars, ports, volumes, and config are applied.
+	appendLog("[3/4] Applying compose v%d (force-recreate, remove-orphans)…", selectedCompose.Version)
+	upOut, err := e.docker.ComposeUp(ctx, safeProject, composePath, true)
 	if t := strings.TrimSpace(upOut); t != "" {
-		appendLog("  docker output: %s", t)
+		appendLog("  %s", t)
 	}
 	if err != nil {
-		appendLog("  [cleanup] Tearing down %s stack", nextProject)
-		e.docker.ComposeDown(context.Background(), nextProject, composePath) //nolint:errcheck
 		return fail(fmt.Errorf("compose up: %w\n%s", err, strings.TrimSpace(upOut)))
 	}
 
-	// Step 4: Health polling.
-	appendLog("[4/7] Polling container health (timeout %s)", defaultTimeout)
-	if err := e.waitHealthy(ctx, nextProject, composePath, appendLog); err != nil {
-		appendLog("  [rollback] Tearing down failed %s stack", nextProject)
-		e.docker.ComposeDown(context.Background(), nextProject, composePath) //nolint:errcheck
-		return fail(fmt.Errorf("health check: %w", err))
+	// ── Step 4: Health check ─────────────────────────────────────────────────
+	appendLog("[4/4] Waiting for containers to become healthy (timeout %s)…", defaultTimeout)
+	if err := e.waitHealthy(ctx, safeProject, composePath, appendLog); err != nil {
+		return fail(fmt.Errorf("health check failed: %w", err))
 	}
 
-	// Steps 5-6 use context.Background() so a user cancel cannot interrupt
-	// the cutover once it has started — partial cutover would leave both stacks down.
-	cutoverCtx := context.Background()
-
-	// Step 5: Cutover — bring down old stack.
-	appendLog("[5/7] Cutting over — stopping %s", safeProject)
-	downOut, _ := e.docker.ComposeDown(cutoverCtx, safeProject, composePath)
-	if t := strings.TrimSpace(downOut); t != "" {
-		appendLog("  docker output: %s", t)
-	}
-
-	// Step 6: Free ports by tearing down _next, then start canonical.
-	appendLog("[6/7] Releasing %s ports", nextProject)
-	e.docker.ComposeDown(cutoverCtx, nextProject, composePath) //nolint:errcheck
-
-	appendLog("[7/7] Starting %s (canonical)", safeProject)
-	promoteOut, err := e.docker.ComposeUp(cutoverCtx, safeProject, composePath, true)
-	if t := strings.TrimSpace(promoteOut); t != "" {
-		appendLog("  docker output: %s", t)
-	}
-	if err != nil {
-		return fail(fmt.Errorf("promote: %w\n%s", err, strings.TrimSpace(promoteOut)))
-	}
-
-	// Step 7: Reload nginx if config exists.
+	// ── Nginx reload (if configured) ─────────────────────────────────────────
 	nginxCfgs, _ := e.db.Nginx.FindWhere(func(n store.NginxConfig) bool {
 		return n.ProjectID == projectID && n.Active
 	})
 	if len(nginxCfgs) > 0 {
-		appendLog("[7/7] Reloading nginx config")
+		appendLog("Reloading nginx config…")
 		if _, err := nginxpkg.Apply(nginxCfgs[0], project.Name); err != nil {
 			appendLog("  WARNING: nginx reload failed: %v", err)
 		}
-	} else {
-		appendLog("[7/7] No active nginx config — skipping")
 	}
 
-	// Success.
+	// ── Finish ───────────────────────────────────────────────────────────────
 	now := time.Now().UTC()
 	rec.Status = store.DeployStatusSuccess
 	rec.FinishedAt = &now
@@ -239,7 +230,7 @@ func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, l
 
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("health check timeout after %s", defaultTimeout)
+			return fmt.Errorf("timeout after %s", defaultTimeout)
 		}
 		select {
 		case <-ctx.Done():
@@ -249,7 +240,7 @@ func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, l
 
 		containers, err := e.docker.ComposePS(ctx, project, composePath)
 		if err != nil || len(containers) == 0 {
-			log("  waiting for containers to start...")
+			log("  waiting for containers to start…")
 			continue
 		}
 
@@ -264,7 +255,6 @@ func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, l
 			case "healthy":
 				// good
 			case "running":
-				// no healthcheck — track stable running period
 				if firstRunning.IsZero() {
 					firstRunning = time.Now()
 				}
@@ -278,10 +268,10 @@ func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, l
 		}
 
 		if allHealthy {
-			log("  all containers healthy")
+			log("  all containers healthy ✓")
 			return nil
 		}
-		log("  containers not yet healthy — retrying...")
+		log("  not yet healthy — retrying…")
 	}
 }
 
@@ -303,8 +293,7 @@ func (e *Engine) buildEnvFile(set *store.EnvVarSet) (string, error) {
 	return sb.String(), nil
 }
 
-// composeProjectName converts an arbitrary project name to a valid Docker
-// Compose project name: lowercase, spaces→hyphens, non-alphanumeric stripped.
+// composeProjectName converts a project name to a valid Docker Compose project name.
 func composeProjectName(name string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(name) {
@@ -347,4 +336,3 @@ func latestEnvSet(sets []store.EnvVarSet) *store.EnvVarSet {
 	}
 	return &best
 }
-

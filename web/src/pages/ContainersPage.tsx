@@ -388,7 +388,7 @@ export default function ContainersPage() {
   }
 
   return (
-    <div className="p-6 max-w-full">
+    <div className="flex-1 overflow-y-auto p-6 max-w-full">
       {logsFor && <LogsModal name={logsFor} onClose={() => setLogsFor(null)} />}
       {execFor && <ExecModal name={execFor} onClose={() => setExecFor(null)} />}
       {deleteFor && (

@@ -98,7 +98,23 @@ export interface FileEntry {
   name: string
   path: string
   is_dir: boolean
+  is_symlink: boolean
   size: number
+  mode: string
+  mod_time: string
+  mime: string
+}
+
+export interface FileReadResult {
+  path: string
+  name: string
+  content: string
+  size: number
+  mode: string
+  mod_time: string
+  is_binary: boolean
+  mime: string
+  truncated: boolean
 }
 
 export interface ContainerInfo {
@@ -395,6 +411,33 @@ export const api = {
   // Proxy status probe (server-side HTTP check to avoid CORS)
   proxyStatus: (url: string) =>
     request<{ accessible: boolean; status?: number }>(`/api/v1/proxy/status?url=${encodeURIComponent(url)}`),
+
+  // File system explorer
+  fileBrowse: (path: string) =>
+    request<FileEntry[]>(`/api/v1/files/browse?path=${encodeURIComponent(path)}`),
+  fileRead: (path: string) =>
+    request<FileReadResult>(`/api/v1/files/read?path=${encodeURIComponent(path)}`),
+  fileSearch: (path: string, q: string) =>
+    request<FileEntry[]>(`/api/v1/files/search?path=${encodeURIComponent(path)}&q=${encodeURIComponent(q)}`),
+  fileWrite: (path: string, content: string) =>
+    request<{ status: string; path: string }>('/api/v1/files/write', {
+      method: 'POST', body: JSON.stringify({ path, content }),
+    }),
+  fileMkdir: (path: string) =>
+    request<{ status: string; path: string }>('/api/v1/files/mkdir', {
+      method: 'POST', body: JSON.stringify({ path }),
+    }),
+  fileRename: (from: string, to: string) =>
+    request<{ status: string }>('/api/v1/files/rename', {
+      method: 'POST', body: JSON.stringify({ from, to }),
+    }),
+  fileDelete: (path: string) =>
+    request<{ status: string; path: string }>(
+      `/api/v1/files/delete?path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' }
+    ),
+  fileDownloadUrl: (path: string) =>
+    `/api/v1/files/read?path=${encodeURIComponent(path)}&download=1`,
 
   // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
   uploadFile: (

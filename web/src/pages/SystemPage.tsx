@@ -120,7 +120,7 @@ export default function SystemPage() {
   }).join(' ')
 
   return (
-    <div className="p-6 max-w-6xl">
+    <div className="flex-1 overflow-y-auto p-6 max-w-6xl">
       <div className="flex items-baseline justify-between mb-7">
         <div>
           <h1 className="text-lg font-semibold text-white">System Metrics</h1>

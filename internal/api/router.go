@@ -162,6 +162,17 @@ func NewRouter(deps Deps) http.Handler {
 
 		// File upload
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/upload", h.UploadFile)
+
+		// File system explorer — admin-only writes, read for authenticated users
+		r.Route("/api/v1/files", func(r chi.Router) {
+			r.Get("/browse", h.FileBrowse)
+			r.Get("/read", h.FileRead)
+			r.Get("/search", h.FileSearch)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Post("/write", h.FileWrite)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Post("/mkdir", h.FileMkdir)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Post("/rename", h.FileRename)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/delete", h.FileDelete)
+		})
 	})
 
 	return r
