@@ -70,7 +70,7 @@ export interface DeploymentRecord {
   strategy: string
   old_compose_version: number
   new_compose_version: number
-  status: 'pending' | 'running' | 'success' | 'failed'
+  status: 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
   started_at: string
   finished_at: string | null
   log_text: string
@@ -155,6 +155,26 @@ export interface NginxContainerStatus {
 export interface RecentDeployment extends DeploymentRecord {
   project_name: string
 }
+
+export interface ProxyHost {
+  id: string
+  domain: string
+  upstream_host: string
+  upstream_port: number
+  ssl_enabled: boolean
+  ssl_cert_path: string
+  ssl_key_path: string
+  client_max_body_size: string
+  proxy_read_timeout: number
+  gzip_enabled: boolean
+  custom_directives: string
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type ProxyHostInput = Omit<ProxyHost, 'id' | 'enabled' | 'created_at' | 'updated_at'>
+
 
 export interface ContainerStats {
   name: string
@@ -250,8 +270,6 @@ export const api = {
 
   // Nginx — Docker container control
   nginxContainerStatus: () => request<NginxContainerStatus>('/api/v1/nginx/container'),
-  nginxUIURL: () => request<{ url: string; port: number }>('/api/v1/nginx/container/ui-url'),
-  nginxInstallSecret: () => request<{ secret: string }>('/api/v1/nginx/container/install-secret'),
   nginxContainerStart: () => request<{ status: string }>('/api/v1/nginx/container/start', { method: 'POST' }),
   nginxContainerStop: () => request<{ status: string }>('/api/v1/nginx/container/stop', { method: 'POST' }),
   nginxContainerReload: () => request<{ status: string; output: string }>('/api/v1/nginx/container/reload', { method: 'POST' }),
@@ -281,6 +299,34 @@ export const api = {
       { method: 'POST', body: JSON.stringify({ domain, days: days ?? 365 }) }
     ),
 
+  // Proxy hosts
+  listProxyHosts: () => request<ProxyHost[]>('/api/v1/proxy/hosts'),
+  createProxyHost: (data: ProxyHostInput) =>
+    request<ProxyHost>('/api/v1/proxy/hosts', { method: 'POST', body: JSON.stringify(data) }),
+  previewProxyHost: (data: ProxyHostInput) =>
+    request<{ config: string }>('/api/v1/proxy/hosts/preview', { method: 'POST', body: JSON.stringify(data) }),
+  updateProxyHost: (id: string, data: ProxyHostInput) =>
+    request<ProxyHost>(`/api/v1/proxy/hosts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  toggleProxyHost: (id: string) =>
+    request<ProxyHost>(`/api/v1/proxy/hosts/${id}/toggle`, { method: 'POST' }),
+  deleteProxyHost: (id: string) =>
+    request<void>(`/api/v1/proxy/hosts/${id}`, { method: 'DELETE' }),
+  testProxyHost: (id: string) =>
+    request<{
+      ok: boolean
+      status_code?: number
+      status?: string
+      error?: string
+      dns_resolved: boolean
+      dns_addrs?: string[]
+      dns_points_here: boolean
+      server_ip: string
+      nginx_ok: boolean
+      nginx_error?: string
+      hints: string[]
+    }>(`/api/v1/proxy/hosts/${id}/test`),
+  serverIP: () => request<{ ip: string; tip: string }>('/api/v1/proxy/server-ip'),
+
   // Deploy — global recent list
   listAllDeployments: () => request<RecentDeployment[]>('/api/v1/deployments'),
   // Deploy — per project
@@ -293,10 +339,12 @@ export const api = {
     request<DeploymentRecord[]>(`/api/v1/projects/${projectId}/deployments`),
   getDeployment: (projectId: string, depId: string) =>
     request<DeploymentRecord>(`/api/v1/projects/${projectId}/deployments/${depId}`),
+  cancelDeploy: (projectId: string, depId: string) =>
+    request<{ status: string }>(`/api/v1/projects/${projectId}/deployments/${depId}/cancel`, { method: 'POST' }),
   deleteDeployment: (projectId: string, depId: string) =>
     request<void>(`/api/v1/projects/${projectId}/deployments/${depId}`, { method: 'DELETE' }),
 
-  // Containers
+  // Containers — per-project
   listContainers: (projectId: string) =>
     request<ContainerInfo[]>(`/api/v1/projects/${projectId}/containers`),
   syncProjectStatus: (projectId: string) =>
@@ -306,6 +354,21 @@ export const api = {
       `/api/v1/projects/${projectId}/containers/${encodeURIComponent(name)}/${action}`,
       { method: 'POST' }
     ),
+
+  // Containers — global (all containers on host)
+  listAllContainers: () => request<ContainerInfo[]>('/api/v1/containers'),
+  containerStats: () => request<ContainerStats[]>('/api/v1/containers/stats'),
+  deleteContainer: (name: string) =>
+    request<{ status: string; container: string }>(
+      `/api/v1/containers/${encodeURIComponent(name)}`,
+      { method: 'DELETE' }
+    ),
+  globalContainerAction: (name: string, action: 'restart' | 'stop' | 'start') =>
+    request<{ status: string; action: string; container: string }>(
+      `/api/v1/containers/${encodeURIComponent(name)}/${action}`,
+      { method: 'POST' }
+    ),
+
 
   // Images
   listImages: () => request<DockerImage[]>('/api/v1/images'),

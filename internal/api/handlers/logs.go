@@ -64,6 +64,19 @@ func (h *H) ContainerLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ListAllContainers returns every Docker container on the host (all projects).
+func (h *H) ListAllContainers(w http.ResponseWriter, r *http.Request) {
+	containers, err := h.docker.PS(r.Context(), "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list containers: "+err.Error())
+		return
+	}
+	if containers == nil {
+		containers = []docker.ContainerInfo{}
+	}
+	writeJSON(w, http.StatusOK, containers)
+}
+
 // ListContainers returns all containers for a project.
 func (h *H) ListContainers(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
@@ -139,4 +152,27 @@ func (h *H) ContainerAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "action": action, "container": name})
+}
+
+// DeleteContainer force-removes a container by name.
+func (h *H) DeleteContainer(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+	if err := h.docker.DeleteContainer(r.Context(), name); err != nil {
+		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "container": name})
+}
+
+// ContainerStats returns a single snapshot of resource usage for all running containers.
+func (h *H) ContainerStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.docker.Stats(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "stats failed: "+err.Error())
+		return
+	}
+	if stats == nil {
+		stats = []docker.ContainerStats{}
+	}
+	writeJSON(w, http.StatusOK, stats)
 }

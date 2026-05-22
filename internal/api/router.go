@@ -85,15 +85,30 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/networks", h.ListNetworks)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/networks/{network}/containers/{container}", h.NetworkConnect)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/networks/{network}/containers/{container}", h.NetworkDisconnect)
-		r.Get("/api/v1/containers/{container}/networks", h.ContainerNetworks)
 
-		// Nginx — Docker container control
+		// Global containers (all projects)
+		r.Get("/api/v1/containers", h.ListAllContainers)
+		r.Get("/api/v1/containers/stats", h.ContainerStats)
+		r.Get("/api/v1/containers/{container}/networks", h.ContainerNetworks)
+		r.Get("/api/v1/containers/{name}/logs", h.ContainerLogs)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/containers/{name}/{action}", h.ContainerAction)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/containers/{name}", h.DeleteContainer)
+
+		// Nginx — Docker container control (nginx:alpine)
 		r.Get("/api/v1/nginx/container", h.NginxContainerStatus)
-		r.Get("/api/v1/nginx/container/ui-url", h.NginxUIURL)
-		r.Get("/api/v1/nginx/container/install-secret", h.NginxInstallSecret)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/start", h.NginxContainerStart)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/stop", h.NginxContainerStop)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/reload", h.NginxContainerReload)
+
+		// Proxy hosts — managed reverse-proxy virtual hosts
+		r.Get("/api/v1/proxy/hosts", h.ListProxyHosts)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/proxy/hosts", h.CreateProxyHost)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/proxy/hosts/preview", h.PreviewProxyHost)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Patch("/api/v1/proxy/hosts/{id}", h.UpdateProxyHost)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/proxy/hosts/{id}/toggle", h.ToggleProxyHost)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/proxy/hosts/{id}", h.DeleteProxyHost)
+		r.Get("/api/v1/proxy/hosts/{id}/test", h.TestProxyHost)
+		r.Get("/api/v1/proxy/server-ip", h.ServerIP)
 
 		// Nginx — global view + per-project management
 		r.Get("/api/v1/nginx", h.ListAllNginx)
@@ -110,6 +125,7 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/projects/{id}/deployments", h.ListDeployments)
 		r.Get("/api/v1/projects/{id}/deployments/{dep_id}", h.GetDeployment)
 		r.Get("/api/v1/projects/{id}/deployments/{dep_id}/stream", h.DeployStream) // SSE
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/deployments/{dep_id}/cancel", h.CancelDeploy)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/projects/{id}/deployments/{dep_id}", h.DeleteDeployment)
 
 		// Containers & logs
@@ -137,6 +153,9 @@ func NewRouter(deps Deps) http.Handler {
 
 		// Terminal — admin+ only
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/terminal/exec", h.ExecCommand)
+		// WebSocket PTY terminals (auth checked via cookie in the upgrade handler)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/terminal/container/ws", h.ExecContainerWS)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/terminal/shell/ws", h.HostShellWS)
 
 		// File upload
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/upload", h.UploadFile)

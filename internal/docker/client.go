@@ -206,14 +206,27 @@ func (c *Client) StartContainer(ctx context.Context, name string) error {
 	return err
 }
 
-// ComposeUp runs docker compose up -d.
-func (c *Client) ComposeUp(ctx context.Context, project, composePath string) (string, error) {
-	cmd := exec.CommandContext(ctx, "docker", "compose", "-p", project, "-f", composePath, "up", "-d", "--remove-orphans")
+// ComposeUp runs docker compose up -d. forceRecreate ensures containers are
+// always rebuilt even when the image digest has not changed.
+func (c *Client) ComposeUp(ctx context.Context, project, composePath string, forceRecreate bool) (string, error) {
+	args := []string{"compose", "-p", project, "-f", composePath, "up", "-d", "--remove-orphans"}
+	if forceRecreate {
+		args = append(args, "--force-recreate")
+	}
+	cmd := exec.CommandContext(ctx, "docker", args...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err := cmd.Run()
 	return out.String(), err
+}
+
+// DeleteContainer force-removes a container by name or short ID.
+func (c *Client) DeleteContainer(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	_, err := run(ctx, "rm", "-f", name)
+	return err
 }
 
 // ComposeDown stops and removes containers for a project.
@@ -227,6 +240,9 @@ func (c *Client) ComposeDown(ctx context.Context, project, composePath string) (
 }
 
 // ComposePS returns container info for a specific compose project.
+//
+// docker compose ps --format json uses "Name" (singular) and a Publishers array for
+// ports, which differs from the "Names"/string-ports format of plain docker ps.
 func (c *Client) ComposePS(ctx context.Context, project, composePath string) ([]ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
@@ -239,16 +255,57 @@ func (c *Client) ComposePS(ctx context.Context, project, composePath string) ([]
 		return nil, fmt.Errorf("compose ps: %w: %s", err, out.String())
 	}
 
+	type publisher struct {
+		TargetPort    int    `json:"TargetPort"`
+		PublishedPort int    `json:"PublishedPort"`
+		Protocol      string `json:"Protocol"`
+	}
+	type entry struct {
+		ID         string      `json:"ID"`
+		Name       string      `json:"Name"`       // docker compose ps uses singular Name
+		Names      string      `json:"Names"`      // plain docker ps uses plural Names
+		Image      string      `json:"Image"`
+		Status     string      `json:"Status"`
+		State      string      `json:"State"`
+		Publishers []publisher `json:"Publishers"` // compose ps ports as objects
+		Ports      string      `json:"Ports"`      // plain docker ps ports as string
+	}
+
+	toInfo := func(e entry) ContainerInfo {
+		name := e.Names
+		if name == "" {
+			name = e.Name
+		}
+		ports := e.Ports
+		if ports == "" && len(e.Publishers) > 0 {
+			var parts []string
+			for _, p := range e.Publishers {
+				if p.PublishedPort > 0 {
+					parts = append(parts, fmt.Sprintf("%d->%d/%s", p.PublishedPort, p.TargetPort, p.Protocol))
+				}
+			}
+			ports = strings.Join(parts, ", ")
+		}
+		return ContainerInfo{ID: e.ID, Names: name, Image: e.Image, Status: e.Status, State: e.State, Ports: ports}
+	}
+
 	var result []ContainerInfo
-	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-			if line == "" {
-				continue
-			}
-			var ci ContainerInfo
-			if err := json.Unmarshal([]byte(line), &ci); err == nil {
-				result = append(result, ci)
-			}
+	var entries []entry
+	if err := json.Unmarshal(out.Bytes(), &entries); err == nil {
+		for _, e := range entries {
+			result = append(result, toInfo(e))
+		}
+		return result, nil
+	}
+
+	// Fallback: JSONL (one JSON object per line).
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var e entry
+		if err := json.Unmarshal([]byte(line), &e); err == nil {
+			result = append(result, toInfo(e))
 		}
 	}
 	return result, nil

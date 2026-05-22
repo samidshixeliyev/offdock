@@ -3,6 +3,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -113,11 +114,15 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 
 	fail := func(reason error) (*store.DeploymentRecord, error) {
 		now := time.Now().UTC()
-		rec.Status = store.DeployStatusFailed
+		if errors.Is(reason, context.Canceled) {
+			rec.Status = store.DeployStatusCancelled
+			rec.LogText += "\nCANCELLED"
+		} else {
+			rec.Status = store.DeployStatusFailed
+			rec.LogText += "\nFAILED: " + reason.Error()
+		}
 		rec.FinishedAt = &now
-		rec.LogText += "\nFAILED: " + reason.Error()
 		_ = e.db.Deployments.Save(rec)
-		// Update project status.
 		project.Status = store.ProjectStatusError
 		project.UpdatedAt = time.Now().UTC()
 		_ = e.db.Projects.Save(project)
@@ -156,13 +161,16 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	safeProject := composeProjectName(project.Name)
 	nextProject := safeProject + "_next"
 
-	// Step 3: Bring up _next stack.
-	appendLog("[3/7] Starting %s stack", nextProject)
-	upOut, err := e.docker.ComposeUp(ctx, nextProject, composePath)
+	// Step 3: Bring up _next stack with force-recreate so stale containers from
+	// a previous failed deploy are always replaced.
+	appendLog("[3/7] Starting %s stack (force-recreate)", nextProject)
+	upOut, err := e.docker.ComposeUp(ctx, nextProject, composePath, true)
 	if t := strings.TrimSpace(upOut); t != "" {
 		appendLog("  docker output: %s", t)
 	}
 	if err != nil {
+		appendLog("  [cleanup] Tearing down %s stack", nextProject)
+		e.docker.ComposeDown(context.Background(), nextProject, composePath) //nolint:errcheck
 		return fail(fmt.Errorf("compose up: %w\n%s", err, strings.TrimSpace(upOut)))
 	}
 
@@ -174,19 +182,23 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		return fail(fmt.Errorf("health check: %w", err))
 	}
 
+	// Steps 5-6 use context.Background() so a user cancel cannot interrupt
+	// the cutover once it has started — partial cutover would leave both stacks down.
+	cutoverCtx := context.Background()
+
 	// Step 5: Cutover — bring down old stack.
 	appendLog("[5/7] Cutting over — stopping %s", safeProject)
-	downOut, _ := e.docker.ComposeDown(ctx, safeProject, composePath)
+	downOut, _ := e.docker.ComposeDown(cutoverCtx, safeProject, composePath)
 	if t := strings.TrimSpace(downOut); t != "" {
 		appendLog("  docker output: %s", t)
 	}
 
 	// Step 6: Free ports by tearing down _next, then start canonical.
 	appendLog("[6/7] Releasing %s ports", nextProject)
-	e.docker.ComposeDown(context.Background(), nextProject, composePath) //nolint:errcheck
+	e.docker.ComposeDown(cutoverCtx, nextProject, composePath) //nolint:errcheck
 
-	appendLog("[6/7] Starting %s (canonical)", safeProject)
-	promoteOut, err := e.docker.ComposeUp(ctx, safeProject, composePath)
+	appendLog("[7/7] Starting %s (canonical)", safeProject)
+	promoteOut, err := e.docker.ComposeUp(cutoverCtx, safeProject, composePath, true)
 	if t := strings.TrimSpace(promoteOut); t != "" {
 		appendLog("  docker output: %s", t)
 	}
