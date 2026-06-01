@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -59,7 +60,11 @@ func (h *H) RemoveNginx(w http.ResponseWriter, r *http.Request) {
 		cfg.Active = false
 		h.db.Nginx.Save(cfg) //nolint:errcheck
 	}
-	nginxpkg.Remove(project.Name) //nolint:errcheck
+	if nginxpkg.SystemAvailable() {
+		nginxpkg.RemoveSystem(project.Name) //nolint:errcheck
+	} else {
+		nginxpkg.Remove(project.Name) //nolint:errcheck
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -136,7 +141,12 @@ func (h *H) ApplyNginx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := nginxpkg.Apply(cfgs[0], project.Name)
+	var result *nginxpkg.ApplyResult
+	if nginxpkg.SystemAvailable() {
+		result, err = nginxpkg.ApplySystem(cfgs[0], project.Name)
+	} else {
+		result, err = nginxpkg.Apply(cfgs[0], project.Name)
+	}
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
@@ -270,4 +280,70 @@ func (h *H) PreviewNginx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"config": gen})
+}
+
+// SelfNginxConfig returns the generated nginx config for OffDock itself.
+// Query param: domain (default "localhost"), port (default 7070)
+func (h *H) SelfNginxConfig(w http.ResponseWriter, r *http.Request) {
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		domain = "localhost"
+	}
+	port := 7070
+	if p, err := strconv.Atoi(r.URL.Query().Get("port")); err == nil && p > 0 {
+		port = p
+	}
+	config := nginxpkg.GenerateSelfConfig(domain, port)
+	writeJSON(w, http.StatusOK, map[string]string{"config": config, "domain": domain, "port": strconv.Itoa(port)})
+}
+
+// ApplySelfNginxConfig writes the OffDock self-hosting nginx config to the system.
+// Body: { "domain": "deploy.ao.az", "port": 7070 }
+func (h *H) ApplySelfNginxConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Domain string `json:"domain"`
+		Port   int    `json:"port"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Domain == "" {
+		writeError(w, http.StatusBadRequest, "domain is required")
+		return
+	}
+	if req.Port == 0 {
+		req.Port = 7070
+	}
+	if !nginxpkg.SystemAvailable() {
+		writeError(w, http.StatusUnprocessableEntity, "system nginx is not installed — install nginx first")
+		return
+	}
+	result, err := nginxpkg.ApplySelfConfig(req.Domain, req.Port)
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	h.logAudit(r, "apply_nginx_self", "system", "", req.Domain, fmt.Sprintf("port:%d", req.Port))
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":      "applied",
+		"config_path": result.ConfigPath,
+		"test_output": result.NginxTestOutput,
+	})
+}
+
+// NginxSystemStatus returns whether system nginx is available and its status.
+func (h *H) NginxSystemStatus(w http.ResponseWriter, r *http.Request) {
+	available := nginxpkg.SystemAvailable()
+	var statusText string
+	if available {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "systemctl", "is-active", "nginx").Output()
+		if err == nil {
+			statusText = strings.TrimSpace(string(out))
+		} else {
+			statusText = "inactive"
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available": available,
+		"status":    statusText,
+	})
 }

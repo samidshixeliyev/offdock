@@ -84,8 +84,14 @@ func (h *H) CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:         time.Now().UTC(),
 	}
 
-	if _, err := nginxpkg.ApplyProxyHost(host); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, err.Error())
+	var applyErr error
+	if nginxpkg.SystemAvailable() {
+		_, applyErr = nginxpkg.ApplyProxyHostSystem(host)
+	} else {
+		_, applyErr = nginxpkg.ApplyProxyHost(host)
+	}
+	if applyErr != nil {
+		writeError(w, http.StatusUnprocessableEntity, applyErr.Error())
 		return
 	}
 
@@ -119,7 +125,11 @@ func (h *H) UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 
 	// If domain changed, remove the old config file.
 	if req.Domain != host.Domain {
-		nginxpkg.RemoveProxyHost(host.Domain) //nolint:errcheck
+		if nginxpkg.SystemAvailable() {
+			nginxpkg.RemoveProxyHostSystem(host.Domain) //nolint:errcheck
+		} else {
+			nginxpkg.RemoveProxyHost(host.Domain) //nolint:errcheck
+		}
 	}
 
 	host.Domain = req.Domain
@@ -138,8 +148,14 @@ func (h *H) UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 	host.UpdatedAt = time.Now().UTC()
 
 	if host.Enabled {
-		if _, err := nginxpkg.ApplyProxyHost(host); err != nil {
-			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		var applyErr error
+		if nginxpkg.SystemAvailable() {
+			_, applyErr = nginxpkg.ApplyProxyHostSystem(host)
+		} else {
+			_, applyErr = nginxpkg.ApplyProxyHost(host)
+		}
+		if applyErr != nil {
+			writeError(w, http.StatusUnprocessableEntity, applyErr.Error())
 			return
 		}
 	}
@@ -160,7 +176,11 @@ func (h *H) DeleteProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "host not found")
 		return
 	}
-	nginxpkg.RemoveProxyHost(host.Domain) //nolint:errcheck
+	if nginxpkg.SystemAvailable() {
+		nginxpkg.RemoveProxyHostSystem(host.Domain) //nolint:errcheck
+	} else {
+		nginxpkg.RemoveProxyHost(host.Domain) //nolint:errcheck
+	}
 	if err := h.db.ProxyHosts.Delete(id); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete host")
 		return
@@ -182,12 +202,22 @@ func (h *H) ToggleProxyHost(w http.ResponseWriter, r *http.Request) {
 	host.UpdatedAt = time.Now().UTC()
 
 	if host.Enabled {
-		if _, err := nginxpkg.ApplyProxyHost(host); err != nil {
-			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		var applyErr error
+		if nginxpkg.SystemAvailable() {
+			_, applyErr = nginxpkg.ApplyProxyHostSystem(host)
+		} else {
+			_, applyErr = nginxpkg.ApplyProxyHost(host)
+		}
+		if applyErr != nil {
+			writeError(w, http.StatusUnprocessableEntity, applyErr.Error())
 			return
 		}
 	} else {
-		nginxpkg.RemoveProxyHost(host.Domain) //nolint:errcheck
+		if nginxpkg.SystemAvailable() {
+			nginxpkg.RemoveProxyHostSystem(host.Domain) //nolint:errcheck
+		} else {
+			nginxpkg.RemoveProxyHost(host.Domain) //nolint:errcheck
+		}
 	}
 
 	if err := h.db.ProxyHosts.Save(host); err != nil {

@@ -115,6 +115,11 @@ func NewRouter(deps Deps) http.Handler {
 			r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/{name}", h.DeleteContainer)
 		})
 
+		// Nginx — system nginx status + self-config
+		r.Get("/api/v1/nginx/system/status", h.NginxSystemStatus)
+		r.Get("/api/v1/nginx/system/self-config", h.SelfNginxConfig)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/system/self-config", h.ApplySelfNginxConfig)
+
 		// Nginx — Docker container control (nginx:alpine)
 		r.Get("/api/v1/nginx/container", h.NginxContainerStatus)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/start", h.NginxContainerStart)

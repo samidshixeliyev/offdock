@@ -271,22 +271,26 @@ func cleanPath(p string) string {
 }
 
 var blockedPrefixes = []string{
-	"/bin", "/sbin", "/usr/bin", "/usr/sbin",
-	"/lib", "/lib64", "/lib32",
-	"/boot", "/dev", "/proc", "/sys",
-	"/var/offdock",        // OffDock data
-	"/etc/offdock",        // OffDock config
-	"/root/.ssh",          // SSH keys
-	"/home/ubuntu/.ssh",   // SSH keys
-	"/root/.docker",       // Docker credentials
-	"/etc/shadow",         // Password hashes
-	"/etc/sudoers",        // Sudo config
-	"/etc/sudoers.d",      // Sudo config dir
-	"/etc/systemd/system", // Systemd units
+	"/proc", // kernel virtual filesystem
+	"/sys",  // kernel virtual filesystem
+	"/dev",  // device files
+	"/boot", // bootloader — deletion would brick the server
+}
+
+// blockedExact are exact paths that must not be deleted to keep OffDock alive.
+var blockedExact = []string{
+	"/var/offdock",
+	"/etc/offdock",
+	"/usr/local/bin/offdock",
 }
 
 func isBlockedPath(p string) bool {
 	for _, b := range blockedPrefixes {
+		if p == b || strings.HasPrefix(p, b+"/") {
+			return true
+		}
+	}
+	for _, b := range blockedExact {
 		if p == b || strings.HasPrefix(p, b+"/") {
 			return true
 		}

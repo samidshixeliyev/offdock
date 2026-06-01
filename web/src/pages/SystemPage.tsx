@@ -81,6 +81,14 @@ export default function SystemPage() {
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [history, setHistory] = useState<number[]>([]) // CPU history for sparkline
 
+  // Nginx setup state
+  const [nginxStatus, setNginxStatus] = useState<{ available: boolean; status: string } | null>(null)
+  const [nginxDomain, setNginxDomain] = useState('')
+  const [nginxPort, setNginxPort] = useState(7070)
+  const [nginxConfigPreview, setNginxConfigPreview] = useState('')
+  const [nginxApplyMessage, setNginxApplyMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [nginxLoading, setNginxLoading] = useState(false)
+
   useEffect(() => {
     const es = new EventSource('/api/v1/system/stats')
     es.onmessage = e => {
@@ -93,6 +101,45 @@ export default function SystemPage() {
     es.onerror = () => es.close()
     return () => es.close()
   }, [])
+
+  useEffect(() => {
+    api.getNginxSystemStatus().then(setNginxStatus).catch(() => setNginxStatus({ available: false, status: '' }))
+  }, [])
+
+  async function previewNginxConfig() {
+    if (!nginxDomain.trim()) {
+      setNginxApplyMessage({ kind: 'err', text: 'Domain is required' })
+      return
+    }
+    try {
+      setNginxLoading(true)
+      const res = await api.getSelfNginxConfig(nginxDomain.trim(), nginxPort)
+      setNginxConfigPreview(res.config)
+      setNginxApplyMessage(null)
+    } catch (e) {
+      setNginxApplyMessage({ kind: 'err', text: (e as Error).message })
+    } finally {
+      setNginxLoading(false)
+    }
+  }
+
+  async function applyNginxConfig() {
+    if (!nginxDomain.trim()) {
+      setNginxApplyMessage({ kind: 'err', text: 'Domain is required' })
+      return
+    }
+    try {
+      setNginxLoading(true)
+      const res = await api.applySelfNginxConfig(nginxDomain.trim(), nginxPort)
+      setNginxApplyMessage({ kind: 'ok', text: `Applied: ${res.config_path}` })
+      // Refresh status
+      api.getNginxSystemStatus().then(setNginxStatus).catch(() => {})
+    } catch (e) {
+      setNginxApplyMessage({ kind: 'err', text: (e as Error).message })
+    } finally {
+      setNginxLoading(false)
+    }
+  }
 
   if (!stats) {
     return (
@@ -308,6 +355,135 @@ export default function SystemPage() {
           No running containers
         </div>
       )}
+
+      {/* Nginx Setup section */}
+      <section className="mt-6">
+        <p className="section-heading mb-3">Nginx Setup</p>
+        <div className="card space-y-4">
+          {/* Status row */}
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-gray-200 mb-1">System Nginx</p>
+              <p className="text-xs text-gray-500">
+                Native nginx on the host. Required for proxying domains (e.g. deploy.ao.az) to OffDock.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {nginxStatus === null ? (
+                <span className="text-xs text-gray-600">Checking...</span>
+              ) : nginxStatus.available ? (
+                <span className={clsx(
+                  'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium',
+                  nginxStatus.status === 'active'
+                    ? 'bg-green-900/40 text-green-400 border border-green-900'
+                    : 'bg-yellow-900/40 text-yellow-400 border border-yellow-900',
+                )}>
+                  <span className={clsx(
+                    'w-1.5 h-1.5 rounded-full',
+                    nginxStatus.status === 'active' ? 'bg-green-500' : 'bg-yellow-500',
+                  )} />
+                  {nginxStatus.status || 'installed'}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-red-900/40 text-red-400 border border-red-900">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                  not installed
+                </span>
+              )}
+            </div>
+          </div>
+
+          {nginxStatus?.available && (
+            <>
+              {/* Inputs */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="md:col-span-2">
+                  <label className="block text-xs text-gray-500 mb-1">Domain</label>
+                  <input
+                    type="text"
+                    value={nginxDomain}
+                    onChange={e => setNginxDomain(e.target.value)}
+                    placeholder="deploy.ao.az"
+                    className="w-full bg-gray-900 border border-gray-800 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-700"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Port</label>
+                  <input
+                    type="number"
+                    value={nginxPort}
+                    onChange={e => setNginxPort(parseInt(e.target.value, 10) || 7070)}
+                    className="w-full bg-gray-900 border border-gray-800 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-700"
+                  />
+                </div>
+              </div>
+
+              {/* Buttons */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={previewNginxConfig}
+                  disabled={nginxLoading}
+                  className="btn-ghost text-xs disabled:opacity-50"
+                >
+                  Generate Config
+                </button>
+                <button
+                  onClick={applyNginxConfig}
+                  disabled={nginxLoading}
+                  className="btn-primary text-xs disabled:opacity-50"
+                >
+                  Apply Config
+                </button>
+              </div>
+
+              {/* Status message */}
+              {nginxApplyMessage && (
+                <div className={clsx(
+                  'text-xs px-3 py-2 rounded border',
+                  nginxApplyMessage.kind === 'ok'
+                    ? 'bg-green-900/20 border-green-900 text-green-400'
+                    : 'bg-red-900/20 border-red-900 text-red-400',
+                )}>
+                  {nginxApplyMessage.text}
+                </div>
+              )}
+
+              {/* Config preview */}
+              {nginxConfigPreview && (
+                <div>
+                  <p className="text-xs text-gray-500 mb-1">Generated config</p>
+                  <pre className="bg-gray-950 border border-gray-800 rounded p-3 text-xs text-gray-400 overflow-x-auto whitespace-pre">
+                    {nginxConfigPreview}
+                  </pre>
+                </div>
+              )}
+
+              {/* DNS instructions */}
+              <div className="border-t border-gray-800 pt-3">
+                <p className="text-xs text-gray-500 mb-2">DNS Setup</p>
+                <p className="text-xs text-gray-600 mb-1.5">
+                  Create the following A record(s) in your DNS provider:
+                </p>
+                <pre className="bg-gray-950 border border-gray-800 rounded p-2.5 text-xs text-gray-500 font-mono">
+{`${nginxDomain || 'deploy.ao.az'}   A   <this-server-ip>
+*.${(nginxDomain || 'deploy.ao.az').split('.').slice(-2).join('.')}        A   <this-server-ip>   (optional wildcard)`}
+                </pre>
+              </div>
+            </>
+          )}
+
+          {nginxStatus && !nginxStatus.available && (
+            <div className="text-xs text-gray-500 border-t border-gray-800 pt-3">
+              Install nginx on the host first:
+              <pre className="bg-gray-950 border border-gray-800 rounded p-2.5 mt-2 text-xs text-gray-500 font-mono">
+sudo apt-get install nginx
+              </pre>
+              For air-gapped servers, use bundled debs via <code className="text-gray-400">prepare-usb.sh</code> on an
+              internet-connected machine.
+            </div>
+          )}
+        </div>
+      </section>
 
       {/* Backup section */}
       <section className="mt-6">
