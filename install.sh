@@ -187,20 +187,7 @@ if [[ "$SKIP_NGINX" == "false" ]] && command -v nginx &>/dev/null; then
     echo "  Disabled nginx default site."
   fi
 
-  # Write catch-all default server (returns 444 for unknown hosts)
-  cat >/etc/nginx/sites-available/00-offdock-default.conf <<'NGINXEOF'
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    server_name _;
-    server_tokens off;
-    return 444;
-}
-NGINXEOF
-  ln -sf /etc/nginx/sites-available/00-offdock-default.conf \
-         /etc/nginx/sites-enabled/00-offdock-default.conf
-
-  # Determine server name — use domain if given, otherwise server IP
+  # Determine server name and redirect target
   if [[ -n "${DOMAIN}" ]]; then
     NGINX_DOMAIN="${DOMAIN}"
   else
@@ -208,9 +195,85 @@ NGINXEOF
     NGINX_DOMAIN="${SERVER_IP}"
   fi
 
-  # Generate nginx config — HTTPS if PEM provided, HTTP otherwise
+  # Catch-all default server: any unrecognised host redirects to OffDock.
+  # With PEM: redirect to https://DOMAIN; without: redirect to http://DOMAIN.
+  if [[ -n "${PEM_PATH}" ]]; then
+    cat >/etc/nginx/sites-available/00-offdock-default.conf <<NGINXEOF
+# Catch-all port 80 → redirect to OffDock HTTPS
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    server_tokens off;
+    return 301 https://${NGINX_DOMAIN}\$request_uri;
+}
+
+# Catch-all port 443 → proxy to OffDock (handles direct IP HTTPS access)
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    server_name _;
+    server_tokens off;
+    client_max_body_size 100m;
+
+    ssl_certificate     ${PEM_PATH};
+    ssl_certificate_key ${PEM_PATH};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_connect_timeout 10s;
+
+    location / {
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+    }
+}
+NGINXEOF
+  else
+    cat >/etc/nginx/sites-available/00-offdock-default.conf <<NGINXEOF
+# Catch-all port 80 → proxy to OffDock directly
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    server_tokens off;
+    client_max_body_size 100m;
+
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_connect_timeout 10s;
+
+    location / {
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+    }
+}
+NGINXEOF
+  fi
+  ln -sf /etc/nginx/sites-available/00-offdock-default.conf \
+         /etc/nginx/sites-enabled/00-offdock-default.conf
+
+  # Named server block for the OffDock domain/IP — same as catch-all but
+  # explicit server_name so deployed app configs don't conflict.
   if [[ -n "${PEM_PATH}" ]]; then
     cat >/etc/nginx/sites-available/offdock-self.conf <<NGINXEOF
+# OffDock UI — HTTP → HTTPS redirect
 server {
     listen 80;
     server_name ${NGINX_DOMAIN};
@@ -218,6 +281,7 @@ server {
     return 301 https://\$host\$request_uri;
 }
 
+# OffDock UI — HTTPS
 server {
     listen 443 ssl;
     http2 on;
@@ -250,6 +314,7 @@ NGINXEOF
     echo "  HTTPS enabled with PEM: ${PEM_PATH}"
   else
     cat >/etc/nginx/sites-available/offdock-self.conf <<NGINXEOF
+# OffDock UI — HTTP
 server {
     listen 80;
     server_name ${NGINX_DOMAIN};

@@ -1,221 +1,260 @@
 # OffDock — Offline Installation Guide
 
-This guide explains how to install OffDock on an **air-gapped Ubuntu machine**
-(no internet access). Everything you need is downloaded once on an internet-connected
-machine and then transferred via USB.
+OffDock runs as a native Go binary + systemd service on Ubuntu. The offline bundle
+ships with everything needed: the binary, Docker .deb packages, and nginx .deb packages.
+No internet access is required on the target machine.
 
 ---
 
-## What you need
-
-| Item | Where it comes from |
-|------|---------------------|
-| `offdock` binary | Built on an internet machine (this guide) |
-| `offdock.service` | From the GitHub repo |
-| `install.sh` | From the GitHub repo |
-
-The binary already contains the entire React web UI — no separate frontend files needed.
-
----
-
-## Part 1 — Prepare on an internet-connected machine
-
-### 1.1 Install build tools (one time)
-
-```bash
-# Ubuntu / Debian
-sudo apt-get install -y golang-go nodejs npm git
-
-# Or install Go manually (required: Go 1.22+)
-wget https://go.dev/dl/go1.22.5.linux-amd64.tar.gz
-sudo tar -C /usr/local -xzf go1.22.5.linux-amd64.tar.gz
-export PATH=$PATH:/usr/local/go/bin
-```
-
-### 1.2 Clone the repository
-
-```bash
-git clone https://github.com/samidshixeliyev/ao-deploy.git offdock
-cd offdock
-```
-
-### 1.3 Build the binary
-
-```bash
-# Install Node deps and build React frontend
-cd web && npm install && npm run build && cd ..
-
-# Download Go dependencies
-go mod download
-
-# Compile — single static binary with embedded frontend
-go build -ldflags "-X main.Version=1.0.0 -s -w" -o offdock ./cmd/offdock
-
-# Verify
-file offdock
-# → ELF 64-bit LSB executable ...
-ls -lh offdock
-# → ~8 MB
-```
-
-### 1.4 Copy files to USB
-
-Copy these **three files** to a USB drive:
+## What is in the bundle
 
 ```
-offdock          ← the compiled binary (~8 MB)
-offdock.service  ← systemd unit file
-install.sh       ← installer script
-```
-
-```bash
-# Example: USB mounted at /media/$USER/USB
-cp offdock offdock.service install.sh /media/$USER/USB/
+offdock-bundle/
+  offdock              ← compiled binary (frontend embedded)
+  offdock.service      ← systemd unit file
+  install.sh           ← installer (run this)
+  uninstall.sh         ← uninstaller
+  debs/
+    docker/            ← Docker CE .deb packages
+    nginx/             ← nginx .deb packages
 ```
 
 ---
 
-## Part 2 — Install on the air-gapped Ubuntu machine
-
-### 2.1 Prerequisites on target machine
-
-The target machine needs:
-- **Docker CE** — install from a Docker offline bundle or Docker's apt mirror
-- **Nginx** — `sudo apt-get install -y nginx` (or from an offline apt mirror)
-- **Ubuntu 20.04 / 22.04 / 24.04 / 26.04** (amd64)
-
-> **Docker offline install:** Download `docker-ce_*.deb`, `docker-ce-cli_*.deb`,
-> `containerd.io_*.deb`, and `docker-compose-plugin_*.deb` from
-> `https://download.docker.com/linux/ubuntu/dists/` while online,
-> copy to USB, install with `sudo dpkg -i *.deb`.
-
-### 2.2 Mount the USB and run the installer
+## Quick install (most common case)
 
 ```bash
-# Mount USB (if not auto-mounted)
-sudo mount /dev/sdb1 /mnt/usb
+cd ~
+unzip offdock-offline.zip
+cd offdock-bundle
 
-# Copy files from USB
-cp /mnt/usb/offdock /mnt/usb/offdock.service /mnt/usb/install.sh ~/
+# With domain + wildcard TLS cert (recommended):
+sudo bash install.sh --domain deploy.ao.az --pem /path/to/wildcard.pem
 
-# Run installer (must be root)
-cd ~/
+# Without domain (uses server IP, HTTP only):
 sudo bash install.sh
 ```
 
-The installer will:
-1. Generate a random JWT secret in `/etc/offdock/config.yaml`
-2. Create runtime directories under `/var/offdock/`
-3. Install the binary to `/usr/local/bin/offdock`
-4. Install and start the systemd service
-
-### 2.3 First-time setup
-
-Open a browser on any machine on the same network:
-
-```
-http://<target-machine-ip>:7070/setup
-```
-
-Create your **superadmin** account. You will not be able to access any other
-page until this is done.
+Then open a browser and go to `http(s)://deploy.ao.az/setup` to create your admin account.
 
 ---
 
-## Part 3 — Loading Docker images from USB
+## Install options
 
-OffDock manages images loaded as `.tar` archives. To export an image on an
-internet-connected machine and load it on the air-gapped target:
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--domain DOMAIN` | Domain for the OffDock UI | `--domain deploy.ao.az` |
+| `--pem PATH` | Combined PEM file (cert chain + private key). Enables HTTPS. A wildcard cert (*.ao.az) covers OffDock UI + all deployed app subdomains. | `--pem /etc/ssl/wildcard.ao.az.pem` |
+| `--port PORT` | OffDock listen port (default 7070) | `--port 8080` |
+| `--data-dir DIR` | Data directory (default `/var/offdock/data`) | |
+| `--no-nginx` | Skip nginx configuration | |
+| `--uninstall` | Remove OffDock (preserves data) | |
 
-### Export on internet machine
+---
+
+## What the installer does
+
+1. Installs Docker CE from bundled `.deb` packages (skips if already installed)
+2. Installs nginx from bundled `.deb` packages (skips if already installed)
+3. Generates a random JWT secret and writes `/etc/offdock/config.yaml`
+4. Creates runtime directories under `/var/offdock/`
+5. Copies the binary to `/usr/local/bin/offdock`
+6. Installs and starts the `offdock` systemd service
+7. Configures nginx with two vhosts:
+   - **`00-offdock-default.conf`** — catch-all: any unrecognised domain/IP is
+     redirected to the OffDock UI (HTTP → HTTPS if PEM provided, HTTP otherwise)
+   - **`offdock-self.conf`** — explicit vhost for the OffDock domain/IP
+
+---
+
+## nginx layout after install
+
+```
+/etc/nginx/sites-available/
+  00-offdock-default.conf   ← catch-all → redirect to OffDock
+  offdock-self.conf         ← OffDock UI (deploy.ao.az or server IP)
+  offdock-<project>.conf    ← per-project vhosts (added by OffDock at deploy time)
+
+/etc/nginx/sites-enabled/
+  00-offdock-default.conf → (symlink)
+  offdock-self.conf        → (symlink)
+```
+
+**With `--pem` provided:**
+- Port 80 (any host) → redirect to `https://deploy.ao.az`
+- Port 443 `deploy.ao.az` → proxy to OffDock on `:7070`
+- Port 443 (any other host/IP) → proxy to OffDock on `:7070` (fallback)
+
+**Without `--pem`:**
+- Port 80 (any host) → proxy to OffDock on `:7070` directly
+
+---
+
+## PEM file format
+
+OffDock uses a **single combined PEM file** containing both the private key and the
+full certificate chain concatenated. nginx uses the same file path for both
+`ssl_certificate` and `ssl_certificate_key`.
 
 ```bash
-# Pull the image (while online)
-docker pull nginx:1.27-alpine
+# Combine key + cert into one file:
+cat private.key fullchain.crt > wildcard.ao.az.pem
 
-# Export to tar
-docker save nginx:1.27-alpine -o nginx-1.27-alpine.tar
-
-# Copy to USB
-cp nginx-1.27-alpine.tar /media/$USER/USB/
+# Copy to server:
+sudo cp wildcard.ao.az.pem /var/offdock/certs/wildcard.ao.az.pem
+sudo chmod 600 /var/offdock/certs/wildcard.ao.az.pem
 ```
 
-### Load on air-gapped machine via OffDock UI
-
-1. Go to **USB Import** in the sidebar
-2. Select your USB drive
-3. Click **Load Image** next to the `.tar` file
-4. The image appears in **Images** page and is ready to reference in compose configs
+A wildcard cert (`*.ao.az`) automatically covers:
+- `deploy.ao.az` — OffDock UI
+- `app1.ao.az`, `grafana.ao.az`, etc. — deployed apps added via Reverse Proxy
 
 ---
 
-## Configuration reference
+## First-time setup
 
-Config file: `/etc/offdock/config.yaml`
+1. Open `https://deploy.ao.az/setup` in a browser
+2. Create your **superadmin** account (username + password)
+3. Log in — you now have full access
 
-```yaml
-port: 7070           # listening port (change if needed)
-data_dir: /var/offdock/data
-log_dir: /var/offdock/logs
-log_level: info      # debug | info | warn | error
-jwt_secret: "..."    # auto-generated — do NOT change after first login
-```
-
-After changing config: `sudo systemctl restart offdock`
+> If you see a TLS warning, your cert is self-signed. Click Advanced → Proceed.
+> For a trusted cert, use a proper CA-signed wildcard cert in the `--pem` flag.
 
 ---
 
-## Useful commands on the target machine
+## Deploying apps
+
+1. Go to **Projects** → **New Project**
+2. Paste a `docker-compose.yml` in the Compose tab
+3. Add environment variables in the Env tab
+4. Click **Deploy** — OffDock brings up the stack and streams logs live
+5. Go to **Reverse Proxy** → **Add Host** to expose the app on a subdomain
+
+---
+
+## Loading Docker images (air-gapped workflow)
+
+On an internet-connected machine:
 
 ```bash
-# Service management
-sudo systemctl status offdock
-sudo systemctl restart offdock
-sudo systemctl stop offdock
+docker pull myapp:1.2.3
+docker save myapp:1.2.3 -o myapp-1.2.3.tar
+# Copy myapp-1.2.3.tar to USB
+```
 
-# Live logs
-sudo journalctl -u offdock -f
+On the air-gapped server via OffDock UI:
 
-# Upgrade binary (copy new offdock to USB, then)
-sudo systemctl stop offdock
-sudo cp /mnt/usb/offdock /usr/local/bin/offdock
-sudo systemctl start offdock
+1. Plug in the USB drive
+2. Go to **USB Import** in the sidebar
+3. Browse to the `.tar` file and click **Load Image**
+4. Reference it in your compose: `image: myapp:1.2.3`
 
-# Uninstall (data is preserved)
-sudo bash install.sh --uninstall
-# To also remove data:
-sudo rm -rf /var/offdock
+---
+
+## Upgrading OffDock
+
+```bash
+# Copy new offdock-offline.zip to the server, then:
+cd ~
+unzip -o offdock-offline.zip
+cd offdock-bundle
+sudo bash install.sh   # restarts the service with the new binary
+```
+
+The installer only overwrites the binary and service file — config and data are preserved.
+
+---
+
+## Service management
+
+```bash
+sudo systemctl status offdock        # check status
+sudo systemctl restart offdock       # restart
+sudo systemctl stop offdock          # stop
+sudo journalctl -u offdock -f        # follow live logs
+sudo journalctl -u offdock -n 100    # last 100 log lines
 ```
 
 ---
 
-## Directory layout on target machine
+## Uninstall
+
+```bash
+# Remove OffDock (preserves data in /var/offdock)
+sudo bash uninstall.sh
+
+# Also remove all data, certs, and projects:
+sudo bash uninstall.sh --purge
+```
+
+---
+
+## Directory layout
 
 ```
 /usr/local/bin/offdock              ← binary
-/etc/offdock/config.yaml            ← config (600 permissions)
+/etc/offdock/config.yaml            ← config (root:root 600)
 /etc/systemd/system/offdock.service
 
 /var/offdock/
-  data/           ← *.db files (custom append-log store)
-  projects/       ← compose + .env written at deploy time
-  certs/          ← SSL certs copied from USB
+  data/           ← *.db files (append-log store, AES-256-GCM encrypted env vars)
+  projects/       ← docker-compose.yml + .env written at deploy time
+  certs/          ← SSL PEM files
   logs/offdock.log
 
-/etc/nginx/sites-available/offdock-<name>.conf   ← managed by OffDock
-/etc/nginx/sites-enabled/offdock-<name>.conf     ← symlink
+/etc/nginx/sites-available/         ← managed by OffDock
 ```
 
 ---
 
-## Security notes
+## Config file reference
 
-- OffDock binds to `0.0.0.0:7070`. Restrict access with UFW:
-  ```bash
-  sudo ufw allow from 192.168.1.0/24 to any port 7070
-  sudo ufw deny 7070
-  ```
-- Env var values are encrypted with AES-256-GCM using a key derived from
-  `/etc/machine-id`. The `.db` files are not portable between machines.
-- Nginx configs are written to `/etc/nginx/sites-available/` by the offdock
-  process (runs as root via systemd). Do not expose port 7070 to the internet.
+`/etc/offdock/config.yaml`
+
+```yaml
+port: 7070
+data_dir: /var/offdock/data
+log_dir: /var/offdock/logs
+log_level: info          # debug | info | warn | error
+jwt_secret: "..."        # auto-generated — changing this logs everyone out
+default_pem_path: ""     # path to combined PEM; enables HTTPS on deployed apps
+```
+
+After editing: `sudo systemctl restart offdock`
+
+---
+
+## Troubleshooting
+
+**OffDock fails to start**
+```bash
+sudo journalctl -u offdock -n 50
+# Check: /etc/offdock/config.yaml exists and has a jwt_secret
+```
+
+**nginx config test fails**
+```bash
+sudo nginx -t
+sudo cat /etc/nginx/sites-available/offdock-self.conf
+```
+
+**Can't reach OffDock UI**
+```bash
+# Check service is running:
+sudo systemctl is-active offdock
+
+# Check nginx is running:
+sudo systemctl is-active nginx
+
+# Check firewall:
+sudo ufw status
+# Allow HTTP/HTTPS if needed:
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+```
+
+**Docker images not loading**
+```bash
+docker load -i /path/to/image.tar
+docker images | grep myapp
+```
