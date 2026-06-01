@@ -93,6 +93,7 @@ func (h *H) CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save host")
 		return
 	}
+	h.logAudit(r, "create_proxy_host", "proxy_host", host.ID, host.Domain, "")
 	writeJSON(w, http.StatusCreated, host)
 }
 
@@ -147,6 +148,7 @@ func (h *H) UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save host")
 		return
 	}
+	h.logAudit(r, "update_proxy_host", "proxy_host", id, host.Domain, "")
 	writeJSON(w, http.StatusOK, host)
 }
 
@@ -163,6 +165,7 @@ func (h *H) DeleteProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not delete host")
 		return
 	}
+	h.logAudit(r, "delete_proxy_host", "proxy_host", id, "", "")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -191,6 +194,11 @@ func (h *H) ToggleProxyHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save host")
 		return
 	}
+	state := "disabled"
+	if host.Enabled {
+		state = "enabled"
+	}
+	h.logAudit(r, "toggle_proxy_host", "proxy_host", id, host.Domain, state)
 	writeJSON(w, http.StatusOK, host)
 }
 

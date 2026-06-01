@@ -131,6 +131,7 @@ func (h *H) FileRead(w http.ResponseWriter, r *http.Request) {
 
 // FileWrite creates or overwrites a file with the provided content.
 func (h *H) FileWrite(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20) // 10 MB
 	var req struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
@@ -273,6 +274,15 @@ var blockedPrefixes = []string{
 	"/bin", "/sbin", "/usr/bin", "/usr/sbin",
 	"/lib", "/lib64", "/lib32",
 	"/boot", "/dev", "/proc", "/sys",
+	"/var/offdock",        // OffDock data
+	"/etc/offdock",        // OffDock config
+	"/root/.ssh",          // SSH keys
+	"/home/ubuntu/.ssh",   // SSH keys
+	"/root/.docker",       // Docker credentials
+	"/etc/shadow",         // Password hashes
+	"/etc/sudoers",        // Sudo config
+	"/etc/sudoers.d",      // Sudo config dir
+	"/etc/systemd/system", // Systemd units
 }
 
 func isBlockedPath(p string) bool {

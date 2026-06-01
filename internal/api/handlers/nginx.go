@@ -149,6 +149,8 @@ func (h *H) ApplyNginx(w http.ResponseWriter, r *http.Request) {
 	cfg.AppliedAt = &now
 	h.db.Nginx.Save(cfg) //nolint:errcheck
 
+	h.logAudit(r, "apply_nginx", "project", projectID, project.Name, "")
+
 	writeJSON(w, http.StatusOK, map[string]string{
 		"config_path":       result.ConfigPath,
 		"nginx_test_output": result.NginxTestOutput,

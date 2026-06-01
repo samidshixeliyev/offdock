@@ -204,3 +204,21 @@ type ProxyHost struct {
 }
 
 func (p ProxyHost) GetID() string { return p.ID }
+
+// --- AuditEvent -------------------------------------------------------------
+
+// AuditEvent records a user action for the audit trail.
+type AuditEvent struct {
+	ID           string    `json:"id" msgpack:"id"`
+	UserID       string    `json:"user_id" msgpack:"user_id"`
+	Username     string    `json:"username" msgpack:"username"`
+	Action       string    `json:"action" msgpack:"action"`               // e.g. "login", "deploy", "create_project"
+	ResourceType string    `json:"resource_type" msgpack:"resource_type"` // "project", "user", "proxy_host", etc.
+	ResourceID   string    `json:"resource_id" msgpack:"resource_id"`
+	ResourceName string    `json:"resource_name" msgpack:"resource_name"`
+	Details      string    `json:"details" msgpack:"details"`
+	IPAddr       string    `json:"ip_addr" msgpack:"ip_addr"`
+	CreatedAt    time.Time `json:"created_at" msgpack:"created_at"`
+}
+
+func (a AuditEvent) GetID() string { return a.ID }

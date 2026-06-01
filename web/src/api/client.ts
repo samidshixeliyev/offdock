@@ -252,6 +252,19 @@ export interface ContainerStats {
   PIDs: string
 }
 
+export interface AuditEvent {
+  id: string
+  user_id: string
+  username: string
+  action: string
+  resource_type: string
+  resource_id: string
+  resource_name: string
+  details: string
+  ip_addr: string
+  created_at: string
+}
+
 class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message)
@@ -514,6 +527,21 @@ export const api = {
     ),
   fileDownloadUrl: (path: string) =>
     `/api/v1/files/read?path=${encodeURIComponent(path)}&download=1`,
+
+  // Audit log
+  listAuditEvents: (params?: { limit?: number; resource_type?: string; action?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.limit !== undefined) qs.set('limit', String(params.limit))
+    if (params?.resource_type) qs.set('resource_type', params.resource_type)
+    if (params?.action) qs.set('action', params.action)
+    const q = qs.toString()
+    return request<AuditEvent[]>(`/api/v1/audit${q ? `?${q}` : ''}`)
+  },
+
+  // System backup — triggers a file download
+  downloadBackup: (): void => {
+    window.open('/api/v1/system/backup')
+  },
 
   // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
   uploadFile: (

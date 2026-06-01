@@ -60,6 +60,11 @@ function Icon({ name }: { name: string }) {
         <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
       </svg>
     ),
+    audit: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.063 2.522-.186 3.76-.21 2.12-1.61 3.78-3.687 4.205-1.585.324-3.187.5-4.815.535H12c-1.628-.034-3.23-.211-4.815-.535-2.076-.425-3.477-2.086-3.687-4.205A39.064 39.064 0 013 12c0-1.268.063-2.522.186-3.76C3.396 6.12 4.797 4.46 6.873 4.034 8.458 3.71 10.06 3.534 11.688 3.5h.624c1.628.034 3.23.21 4.815.535 2.076.425 3.477 2.086 3.687 4.205.123 1.238.186 2.492.186 3.76z" />
+      </svg>
+    ),
     logout: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
         <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0013.5 3h-6a2.25 2.25 0 00-2.25 2.25v13.5A2.25 2.25 0 007.5 21h6a2.25 2.25 0 002.25-2.25V15m3 0l3-3m0 0l-3-3m3 3H9" />
@@ -81,6 +86,7 @@ const nav = [
   { to: '/system', label: 'System', icon: 'system' },
   { to: '/terminal', label: 'Terminal', icon: 'terminal' },
   { to: '/users', label: 'Users', icon: 'users' },
+  { to: '/audit', label: 'Audit Log', icon: 'audit' },
 ]
 
 export default function Layout() {

@@ -110,6 +110,7 @@ func run() error {
 		Stats:       statsCollector,
 		SSEHub:      hub,
 		ProjectsDir: projectsDir,
+		DataDir:     cfg.DataDir,
 	})
 
 	// 9. Serve embedded React frontend for all non-API routes.

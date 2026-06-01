@@ -5,27 +5,31 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"time"
 
 	"offdock/internal/api/sse"
 	"offdock/internal/auth"
 	"offdock/internal/crypto"
 	"offdock/internal/deploy"
 	"offdock/internal/docker"
+	authmw "offdock/internal/middleware"
 	"offdock/internal/store"
 	"offdock/internal/system"
 )
 
 // H bundles all dependencies required by handlers.
 type H struct {
-	db             *store.DB
-	auth           *auth.Service
-	enc            *crypto.Encryptor
-	docker         *docker.Client
-	deployer       *deploy.Engine
-	stats          *system.Collector
-	hub            *sse.Hub
-	projectsDir    string
-	deployCancels  sync.Map // streamKey → context.CancelFunc
+	db            *store.DB
+	auth          *auth.Service
+	enc           *crypto.Encryptor
+	docker        *docker.Client
+	deployer      *deploy.Engine
+	stats         *system.Collector
+	hub           *sse.Hub
+	projectsDir   string
+	dataDir       string
+	deployCancels sync.Map // streamKey → context.CancelFunc
+	limiter       *authmw.LoginLimiter
 }
 
 // New returns an initialised handler bundle.
@@ -38,6 +42,7 @@ func New(
 	stats *system.Collector,
 	hub *sse.Hub,
 	projectsDir string,
+	dataDir string,
 ) *H {
 	return &H{
 		db:          db,
@@ -48,6 +53,8 @@ func New(
 		stats:       stats,
 		hub:         hub,
 		projectsDir: projectsDir,
+		dataDir:     dataDir,
+		limiter:     authmw.NewLoginLimiter(10, time.Minute),
 	}
 }
 

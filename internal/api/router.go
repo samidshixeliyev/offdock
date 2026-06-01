@@ -28,6 +28,7 @@ type Deps struct {
 	Stats       *system.Collector
 	SSEHub      *sse.Hub
 	ProjectsDir string
+	DataDir     string
 }
 
 // NewRouter builds and returns the fully configured Chi router.
@@ -42,7 +43,7 @@ func NewRouter(deps Deps) http.Handler {
 	r.Use(chimiddleware.Recoverer)
 	r.Use(jsonContentType)
 
-	h := handlers.New(deps.DB, deps.Auth, deps.Encryptor, deps.Docker, deps.Deployer, deps.Stats, deps.SSEHub, deps.ProjectsDir)
+	h := handlers.New(deps.DB, deps.Auth, deps.Encryptor, deps.Docker, deps.Deployer, deps.Stats, deps.SSEHub, deps.ProjectsDir, deps.DataDir)
 
 	// --- Public routes ---
 	r.Post("/api/v1/auth/login", h.Login)
@@ -171,6 +172,12 @@ func NewRouter(deps Deps) http.Handler {
 
 		// System stats (SSE)
 		r.Get("/api/v1/system/stats", h.SystemStats)
+
+		// Audit log — admin+ read
+		r.Get("/api/v1/audit", h.ListAuditEvents)
+
+		// Backup — superadmin only
+		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Get("/api/v1/system/backup", h.DownloadBackup)
 
 		// Reverse proxy status probe (server-side to avoid CORS)
 		r.Get("/api/v1/proxy/status", h.ProxyStatus)

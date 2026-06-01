@@ -476,10 +476,20 @@ export default function ContainersPage() {
           Loading containers…
         </div>
       ) : filtered.length === 0 ? (
-        <div className="card text-center py-16 text-gray-600 text-sm border-dashed">
-          {containers.length === 0
-            ? 'No containers found — deploy a project first.'
-            : `No containers match "${search || stateFilter}"`}
+        <div className="card text-center py-16 text-sm border-dashed">
+          {containers.length === 0 ? (
+            <>
+              <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-3">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-5 h-5 text-gray-600">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
+                </svg>
+              </div>
+              <p className="text-gray-500 text-sm mb-1">No containers running</p>
+              <p className="text-gray-700 text-xs">Start a deployment to create containers</p>
+            </>
+          ) : (
+            <p className="text-gray-600">{`No containers match "${search || stateFilter}"`}</p>
+          )}
         </div>
       ) : (
         <div className="card p-0 overflow-x-auto">

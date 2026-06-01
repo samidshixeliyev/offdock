@@ -93,6 +93,7 @@ func (h *H) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save user")
 		return
 	}
+	h.logAudit(r, "create_user", "user", user.ID, user.Username, string(user.Role))
 	writeJSON(w, http.StatusCreated, safeUser(user))
 }
 
@@ -126,6 +127,7 @@ func (h *H) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update user")
 		return
 	}
+	h.logAudit(r, "update_user", "user", id, "", "")
 	writeJSON(w, http.StatusOK, safeUser(user))
 }
 
@@ -143,6 +145,7 @@ func (h *H) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	h.logAudit(r, "delete_user", "user", id, "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

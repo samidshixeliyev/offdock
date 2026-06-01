@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 
@@ -24,17 +25,20 @@ func (h *H) ListAllDeployments(w http.ResponseWriter, r *http.Request) {
 		all = all[:25]
 	}
 
+	// Build project name map once instead of one query per deployment.
+	projects, _ := h.db.Projects.FindAll()
+	nameByID := make(map[string]string, len(projects))
+	for _, p := range projects {
+		nameByID[p.ID] = p.Name
+	}
+
 	type enriched struct {
 		store.DeploymentRecord
 		ProjectName string `json:"project_name"`
 	}
 	result := make([]enriched, 0, len(all))
 	for _, d := range all {
-		name := ""
-		if p, err := h.db.Projects.FindByID(d.ProjectID); err == nil {
-			name = p.Name
-		}
-		result = append(result, enriched{DeploymentRecord: d, ProjectName: name})
+		result = append(result, enriched{DeploymentRecord: d, ProjectName: nameByID[d.ProjectID]})
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -45,7 +49,8 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	claims := authmw.ClaimsFromContext(r.Context())
 
-	if _, err := h.db.Projects.FindByID(projectID); err != nil {
+	project, err := h.db.Projects.FindByID(projectID)
+	if err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
@@ -93,6 +98,8 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		h.hub.Close(streamKey)
 	}()
+
+	h.logAudit(r, "deploy_triggered", "project", projectID, project.Name, fmt.Sprintf("compose_v%d env_v%d", composeVersion, envVersion))
 
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"deployment_id": depID,

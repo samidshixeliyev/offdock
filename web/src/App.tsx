@@ -22,6 +22,7 @@ import ContainersPage from './pages/ContainersPage'
 import NetworksPage from './pages/NetworksPage'
 import VolumesPage from './pages/VolumesPage'
 import FilesPage from './pages/FilesPage'
+import AuditPage from './pages/AuditPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -56,6 +57,7 @@ export default function App() {
             <Route path="/networks" element={<NetworksPage />} />
             <Route path="/volumes" element={<VolumesPage />} />
             <Route path="/files" element={<FilesPage />} />
+            <Route path="/audit" element={<AuditPage />} />
           </Route>
         </Routes>
       </AuthProvider>

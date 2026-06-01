@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { SystemStats } from '../api/client'
+import { api, SystemStats } from '../api/client'
 import clsx from 'clsx'
 
 function fmtBytes(bytes: number, decimals = 1) {
@@ -308,6 +308,31 @@ export default function SystemPage() {
           No running containers
         </div>
       )}
+
+      {/* Backup section */}
+      <section className="mt-6">
+        <p className="section-heading mb-3">Backup</p>
+        <div className="card">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-gray-200 mb-1">Configuration Backup</p>
+              <p className="text-xs text-gray-500">
+                Downloads a ZIP archive of all OffDock configuration data (.db files).
+              </p>
+            </div>
+            <button
+              onClick={() => api.downloadBackup()}
+              className="btn-ghost text-xs flex items-center gap-1.5"
+              title="Download backup"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+              </svg>
+              Download Backup
+            </button>
+          </div>
+        </div>
+      </section>
     </div>
   )
 }

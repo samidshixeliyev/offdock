@@ -11,6 +11,10 @@ import (
 
 // Login authenticates a user by username/password and sets an httpOnly JWT cookie.
 func (h *H) Login(w http.ResponseWriter, r *http.Request) {
+	if !h.limiter.Allow(authmw.RealIP(r)) {
+		writeError(w, http.StatusTooManyRequests, "too many login attempts — try again in a minute")
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -49,6 +53,8 @@ func (h *H) Login(w http.ResponseWriter, r *http.Request) {
 		Expires:  time.Now().Add(8 * time.Hour),
 	})
 
+	h.logAudit(r, "login", "user", user.ID, user.Username, "")
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":       user.ID,
 		"username": user.Username,
@@ -66,6 +72,7 @@ func (h *H) Logout(w http.ResponseWriter, r *http.Request) {
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 	})
+	h.logAudit(r, "logout", "user", "", "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})
 }
 

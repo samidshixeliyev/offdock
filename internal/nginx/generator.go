@@ -188,7 +188,7 @@ func Generate(cfg store.NginxConfig) (string, error) {
 		NginxConfig:    cfg,
 		ReadTimeout:    timeoutStr,
 		MaxBodySize:    maxBody,
-		CustomBlock:    indentDirectives(normalizeDirectives(cfg.CustomDirectives)),
+		CustomBlock:    indentDirectives(normalizeDirectives(sanitizeDirectives(cfg.CustomDirectives))),
 		AllServerNames: allServerNames,
 		AccessLogLine:  accessLogLine,
 	}
@@ -279,7 +279,7 @@ func GenerateProxyHost(h store.ProxyHost) (string, error) {
 		NginxConfig:    cfg,
 		ReadTimeout:    timeoutStr,
 		MaxBodySize:    maxBody,
-		CustomBlock:    indentDirectives(normalizeDirectives(cfg.CustomDirectives)),
+		CustomBlock:    indentDirectives(normalizeDirectives(sanitizeDirectives(cfg.CustomDirectives))),
 		AllServerNames: strings.Join(serverNames, " "),
 		ExtraLocations: locs,
 		AccessLogLine:  accessLogLine,
@@ -333,6 +333,27 @@ func SanitizeDomain(d string) string {
 		}
 	}
 	return strings.TrimRight(strings.TrimSpace(d), "/")
+}
+
+// sanitizeDirectives strips nginx directives that could expose files or bypass
+// the proxy config. Admins can still add valid tuning directives.
+func sanitizeDirectives(s string) string {
+	blocked := []string{"include", "alias", "root", "auth_basic", "lua_", "perl_", "map "}
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(strings.ToLower(line))
+		safe := true
+		for _, b := range blocked {
+			if strings.HasPrefix(trimmed, b) {
+				safe = false
+				break
+			}
+		}
+		if safe {
+			out = append(out, line)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func normalizeDirectives(s string) string {

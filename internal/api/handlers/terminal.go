@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,10 +22,66 @@ import (
 const pwdSentinel = "OFFDOCK_CWD:"
 
 var wsUpgrader = websocket.Upgrader{
-	CheckOrigin:     func(r *http.Request) bool { return true },
+	CheckOrigin:     allowLocalOrigin,
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
 }
+
+// allowLocalOrigin permits WebSocket upgrades from the same host or any
+// RFC-1918 / loopback origin (OffDock is a LAN-only tool).
+func allowLocalOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	// Strip scheme
+	h := origin
+	if i := strings.Index(h, "://"); i >= 0 {
+		h = h[i+3:]
+	}
+	// Strip path
+	if i := strings.Index(h, "/"); i >= 0 {
+		h = h[:i]
+	}
+	// Strip port
+	if i := strings.LastIndex(h, ":"); i >= 0 && i > strings.LastIndex(h, "]") {
+		h = h[:i]
+	}
+	// Allow same server host
+	serverHost := r.Host
+	if i := strings.LastIndex(serverHost, ":"); i >= 0 && i > strings.LastIndex(serverHost, "]") {
+		serverHost = serverHost[:i]
+	}
+	if h == serverHost {
+		return true
+	}
+	// Allow loopback and private ranges
+	ip := net.ParseIP(h)
+	if ip == nil {
+		return false
+	}
+	for _, cidr := range privateCIDRs {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+var privateCIDRs = func() []*net.IPNet {
+	var nets []*net.IPNet
+	for _, s := range []string{
+		"127.0.0.0/8", "::1/128",
+		"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+		"169.254.0.0/16", "fc00::/7",
+	} {
+		_, n, _ := net.ParseCIDR(s)
+		if n != nil {
+			nets = append(nets, n)
+		}
+	}
+	return nets
+}()
 
 // ExecCommand runs a shell command on the host and returns stdout/stderr/exit_code/cwd.
 func (h *H) ExecCommand(w http.ResponseWriter, r *http.Request) {

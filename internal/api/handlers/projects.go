@@ -42,6 +42,7 @@ func (h *H) CreateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save project")
 		return
 	}
+	h.logAudit(r, "create_project", "project", p.ID, p.Name, "")
 	writeJSON(w, http.StatusCreated, p)
 }
 
@@ -95,6 +96,7 @@ func (h *H) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 	// Best-effort cleanup of associated records.
 	cleanProjectRecords(h.db, id)
+	h.logAudit(r, "delete_project", "project", id, "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

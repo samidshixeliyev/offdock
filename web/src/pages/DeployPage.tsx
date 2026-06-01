@@ -35,6 +35,13 @@ export default function DeployPage() {
 
   const logRef = useRef<HTMLDivElement>(null)
   const esRef = useRef<EventSource | null>(null)
+  const isAtBottomRef = useRef<boolean>(true)
+
+  const handleLogScroll = () => {
+    const el = logRef.current
+    if (!el) return
+    isAtBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 50
+  }
 
   const reload = () => {
     if (!id) return
@@ -59,7 +66,9 @@ export default function DeployPage() {
   }, [id])
 
   useEffect(() => {
-    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+    if (logRef.current && isAtBottomRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight
+    }
   }, [log])
 
   useEffect(() => {
@@ -91,6 +100,7 @@ export default function DeployPage() {
   const startDeploy = async (composeVer = 0, envVer = 0) => {
     if (!id) return
     setDeploying(true)
+    isAtBottomRef.current = true
     const label = composeVer || envVer
       ? `Rolling back to compose v${composeVer || 'latest'} · env v${envVer || 'latest'}…`
       : 'Deploying latest…'
@@ -137,19 +147,34 @@ export default function DeployPage() {
           <button
             onClick={() => startDeploy()}
             disabled={deploying || !latestCompose}
-            className="btn-primary"
+            className="btn-primary flex items-center gap-2"
           >
-            {deploying ? '⟳ Deploying…' : '▶ Deploy Latest'}
+            {deploying ? (
+              <>
+                <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Deploying…
+              </>
+            ) : (
+              <>▶ Deploy Latest</>
+            )}
           </button>
         </div>
 
-        {log.length > 0 && (
+        {log.length > 0 ? (
           <div
             ref={logRef}
+            onScroll={handleLogScroll}
             className="font-mono text-xs text-green-400 bg-gray-950 rounded-lg p-4 h-56 overflow-y-auto mt-2"
           >
             {log.map((line, i) => <div key={i}>{line}</div>)}
             {deploying && <span className="animate-pulse">▌</span>}
+          </div>
+        ) : (
+          <div className="font-mono text-xs text-gray-600 bg-gray-950 rounded-lg p-4 h-56 flex items-center justify-center mt-2 border border-dashed border-gray-800">
+            No logs yet — click "Deploy Latest" to start
           </div>
         )}
       </div>

@@ -18,6 +18,7 @@ type DB struct {
 	Deployments    *Collection[DeploymentRecord]
 	ProxyHosts     *Collection[ProxyHost]
 	DeploySettings *Collection[DeploySettings]
+	AuditEvents    *Collection[AuditEvent]
 }
 
 // Open initialises all collections, creating data files if they do not exist.
@@ -60,6 +61,9 @@ func Open(dataDir string) (*DB, error) {
 	if db.DeploySettings, err = NewCollection[DeploySettings](open("deploy_settings")); err != nil {
 		return nil, err
 	}
+	if db.AuditEvents, err = NewCollection[AuditEvent](open("audit_events")); err != nil {
+		return nil, err
+	}
 
 	return db, nil
 }
@@ -69,6 +73,7 @@ func (db *DB) Close() error {
 	closers := []interface{ Close() error }{
 		db.Users, db.Projects, db.Images, db.Compose,
 		db.EnvVars, db.Nginx, db.Deployments, db.ProxyHosts, db.DeploySettings,
+		db.AuditEvents,
 	}
 	for _, c := range closers {
 		if err := c.Close(); err != nil {
