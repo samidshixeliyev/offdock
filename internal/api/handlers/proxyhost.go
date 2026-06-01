@@ -22,8 +22,7 @@ type proxyHostInput struct {
 	UpstreamHost      string                `json:"upstream_host"`
 	UpstreamPort      int                   `json:"upstream_port"`
 	SSLEnabled        bool                  `json:"ssl_enabled"`
-	SSLCertPath       string                `json:"ssl_cert_path"`
-	SSLKeyPath        string                `json:"ssl_key_path"`
+	SSLPEMPath        string                `json:"ssl_pem_path"`
 	ClientMaxBodySize string                `json:"client_max_body_size"`
 	ProxyReadTimeout  int                   `json:"proxy_read_timeout"`
 	GzipEnabled       bool                  `json:"gzip_enabled"`
@@ -71,8 +70,7 @@ func (h *H) CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 		UpstreamHost:      strings.TrimSpace(req.UpstreamHost),
 		UpstreamPort:      req.UpstreamPort,
 		SSLEnabled:        req.SSLEnabled,
-		SSLCertPath:       req.SSLCertPath,
-		SSLKeyPath:        req.SSLKeyPath,
+		SSLPEMPath:        req.SSLPEMPath,
 		ClientMaxBodySize: req.ClientMaxBodySize,
 		ProxyReadTimeout:  req.ProxyReadTimeout,
 		GzipEnabled:       req.GzipEnabled,
@@ -137,8 +135,7 @@ func (h *H) UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 	host.UpstreamHost = strings.TrimSpace(req.UpstreamHost)
 	host.UpstreamPort = req.UpstreamPort
 	host.SSLEnabled = req.SSLEnabled
-	host.SSLCertPath = req.SSLCertPath
-	host.SSLKeyPath = req.SSLKeyPath
+	host.SSLPEMPath = req.SSLPEMPath
 	host.ClientMaxBodySize = req.ClientMaxBodySize
 	host.ProxyReadTimeout = req.ProxyReadTimeout
 	host.GzipEnabled = req.GzipEnabled
@@ -371,8 +368,7 @@ func (h *H) PreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 		UpstreamHost:      strings.TrimSpace(req.UpstreamHost),
 		UpstreamPort:      req.UpstreamPort,
 		SSLEnabled:        req.SSLEnabled,
-		SSLCertPath:       req.SSLCertPath,
-		SSLKeyPath:        req.SSLKeyPath,
+		SSLPEMPath:        req.SSLPEMPath,
 		ClientMaxBodySize: req.ClientMaxBodySize,
 		ProxyReadTimeout:  req.ProxyReadTimeout,
 		GzipEnabled:       req.GzipEnabled,

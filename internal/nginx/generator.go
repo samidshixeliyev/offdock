@@ -175,6 +175,12 @@ func Generate(cfg store.NginxConfig) (string, error) {
 		accessLogLine = "access_log /var/log/nginx/" + sanitizeName(cfg.Domain) + ".access.log combined;"
 	}
 
+	// Resolve PEM → cert/key before building template data so the template
+	// renders the correct paths.
+	if cfg.SSLEnabled {
+		cfg.SSLCertPath, cfg.SSLKeyPath = resolveSSLPaths(cfg.SSLPEMPath, cfg.SSLCertPath, cfg.SSLKeyPath)
+	}
+
 	data := templateData{
 		NginxConfig:    cfg,
 		ReadTimeout:    timeoutStr,
@@ -182,11 +188,6 @@ func Generate(cfg store.NginxConfig) (string, error) {
 		CustomBlock:    indentDirectives(normalizeDirectives(sanitizeDirectives(cfg.CustomDirectives))),
 		AllServerNames: allServerNames,
 		AccessLogLine:  accessLogLine,
-	}
-
-	// Resolve PEM → cert/key before rendering
-	if cfg.SSLEnabled {
-		cfg.SSLCertPath, cfg.SSLKeyPath = resolveSSLPaths(cfg.SSLPEMPath, cfg.SSLCertPath, cfg.SSLKeyPath)
 	}
 
 	var buf bytes.Buffer
