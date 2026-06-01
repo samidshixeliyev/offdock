@@ -19,6 +19,8 @@ import SystemPage from './pages/SystemPage'
 import TerminalPage from './pages/TerminalPage'
 import ReverseProxyPage from './pages/ReverseProxyPage'
 import ContainersPage from './pages/ContainersPage'
+import NetworksPage from './pages/NetworksPage'
+import VolumesPage from './pages/VolumesPage'
 import FilesPage from './pages/FilesPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -51,6 +53,8 @@ export default function App() {
             <Route path="/terminal" element={<TerminalPage />} />
             <Route path="/proxy" element={<ReverseProxyPage />} />
             <Route path="/containers" element={<ContainersPage />} />
+            <Route path="/networks" element={<NetworksPage />} />
+            <Route path="/volumes" element={<VolumesPage />} />
             <Route path="/files" element={<FilesPage />} />
           </Route>
         </Routes>

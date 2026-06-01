@@ -239,6 +239,224 @@ func (c *Client) ComposeDown(ctx context.Context, project, composePath string) (
 	return out.String(), err
 }
 
+// ─── Networks ─────────────────────────────────────────────────────────────────
+
+// NetworkSummary is one row from docker network ls.
+type NetworkSummary struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Driver   string `json:"driver"`
+	Scope    string `json:"scope"`
+	Internal bool   `json:"internal"`
+}
+
+// NetworkDetail is the full inspect output for a single network.
+type NetworkDetail struct {
+	ID         string                       `json:"Id"`
+	Name       string                       `json:"Name"`
+	Driver     string                       `json:"Driver"`
+	Scope      string                       `json:"Scope"`
+	Internal   bool                         `json:"Internal"`
+	Labels     map[string]string            `json:"Labels"`
+	Containers map[string]NetworkContainerD `json:"Containers"`
+	IPAM       struct {
+		Config []struct {
+			Subnet  string `json:"Subnet"`
+			Gateway string `json:"Gateway"`
+		} `json:"Config"`
+	} `json:"IPAM"`
+}
+
+// NetworkContainerD is a container entry inside a network inspect result.
+type NetworkContainerD struct {
+	Name string `json:"Name"`
+	IPv4 string `json:"IPv4Address"`
+}
+
+// ListNetworks returns all Docker networks with their attached containers.
+func (c *Client) ListNetworks(ctx context.Context) ([]NetworkDetail, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+
+	// Get all network names first.
+	out, err := run(ctx, "network", "ls", "--format", "{{.Name}}")
+	if err != nil {
+		return nil, err
+	}
+	names := strings.Fields(strings.TrimSpace(out))
+	if len(names) == 0 {
+		return []NetworkDetail{}, nil
+	}
+
+	// Inspect all networks in one call (returns JSON array).
+	args := append([]string{"network", "inspect"}, names...)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel2()
+	cmd := exec.CommandContext(ctx2, "docker", args...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	cmd.Run() //nolint:errcheck — partial results are still useful
+
+	var result []NetworkDetail
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		return []NetworkDetail{}, nil
+	}
+	return result, nil
+}
+
+// CreateNetwork creates a Docker network with the given driver (default: bridge).
+func (c *Client) CreateNetwork(ctx context.Context, name, driver string) error {
+	if driver == "" {
+		driver = "bridge"
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "network", "create", "--driver", driver, name)
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// DeleteNetwork removes a Docker network by name.
+func (c *Client) DeleteNetwork(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "network", "rm", name)
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// NetworkConnect connects a container to a network. Idempotent.
+func (c *Client) NetworkConnect(ctx context.Context, network, container string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "network", "connect", network, container)
+	if err != nil {
+		msg := strings.TrimSpace(out)
+		if strings.Contains(msg, "already exists") {
+			return nil
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
+
+// NetworkDisconnect disconnects a container from a network.
+func (c *Client) NetworkDisconnect(ctx context.Context, network, container string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "network", "disconnect", network, container)
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// ─── Volumes ──────────────────────────────────────────────────────────────────
+
+// VolumeSummary is one row from docker volume ls.
+type VolumeSummary struct {
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	Scope      string            `json:"Scope"`
+	Mountpoint string            `json:"Mountpoint"`
+	Labels     map[string]string `json:"Labels"`
+	CreatedAt  string            `json:"CreatedAt"`
+}
+
+// ListVolumes returns all Docker volumes.
+func (c *Client) ListVolumes(ctx context.Context) ([]VolumeSummary, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+
+	// docker volume ls gives limited info; use inspect for full details.
+	out, err := run(ctx, "volume", "ls", "--format", "{{.Name}}")
+	if err != nil {
+		return nil, err
+	}
+	names := strings.Fields(strings.TrimSpace(out))
+	if len(names) == 0 {
+		return []VolumeSummary{}, nil
+	}
+
+	args := append([]string{"volume", "inspect"}, names...)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel2()
+	cmd := exec.CommandContext(ctx2, "docker", args...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	cmd.Run() //nolint:errcheck
+
+	var result []VolumeSummary
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		// Fall back to name-only list.
+		for _, n := range names {
+			result = append(result, VolumeSummary{Name: n, Driver: "local"})
+		}
+	}
+	return result, nil
+}
+
+// CreateVolume creates a Docker volume.
+func (c *Client) CreateVolume(ctx context.Context, name, driver string) (*VolumeSummary, error) {
+	if driver == "" {
+		driver = "local"
+	}
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "volume", "create", "--driver", driver, name)
+	if err != nil {
+		return nil, fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	return &VolumeSummary{Name: strings.TrimSpace(out), Driver: driver}, nil
+}
+
+// DeleteVolume removes a Docker volume by name.
+func (c *Client) DeleteVolume(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "volume", "rm", name)
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// PruneVolumes removes all unused Docker volumes and returns (names, spaceReclaimed).
+func (c *Client) PruneVolumes(ctx context.Context) ([]string, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	out, err := run(ctx, "volume", "prune", "-f")
+	if err != nil {
+		return nil, "", fmt.Errorf("%s", strings.TrimSpace(out))
+	}
+	// Parse output: "Deleted Volumes:\nname1\nname2\n\nTotal reclaimed space: 1.2GB"
+	var names []string
+	space := ""
+	inList := false
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Deleted Volumes:") {
+			inList = true
+			continue
+		}
+		if strings.HasPrefix(line, "Total reclaimed space:") {
+			space = strings.TrimPrefix(line, "Total reclaimed space: ")
+			inList = false
+			continue
+		}
+		if inList && line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, space, nil
+}
+
 // ComposePS returns container info for a specific compose project.
 //
 // docker compose ps --format json uses "Name" (singular) and a Publishers array for

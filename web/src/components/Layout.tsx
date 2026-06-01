@@ -25,6 +25,16 @@ function Icon({ name }: { name: string }) {
         <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
       </svg>
     ),
+    networks: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 3.75H19.5a.75.75 0 01.75.75v12a.75.75 0 01-.75.75h-15a.75.75 0 01-.75-.75V7.5a.75.75 0 01.75-.75H8.25V3.75zM10.5 9.75h3M10.5 12.75h3M7.5 9.75h.008v.008H7.5V9.75zm0 3h.008v.008H7.5v-.008z" />
+      </svg>
+    ),
+    volumes: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 5.625c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" />
+      </svg>
+    ),
     files: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
         <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.061-.44z" />
@@ -65,6 +75,8 @@ const nav = [
   { to: '/usb', label: 'Import', icon: 'usb' },
   { to: '/containers', label: 'Containers', icon: 'containers' },
   { to: '/proxy', label: 'Reverse Proxy', icon: 'proxy' },
+  { to: '/networks', label: 'Networks', icon: 'networks' },
+  { to: '/volumes', label: 'Volumes', icon: 'volumes' },
   { to: '/files', label: 'Files', icon: 'files' },
   { to: '/system', label: 'System', icon: 'system' },
   { to: '/terminal', label: 'Terminal', icon: 'terminal' },

@@ -81,10 +81,27 @@ func NewRouter(deps Deps) http.Handler {
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/env", h.SaveEnv)
 		r.Get("/api/v1/projects/{id}/env/history", h.EnvHistory)
 
-		// Docker networks
+		// OffDock managed networks (offdock-external / offdock-internal)
 		r.Get("/api/v1/networks", h.ListNetworks)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/networks/{network}/containers/{container}", h.NetworkConnect)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/networks/{network}/containers/{container}", h.NetworkDisconnect)
+
+		// Full Docker network management
+		r.Route("/api/v1/docker/networks", func(r chi.Router) {
+			r.Get("/", h.ListAllDockerNetworks)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Post("/", h.CreateDockerNetwork)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/{name}", h.DeleteDockerNetwork)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Post("/{name}/connect", h.DockerNetworkConnect)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Post("/{name}/disconnect", h.DockerNetworkDisconnect)
+		})
+
+		// Docker volume management
+		r.Route("/api/v1/docker/volumes", func(r chi.Router) {
+			r.Get("/", h.ListVolumes)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Post("/prune", h.PruneVolumes)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Post("/", h.CreateVolume)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/{name}", h.DeleteVolume)
+		})
 
 		// Global containers (all projects) — sub-router isolates the trie so
 		// literal "stats" sub-path does not conflict with {name} param routes.
@@ -130,6 +147,10 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/projects/{id}/deployments/{dep_id}/stream", h.DeployStream) // SSE
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/projects/{id}/deployments/{dep_id}/cancel", h.CancelDeploy)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Delete("/api/v1/projects/{id}/deployments/{dep_id}", h.DeleteDeployment)
+			
+			// Deploy settings
+			r.Get("/api/v1/projects/{id}/deploy-settings", h.GetDeploySettings)
+			r.With(authmw.RequireRole(store.RoleAdmin)).Put("/api/v1/projects/{id}/deploy-settings", h.SaveDeploySettings)
 
 		// Containers & logs
 		r.Get("/api/v1/projects/{id}/containers", h.ListContainers)

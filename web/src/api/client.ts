@@ -70,10 +70,19 @@ export interface DeploymentRecord {
   strategy: string
   old_compose_version: number
   new_compose_version: number
+  env_version: number
   status: 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
   started_at: string
   finished_at: string | null
   log_text: string
+}
+
+export interface DeploySettings {
+  id: string
+  project_id: string
+  health_timeout_secs: number
+  deploy_timeout_secs: number
+  health_stable_secs: number
 }
 
 export interface DockerImage {
@@ -172,9 +181,18 @@ export interface RecentDeployment extends DeploymentRecord {
   project_name: string
 }
 
+export interface ProxyLocation {
+  path: string
+  upstream_host: string
+  upstream_port: number
+  strip_prefix: boolean
+  ws_enabled: boolean
+}
+
 export interface ProxyHost {
   id: string
   domain: string
+  aliases: string[]
   upstream_host: string
   upstream_port: number
   ssl_enabled: boolean
@@ -184,12 +202,44 @@ export interface ProxyHost {
   proxy_read_timeout: number
   gzip_enabled: boolean
   custom_directives: string
+  locations: ProxyLocation[]
+  access_log: boolean
   enabled: boolean
   created_at: string
   updated_at: string
 }
 
 export type ProxyHostInput = Omit<ProxyHost, 'id' | 'enabled' | 'created_at' | 'updated_at'>
+
+export interface DockerNetworkContainer {
+  Name: string
+  IPv4: string
+}
+
+export interface DockerNetworkIPAMConfig {
+  Subnet: string
+  Gateway: string
+}
+
+export interface DockerNetwork {
+  Id: string
+  Name: string
+  Driver: string
+  Scope: string
+  Internal: boolean
+  Labels: Record<string, string> | null
+  Containers: Record<string, DockerNetworkContainer> | null
+  IPAM: { Config: DockerNetworkIPAMConfig[] }
+}
+
+export interface DockerVolume {
+  Name: string
+  Driver: string
+  Scope: string
+  Mountpoint: string
+  Labels: Record<string, string> | null
+  CreatedAt: string
+}
 
 
 export interface ContainerStats {
@@ -343,13 +393,33 @@ export const api = {
     }>(`/api/v1/proxy/hosts/${id}/test`),
   serverIP: () => request<{ ip: string; tip: string }>('/api/v1/proxy/server-ip'),
 
+  // Docker network management (full)
+  listAllDockerNetworks: () => request<DockerNetwork[]>('/api/v1/docker/networks'),
+  createDockerNetwork: (name: string, driver: string) =>
+    request<DockerNetwork>('/api/v1/docker/networks', { method: 'POST', body: JSON.stringify({ name, driver }) }),
+  deleteDockerNetwork: (name: string) =>
+    request<void>(`/api/v1/docker/networks/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  dockerNetworkConnect: (network: string, container: string) =>
+    request<void>(`/api/v1/docker/networks/${encodeURIComponent(network)}/connect`, { method: 'POST', body: JSON.stringify({ container }) }),
+  dockerNetworkDisconnect: (network: string, container: string) =>
+    request<void>(`/api/v1/docker/networks/${encodeURIComponent(network)}/disconnect`, { method: 'POST', body: JSON.stringify({ container }) }),
+
+  // Docker volume management
+  listVolumes: () => request<DockerVolume[]>('/api/v1/docker/volumes'),
+  createVolume: (name: string, driver?: string) =>
+    request<DockerVolume>('/api/v1/docker/volumes', { method: 'POST', body: JSON.stringify({ name, driver: driver ?? 'local' }) }),
+  deleteVolume: (name: string) =>
+    request<void>(`/api/v1/docker/volumes/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  pruneVolumes: () =>
+    request<{ pruned: string[]; space_reclaimed: string }>('/api/v1/docker/volumes/prune', { method: 'POST' }),
+
   // Deploy — global recent list
   listAllDeployments: () => request<RecentDeployment[]>('/api/v1/deployments'),
   // Deploy — per project
-  triggerDeploy: (projectId: string, composeVersion?: number) =>
+  triggerDeploy: (projectId: string, composeVersion?: number, envVersion?: number) =>
     request<{ deployment_id: string; stream: string }>(
       `/api/v1/projects/${projectId}/deploy`,
-      { method: 'POST', body: JSON.stringify(composeVersion ? { compose_version: composeVersion } : {}) }
+      { method: 'POST', body: JSON.stringify({ compose_version: composeVersion ?? 0, env_version: envVersion ?? 0 }) }
     ),
   listDeployments: (projectId: string) =>
     request<DeploymentRecord[]>(`/api/v1/projects/${projectId}/deployments`),
@@ -359,6 +429,12 @@ export const api = {
     request<{ status: string }>(`/api/v1/projects/${projectId}/deployments/${depId}/cancel`, { method: 'POST' }),
   deleteDeployment: (projectId: string, depId: string) =>
     request<void>(`/api/v1/projects/${projectId}/deployments/${depId}`, { method: 'DELETE' }),
+  getDeploySettings: (projectId: string) =>
+    request<DeploySettings>(`/api/v1/projects/${projectId}/deploy-settings`),
+  saveDeploySettings: (projectId: string, data: Omit<DeploySettings, 'id' | 'project_id'>) =>
+    request<DeploySettings>(`/api/v1/projects/${projectId}/deploy-settings`, {
+      method: 'PUT', body: JSON.stringify(data),
+    }),
 
   // Containers — per-project
   listContainers: (projectId: string) =>

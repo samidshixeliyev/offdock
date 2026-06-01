@@ -9,13 +9,15 @@ import (
 // DB aggregates all typed collections and is the sole entry point for
 // persistent storage across the application.
 type DB struct {
-	Users       *Collection[User]
-	Projects    *Collection[Project]
-	Images      *Collection[DockerImage]
-	Compose     *Collection[ComposeConfig]
-	EnvVars     *Collection[EnvVarSet]
-	Nginx       *Collection[NginxConfig]
-	Deployments *Collection[DeploymentRecord]
+	Users          *Collection[User]
+	Projects       *Collection[Project]
+	Images         *Collection[DockerImage]
+	Compose        *Collection[ComposeConfig]
+	EnvVars        *Collection[EnvVarSet]
+	Nginx          *Collection[NginxConfig]
+	Deployments    *Collection[DeploymentRecord]
+	ProxyHosts     *Collection[ProxyHost]
+	DeploySettings *Collection[DeploySettings]
 }
 
 // Open initialises all collections, creating data files if they do not exist.
@@ -52,6 +54,12 @@ func Open(dataDir string) (*DB, error) {
 	if db.Deployments, err = NewCollection[DeploymentRecord](open("deployments")); err != nil {
 		return nil, err
 	}
+	if db.ProxyHosts, err = NewCollection[ProxyHost](open("proxyhosts")); err != nil {
+		return nil, err
+	}
+	if db.DeploySettings, err = NewCollection[DeploySettings](open("deploy_settings")); err != nil {
+		return nil, err
+	}
 
 	return db, nil
 }
@@ -60,7 +68,7 @@ func Open(dataDir string) (*DB, error) {
 func (db *DB) Close() error {
 	closers := []interface{ Close() error }{
 		db.Users, db.Projects, db.Images, db.Compose,
-		db.EnvVars, db.Nginx, db.Deployments,
+		db.EnvVars, db.Nginx, db.Deployments, db.ProxyHosts, db.DeploySettings,
 	}
 	for _, c := range closers {
 		if err := c.Close(); err != nil {

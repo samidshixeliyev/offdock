@@ -107,6 +107,7 @@ type NginxConfig struct {
 	ID                string     `json:"id"`
 	ProjectID         string     `json:"project_id"`
 	Domain            string     `json:"domain"`
+	Aliases           []string   `json:"aliases"`
 	SSLEnabled        bool       `json:"ssl_enabled"`
 	SSLCertPath       string     `json:"ssl_cert_path"`
 	SSLKeyPath        string     `json:"ssl_key_path"`
@@ -116,6 +117,7 @@ type NginxConfig struct {
 	ProxyReadTimeout  int        `json:"proxy_read_timeout"`   // seconds; 0 = 60
 	GzipEnabled       bool       `json:"gzip_enabled"`
 	CustomDirectives  string     `json:"custom_directives"`
+	AccessLog         bool       `json:"access_log"`
 	GeneratedConfig   string     `json:"generated_config"`
 	Active            bool       `json:"active"`
 	Applied           bool       `json:"applied"`    // true once written to /etc/nginx and reloaded
@@ -130,10 +132,11 @@ func (n NginxConfig) GetID() string { return n.ID }
 type DeploymentStatus string
 
 const (
-	DeployStatusPending DeploymentStatus = "pending"
-	DeployStatusRunning DeploymentStatus = "running"
-	DeployStatusSuccess DeploymentStatus = "success"
-	DeployStatusFailed  DeploymentStatus = "failed"
+	DeployStatusPending   DeploymentStatus = "pending"
+	DeployStatusRunning   DeploymentStatus = "running"
+	DeployStatusSuccess   DeploymentStatus = "success"
+	DeployStatusFailed    DeploymentStatus = "failed"
+	DeployStatusCancelled DeploymentStatus = "cancelled"
 )
 
 // DeploymentRecord tracks a single deployment attempt for a project.
@@ -144,6 +147,7 @@ type DeploymentRecord struct {
 	Strategy          string           `json:"strategy"`
 	OldComposeVersion int              `json:"old_compose_version"`
 	NewComposeVersion int              `json:"new_compose_version"`
+	EnvVersion        int              `json:"env_version"` // env snapshot used; 0 = none
 	Status            DeploymentStatus `json:"status"`
 	StartedAt         time.Time        `json:"started_at"`
 	FinishedAt        *time.Time       `json:"finished_at"`
@@ -151,3 +155,52 @@ type DeploymentRecord struct {
 }
 
 func (d DeploymentRecord) GetID() string { return d.ID }
+
+// --- DeploySettings ---------------------------------------------------------
+
+// DeploySettings holds per-project deployment behaviour configuration.
+// ID is always equal to ProjectID (one record per project).
+type DeploySettings struct {
+	ID                string `json:"id"`
+	ProjectID         string `json:"project_id"`
+	HealthTimeoutSecs int    `json:"health_timeout_secs"` // default 120
+	DeployTimeoutSecs int    `json:"deploy_timeout_secs"` // default 300
+	HealthStableSecs  int    `json:"health_stable_secs"`  // default 5
+}
+
+func (d DeploySettings) GetID() string { return d.ID }
+
+// --- ProxyHost ---------------------------------------------------------------
+
+// ProxyLocation is a path-based routing rule within a ProxyHost virtual host.
+type ProxyLocation struct {
+	Path         string `json:"path" msgpack:"path"`
+	UpstreamHost string `json:"upstream_host" msgpack:"upstream_host"`
+	UpstreamPort int    `json:"upstream_port" msgpack:"upstream_port"`
+	StripPrefix  bool   `json:"strip_prefix" msgpack:"strip_prefix"`
+	WSEnabled    bool   `json:"ws_enabled" msgpack:"ws_enabled"`
+}
+
+// ProxyHost is an nginx reverse-proxy virtual host managed directly by OffDock.
+// It is independent of any project and maps a domain to an upstream container.
+type ProxyHost struct {
+	ID                string          `json:"id" msgpack:"id"`
+	Domain            string          `json:"domain" msgpack:"domain"`
+	Aliases           []string        `json:"aliases" msgpack:"aliases"`
+	UpstreamHost      string          `json:"upstream_host" msgpack:"upstream_host"`
+	UpstreamPort      int             `json:"upstream_port" msgpack:"upstream_port"`
+	SSLEnabled        bool            `json:"ssl_enabled" msgpack:"ssl_enabled"`
+	SSLCertPath       string          `json:"ssl_cert_path" msgpack:"ssl_cert_path"`
+	SSLKeyPath        string          `json:"ssl_key_path" msgpack:"ssl_key_path"`
+	ClientMaxBodySize string          `json:"client_max_body_size" msgpack:"client_max_body_size"`
+	ProxyReadTimeout  int             `json:"proxy_read_timeout" msgpack:"proxy_read_timeout"`
+	GzipEnabled       bool            `json:"gzip_enabled" msgpack:"gzip_enabled"`
+	CustomDirectives  string          `json:"custom_directives" msgpack:"custom_directives"`
+	Locations         []ProxyLocation `json:"locations" msgpack:"locations"`
+	AccessLog         bool            `json:"access_log" msgpack:"access_log"`
+	Enabled           bool            `json:"enabled" msgpack:"enabled"`
+	CreatedAt         time.Time       `json:"created_at" msgpack:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at" msgpack:"updated_at"`
+}
+
+func (p ProxyHost) GetID() string { return p.ID }

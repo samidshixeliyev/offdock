@@ -4,6 +4,7 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
+	"sync"
 
 	"offdock/internal/api/sse"
 	"offdock/internal/auth"
@@ -16,14 +17,15 @@ import (
 
 // H bundles all dependencies required by handlers.
 type H struct {
-	db          *store.DB
-	auth        *auth.Service
-	enc         *crypto.Encryptor
-	docker      *docker.Client
-	deployer    *deploy.Engine
-	stats       *system.Collector
-	hub         *sse.Hub
-	projectsDir string
+	db             *store.DB
+	auth           *auth.Service
+	enc            *crypto.Encryptor
+	docker         *docker.Client
+	deployer       *deploy.Engine
+	stats          *system.Collector
+	hub            *sse.Hub
+	projectsDir    string
+	deployCancels  sync.Map // streamKey → context.CancelFunc
 }
 
 // New returns an initialised handler bundle.

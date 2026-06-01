@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -175,49 +174,60 @@ func markStuckDeployments(db *store.DB) {
 }
 
 // bootstrapNginx runs at startup in a goroutine.
-// It starts the offdock-nginx container (nginx-ui) if the image is already present
-// and the container is not yet running. If the image is absent the user must
-// import uozi-lab/nginx-ui:latest via the Import page first.
+// Loads the bundled nginx:alpine image if not present, starts the container,
+// and re-applies all active proxy host and project nginx configs.
 func bootstrapNginx(db *store.DB) {
 	slog.Info("nginx bootstrap: starting")
 
-	// ── Step 0: ensure Docker networks exist ──────────────────────────────────
+	// ── Step 0: ensure Docker networks ────────────────────────────────────────
 	if err := nginxpkg.EnsureNetworks(); err != nil {
 		slog.Warn("nginx bootstrap: could not create networks", "err", err)
 	} else {
 		slog.Info("nginx bootstrap: networks ready")
 	}
 
-	// ── Step 1: check that the nginx-ui image is present ──────────────────────
-	imgCtx, imgCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	imgErr := exec.CommandContext(imgCtx, "docker", "image", "inspect", nginxpkg.ContainerImage).Run()
-	imgCancel()
-
-	if imgErr != nil {
-		slog.Info("nginx bootstrap: image not found — import uozi-lab/nginx-ui:latest via the Import page")
+	// ── Step 1: ensure nginx:alpine image is present (load from bundled tar) ──
+	if err := nginxpkg.EnsureImage(); err != nil {
+		slog.Warn("nginx bootstrap: image unavailable", "err", err)
 		return
 	}
+	slog.Info("nginx bootstrap: image ready")
 
-	// ── Step 2: start offdock-nginx if not running ────────────────────────────
+	// ── Step 2: start offdock-nginx (replace if it's running the wrong image) ───
 	status := nginxpkg.GetContainerStatus()
-	if status.Running {
+	if status.Running && status.Image == nginxpkg.ContainerImage {
 		slog.Info("nginx bootstrap: container already running")
 	} else {
-		slog.Info("nginx bootstrap: starting offdock-nginx container")
+		if status.Running {
+			slog.Info("nginx bootstrap: replacing container", "old_image", status.Image, "new_image", nginxpkg.ContainerImage)
+		} else {
+			slog.Info("nginx bootstrap: starting offdock-nginx container")
+		}
 		if err := nginxpkg.StartNginxContainer(); err != nil {
 			slog.Warn("nginx bootstrap: container start failed", "err", err)
+			return
+		}
+		slog.Info("nginx bootstrap: container ready")
+	}
+
+	applied := 0
+
+	// ── Step 3: re-apply proxy hosts ──────────────────────────────────────────
+	hosts, _ := db.ProxyHosts.FindWhere(func(h store.ProxyHost) bool { return h.Enabled })
+	for _, host := range hosts {
+		if _, err := nginxpkg.ApplyProxyHost(host); err != nil {
+			slog.Warn("nginx bootstrap: proxy host apply failed", "domain", host.Domain, "err", err)
 		} else {
-			slog.Info("nginx bootstrap: container started")
+			applied++
+			slog.Info("nginx bootstrap: applied proxy host", "domain", host.Domain)
 		}
 	}
 
-	// ── Step 3: re-apply all active project configs ────────────────────────────
+	// ── Step 4: re-apply per-project nginx configs ────────────────────────────
 	projects, err := db.Projects.FindAll()
 	if err != nil {
 		slog.Warn("nginx bootstrap: could not list projects", "err", err)
-		return
 	}
-	applied := 0
 	for _, project := range projects {
 		cfgs, err := db.Nginx.FindWhere(func(n store.NginxConfig) bool {
 			return n.ProjectID == project.ID && n.Active
@@ -226,12 +236,13 @@ func bootstrapNginx(db *store.DB) {
 			continue
 		}
 		if _, err := nginxpkg.Apply(cfgs[0], project.Name); err != nil {
-			slog.Warn("nginx bootstrap: apply failed", "project", project.Name, "err", err)
+			slog.Warn("nginx bootstrap: project apply failed", "project", project.Name, "err", err)
 		} else {
 			applied++
-			slog.Info("nginx bootstrap: applied", "project", project.Name, "domain", cfgs[0].Domain)
+			slog.Info("nginx bootstrap: applied project config", "project", project.Name, "domain", cfgs[0].Domain)
 		}
 	}
+
 	slog.Info("nginx bootstrap: complete", "configs_applied", applied)
 }
 

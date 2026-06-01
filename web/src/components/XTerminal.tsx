@@ -123,34 +123,62 @@ const XTerminal = forwardRef<XTerminalHandle, Props>(({ wsUrl, onClose, classNam
       }
     })
 
-    // Ctrl+Shift+C → copy; Ctrl+Shift+V → paste; intercept before xterm sees them.
+    const fallbackCopy = (text: string) => {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      Object.assign(ta.style, { position: 'fixed', top: '-9999px', left: '-9999px', opacity: '0' })
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      try { document.execCommand('copy') } catch {}
+      ta.remove()
+      term.focus()
+    }
+
+    const copyToClipboard = (text: string) => {
+      // navigator.clipboard is undefined on plain HTTP — must use execCommand synchronously
+      if (!window.isSecureContext || !navigator.clipboard?.writeText) {
+        fallbackCopy(text)
+        return
+      }
+      navigator.clipboard.writeText(text).catch(() => fallbackCopy(text))
+    }
+
+    // Ctrl+Shift+C → copy; Ctrl+V/Ctrl+Shift+V → suppress ^V so browser fires paste event.
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== 'keydown') return true
 
       if (e.ctrlKey && e.shiftKey && e.code === 'KeyC') {
         const sel = term.getSelection()
-        if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {})
-        }
+        if (sel) copyToClipboard(sel)
         e.preventDefault()
         return false
       }
 
-      if (e.ctrlKey && e.shiftKey && e.code === 'KeyV') {
-        navigator.clipboard.readText().then(text => {
-          if (text && ws.readyState === WebSocket.OPEN) {
-            ws.send(new TextEncoder().encode(text))
-          }
-        }).catch(() => {})
-        e.preventDefault()
+      // Returning false stops xterm from sending ^V; browser then fires paste event
+      // which handlePaste catches via e.clipboardData (works on HTTP, no permission needed).
+      if (e.ctrlKey && e.code === 'KeyV') {
         return false
       }
 
       return true
     })
 
-    // Right-click context menu
+    // Right-click context menu + paste intercept
     const container = divRef.current
+
+    // Intercept paste at capture phase — fires for Ctrl+V and browser right-click → Paste.
+    // ClipboardEvent.clipboardData works on plain HTTP; no HTTPS or permission needed.
+    const handlePaste = (e: ClipboardEvent) => {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      const text = e.clipboardData?.getData('text/plain') ?? ''
+      if (text && ws.readyState === WebSocket.OPEN) {
+        ws.send(new TextEncoder().encode(text))
+      }
+    }
+    container?.addEventListener('paste', handlePaste, true)
+
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault()
       // Remove existing menu
@@ -179,16 +207,22 @@ const XTerminal = forwardRef<XTerminalHandle, Props>(({ wsUrl, onClose, classNam
       }
 
       addItem('Copy', 'Ctrl+Shift+C', () => {
-        if (sel) navigator.clipboard.writeText(sel).catch(() => {})
+        if (sel) copyToClipboard(sel)
       }, !sel)
 
-      addItem('Paste', 'Ctrl+Shift+V', () => {
-        navigator.clipboard.readText().then(text => {
-          if (text && ws.readyState === WebSocket.OPEN) {
-            ws.send(new TextEncoder().encode(text))
-          }
-        }).catch(() => {})
-      })
+      const canReadClipboard = window.isSecureContext && !!navigator.clipboard?.readText
+      addItem(
+        canReadClipboard ? 'Paste' : 'Paste (use Ctrl+V)',
+        'Ctrl+V',
+        () => {
+          navigator.clipboard!.readText().then(text => {
+            if (text && ws.readyState === WebSocket.OPEN) {
+              ws.send(new TextEncoder().encode(text))
+            }
+          }).catch(() => {})
+        },
+        !canReadClipboard,
+      )
 
       if (sel) {
         const sep = document.createElement('div')
@@ -226,6 +260,7 @@ const XTerminal = forwardRef<XTerminalHandle, Props>(({ wsUrl, onClose, classNam
       ws.close()
       term.dispose()
       container?.removeEventListener('contextmenu', handleContextMenu)
+      container?.removeEventListener('paste', handlePaste, true)
       menuDivRef.current?.remove()
       termRef.current = null
       fitRef.current = null

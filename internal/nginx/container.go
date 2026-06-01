@@ -10,13 +10,15 @@ import (
 )
 
 const (
-	ContainerName   = "offdock-nginx"
-	ContainerImage  = "uozi-lab/nginx-ui:latest"
-	UIPort          = 9000
-	NginxBaseDir    = "/var/offdock/nginx"
-	NginxConfdDir   = "/var/offdock/nginx/conf.d"
-	NginxCertsDir   = "/var/offdock/nginx/certs"
-	NginxUIDataDir  = "/var/offdock/nginx-ui"
+	ContainerName  = "offdock-nginx"
+	ContainerImage = "nginx:alpine"
+	NginxBaseDir   = "/var/offdock/nginx"
+	NginxConfdDir  = "/var/offdock/nginx/conf.d"
+	NginxCertsDir  = "/var/offdock/nginx/certs"
+
+	// BundledTarPath is the expected location of the pre-bundled nginx:alpine image.
+	// install.sh copies assets/nginx-alpine.tar here.
+	BundledTarPath = "/var/offdock/nginx-alpine.tar"
 )
 
 // ContainerStatus is the live state of the nginx Docker container.
@@ -58,21 +60,48 @@ func GetContainerStatus() *ContainerStatus {
 	}
 }
 
+// EnsureImage checks that nginx:alpine is present in Docker; if not, loads the
+// bundled tar (installed by install.sh at BundledTarPath). Returns an error
+// only when the image is unavailable and cannot be loaded.
+func EnsureImage() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "docker", "image", "inspect", ContainerImage).Run(); err == nil {
+		return nil // already present
+	}
+	// Try to load from bundled tar.
+	for _, path := range []string{BundledTarPath, "assets/nginx-alpine.tar"} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			continue
+		}
+		lCtx, lCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		out, loadErr := exec.CommandContext(lCtx, "docker", "load", "-i", path).CombinedOutput()
+		lCancel()
+		if loadErr != nil {
+			return fmt.Errorf("load nginx image from %s: %w — %s", path, loadErr, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+	return fmt.Errorf("nginx:alpine image not found — copy nginx-alpine.tar to %s or import it via the Import page", BundledTarPath)
+}
+
 // StartNginxContainer creates (if needed) and starts the offdock-nginx container.
 func StartNginxContainer() error {
 	if err := ensureNginxFiles(); err != nil {
 		return fmt.Errorf("setup: %w", err)
 	}
+	if err := EnsureImage(); err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// If the container exists, check it's using the right image; remove if not.
+	// If container already exists start it; if image mismatch recreate.
 	imgOut, existErr := exec.CommandContext(ctx, "docker", "inspect",
 		"--format", "{{.Config.Image}}", ContainerName).Output()
 	if existErr == nil {
 		if strings.TrimSpace(string(imgOut)) == ContainerImage {
-			// Correct image — just start it.
 			out, err := exec.CommandContext(ctx, "docker", "start", ContainerName).CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("docker start: %w — %s", err, strings.TrimSpace(string(out)))
@@ -82,27 +111,15 @@ func StartNginxContainer() error {
 			}
 			return nil
 		}
-		// Wrong image (e.g. old nginx:alpine) — remove and recreate.
 		exec.CommandContext(ctx, "docker", "rm", "-f", ContainerName).Run() //nolint:errcheck
 	}
 
-	// Check the image is available locally (air-gapped safety).
-	imgCtx, imgCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer imgCancel()
-	if err := exec.CommandContext(imgCtx, "docker", "image", "inspect", ContainerImage).Run(); err != nil {
-		return fmt.Errorf("image %q not found — load it via the Import page first", ContainerImage)
-	}
-
-	// Create and start.
 	args := []string{
 		"run", "-d",
 		"--name", ContainerName,
 		"--restart", "unless-stopped",
 		"-p", "80:80",
 		"-p", "443:443",
-		"-p", "9000:9000",
-		"-e", "NGINX_UI_IGNORE_DOCKER_SOCKET=true",
-		"-v", NginxUIDataDir + ":/etc/nginx-ui",
 		"-v", NginxConfdDir + ":/etc/nginx/conf.d",
 		"-v", NginxCertsDir + ":/etc/nginx/certs:ro",
 		ContainerImage,
@@ -112,7 +129,6 @@ func StartNginxContainer() error {
 		return fmt.Errorf("docker run: %w — %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// Connect nginx-ui to the external network so it can proxy to project containers.
 	if err := EnsureNetworks(); err == nil {
 		ConnectContainer(ExternalNetwork, ContainerName) //nolint:errcheck
 	}
@@ -138,7 +154,7 @@ func ReloadNginxContainer() (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// TestContainerConfig runs nginx -t inside the container and returns its output.
+// TestContainerConfig runs nginx -t inside the container.
 func TestContainerConfig() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -146,13 +162,11 @@ func TestContainerConfig() (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-// ensureNginxFiles creates the required host directories.
 func ensureNginxFiles() error {
-	for _, dir := range []string{NginxConfdDir, NginxCertsDir, NginxUIDataDir} {
+	for _, dir := range []string{NginxConfdDir, NginxCertsDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
 	return nil
 }
-

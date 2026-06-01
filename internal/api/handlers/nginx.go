@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -178,14 +177,17 @@ func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
 		days = 365
 	}
 
-	certsDir := "/var/offdock/certs"
-	if err := os.MkdirAll(certsDir, 0o700); err != nil {
+	// Certs must live in the nginx container's mounted directory so nginx can read them.
+	// NginxCertsDir (/var/offdock/nginx/certs) is mounted as /etc/nginx/certs inside the container.
+	certsDir := nginxpkg.NginxCertsDir
+	if err := os.MkdirAll(certsDir, 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create certs directory")
 		return
 	}
 
-	keyPath := filepath.Join(certsDir, projectID+".key")
-	certPath := filepath.Join(certsDir, projectID+".crt")
+	filename := projectID
+	keyPath := filepath.Join(certsDir, filename+".key")
+	certPath := filepath.Join(certsDir, filename+".crt")
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -203,9 +205,10 @@ func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Return the container-visible paths so they can be used directly in nginx config.
 	writeJSON(w, http.StatusOK, map[string]string{
-		"cert_path": certPath,
-		"key_path":  keyPath,
+		"cert_path": "/etc/nginx/certs/" + filename + ".crt",
+		"key_path":  "/etc/nginx/certs/" + filename + ".key",
 		"domain":    domain,
 		"days":      strconv.Itoa(days),
 	})
@@ -216,32 +219,11 @@ func (h *H) NginxContainerStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, nginxpkg.GetContainerStatus())
 }
 
-// NginxInstallSecret reads the one-time install secret nginx-ui generates on first run.
-func (h *H) NginxInstallSecret(w http.ResponseWriter, r *http.Request) {
-	data, err := os.ReadFile(filepath.Join(nginxpkg.NginxUIDataDir, ".install_secret"))
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]string{"secret": ""})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"secret": strings.TrimSpace(string(data))})
-}
-
-// NginxUIURL returns the URL at which the nginx-ui web interface is reachable.
-// The hostname is derived from the incoming request so it works regardless of
-// the host IP or DNS name used to reach OffDock.
-func (h *H) NginxUIURL(w http.ResponseWriter, r *http.Request) {
-	host := r.Host
-	if idx := strings.Index(host, ":"); idx != -1 {
-		host = host[:idx]
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"url":  fmt.Sprintf("http://%s:%d", host, nginxpkg.UIPort),
-		"port": nginxpkg.UIPort,
-	})
-}
 
 // NginxContainerStart creates (if needed) and starts the offdock-nginx container.
+// Always writes the default catch-all server block first so raw-IP requests return 444.
 func (h *H) NginxContainerStart(w http.ResponseWriter, r *http.Request) {
+	nginxpkg.WriteDefaultServer() //nolint:errcheck
 	if err := nginxpkg.StartNginxContainer(); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

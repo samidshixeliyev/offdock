@@ -61,20 +61,28 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		ComposeVersion int `json:"compose_version"`
+		EnvVersion     int `json:"env_version"`
 	}
 	// Ignore decode errors — body is optional.
 	decodeJSON(r, &req) //nolint:errcheck
 
 	depID := store.NewULID()
 	streamKey := "deploy:" + depID
-	composeVersion := req.ComposeVersion // 0 means use latest
+	composeVersion := req.ComposeVersion // 0 = latest
+	envVersion := req.EnvVersion         // 0 = latest
+
+	ctx, cancel := context.WithCancel(context.Background())
+	h.deployCancels.Store(streamKey, cancel)
 
 	go func() {
+		defer cancel()
+		defer h.deployCancels.Delete(streamKey)
+
 		logFn := func(line string) {
 			msg, _ := json.Marshal(map[string]string{"log": line})
 			h.hub.Publish(streamKey, string(msg))
 		}
-		rec, err := h.deployer.DeployVersion(context.Background(), projectID, claims.UserID, composeVersion, logFn)
+		rec, err := h.deployer.DeployVersion(ctx, projectID, claims.UserID, composeVersion, envVersion, logFn)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			h.hub.Publish(streamKey, string(msg))
@@ -123,6 +131,68 @@ func (h *H) GetDeployment(w http.ResponseWriter, r *http.Request) {
 func (h *H) DeployStream(w http.ResponseWriter, r *http.Request) {
 	depID := chi.URLParam(r, "dep_id")
 	h.hub.Subscribe(w, r, "deploy:"+depID)
+}
+
+// CancelDeploy signals a running deployment to stop.
+// The deploy goroutine will clean up the _next stack and mark the record as cancelled.
+func (h *H) CancelDeploy(w http.ResponseWriter, r *http.Request) {
+	depID := chi.URLParam(r, "dep_id")
+	streamKey := "deploy:" + depID
+	v, ok := h.deployCancels.Load(streamKey)
+	if !ok {
+		writeError(w, http.StatusNotFound, "no active deployment with that id")
+		return
+	}
+	v.(context.CancelFunc)()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelling"})
+}
+
+// GetDeploySettings returns the deploy settings for a project, with defaults filled in.
+func (h *H) GetDeploySettings(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if _, err := h.db.Projects.FindByID(projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	sets, _ := h.db.DeploySettings.FindWhere(func(s store.DeploySettings) bool {
+		return s.ProjectID == projectID
+	})
+	if len(sets) > 0 {
+		s := sets[0]
+		if s.HealthTimeoutSecs <= 0 { s.HealthTimeoutSecs = 120 }
+		if s.DeployTimeoutSecs <= 0 { s.DeployTimeoutSecs = 300 }
+		if s.HealthStableSecs <= 0 { s.HealthStableSecs = 5 }
+		writeJSON(w, http.StatusOK, s)
+		return
+	}
+	writeJSON(w, http.StatusOK, store.DeploySettings{
+		ID: projectID, ProjectID: projectID,
+		HealthTimeoutSecs: 120, DeployTimeoutSecs: 300, HealthStableSecs: 5,
+	})
+}
+
+// SaveDeploySettings creates or replaces the deploy settings for a project.
+func (h *H) SaveDeploySettings(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if _, err := h.db.Projects.FindByID(projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	var s store.DeploySettings
+	if err := decodeJSON(r, &s); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if s.HealthTimeoutSecs <= 0 { s.HealthTimeoutSecs = 120 }
+	if s.DeployTimeoutSecs <= 0 { s.DeployTimeoutSecs = 300 }
+	if s.HealthStableSecs <= 0 { s.HealthStableSecs = 5 }
+	s.ID = projectID
+	s.ProjectID = projectID
+	if err := h.db.DeploySettings.Save(s); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not save settings")
+		return
+	}
+	writeJSON(w, http.StatusOK, s)
 }
 
 // DeleteDeployment removes a deployment record. Running/pending deployments cannot be deleted.

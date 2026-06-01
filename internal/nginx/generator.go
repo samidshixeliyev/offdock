@@ -10,27 +10,64 @@ import (
 	"offdock/internal/store"
 )
 
+// extraLoc is a single extra location block used inside a template.
+type extraLoc struct {
+	Path          string
+	PathTrimSlash string // path without trailing slash (for rewrite rule)
+	VarName       string // nginx variable name, e.g. upstream_loc0
+	Host          string
+	Port          int
+	Strip         bool
+	WS            bool
+	Timeout       string
+}
+
 // templateData is passed to nginx templates; extends NginxConfig with derived fields.
 type templateData struct {
 	store.NginxConfig
-	ReadTimeout string // formatted, e.g. "60"
-	MaxBodySize string // e.g. "10m"
-	CustomBlock string // indented, semicolon-normalised custom directives
+	ReadTimeout    string
+	MaxBodySize    string
+	CustomBlock    string
+	AllServerNames string    // "domain alias1 alias2"
+	ExtraLocations []extraLoc
+	AccessLogLine  string
 }
 
 var httpTmpl = template.Must(template.New("http").Parse(`server {
     listen 80;
-    server_name {{ .Domain }};
+    server_name {{ .AllServerNames }};
     server_tokens off;
     client_max_body_size {{ .MaxBodySize }};
+    {{ .AccessLogLine }}
 {{ if .GzipEnabled }}
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml image/svg+xml;
     gzip_vary on;
     gzip_min_length 1024;
 {{ end }}
+    # Docker embedded DNS — resolves upstream names at request time.
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $upstream http://{{ .UpstreamHost }}:{{ .UpstreamPort }};
+{{ range .ExtraLocations }}    set ${{ .VarName }} http://{{ .Host }}:{{ .Port }};
+{{ end }}
+{{ range .ExtraLocations }}    location {{ .Path }} {
+{{ if .Strip }}        rewrite ^{{ .PathTrimSlash }}/?(.*)$ /$1 break;
+{{ end }}        proxy_pass ${{ .VarName }};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection {{ if .WS }}"upgrade"{{ else }}""{{ end }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout {{ .Timeout }}s;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout {{ .Timeout }}s;
+        proxy_buffering off;
+    }
+{{ end }}
     location / {
-        proxy_pass http://{{ .UpstreamHost }}:{{ .UpstreamPort }};
+        proxy_pass $upstream;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -49,7 +86,7 @@ var httpTmpl = template.Must(template.New("http").Parse(`server {
 
 var httpsTmpl = template.Must(template.New("https").Parse(`server {
     listen 80;
-    server_name {{ .Domain }};
+    server_name {{ .AllServerNames }};
     server_tokens off;
     return 301 https://$host$request_uri;
 }
@@ -57,9 +94,10 @@ var httpsTmpl = template.Must(template.New("https").Parse(`server {
 server {
     listen 443 ssl;
     http2 on;
-    server_name {{ .Domain }};
+    server_name {{ .AllServerNames }};
     server_tokens off;
     client_max_body_size {{ .MaxBodySize }};
+    {{ .AccessLogLine }}
 
     ssl_certificate     {{ .SSLCertPath }};
     ssl_certificate_key {{ .SSLKeyPath }};
@@ -79,8 +117,28 @@ server {
     gzip_vary on;
     gzip_min_length 1024;
 {{ end }}
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $upstream http://{{ .UpstreamHost }}:{{ .UpstreamPort }};
+{{ range .ExtraLocations }}    set ${{ .VarName }} http://{{ .Host }}:{{ .Port }};
+{{ end }}
+{{ range .ExtraLocations }}    location {{ .Path }} {
+{{ if .Strip }}        rewrite ^{{ .PathTrimSlash }}/?(.*)$ /$1 break;
+{{ end }}        proxy_pass ${{ .VarName }};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection {{ if .WS }}"upgrade"{{ else }}""{{ end }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout {{ .Timeout }}s;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout {{ .Timeout }}s;
+        proxy_buffering off;
+    }
+{{ end }}
     location / {
-        proxy_pass http://{{ .UpstreamHost }}:{{ .UpstreamPort }};
+        proxy_pass $upstream;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -98,8 +156,6 @@ server {
 `))
 
 // Generate produces a nginx server block config string from cfg.
-// The domain is sanitized (protocol stripped) and custom directives are
-// normalised (semicolons added, lines indented to 8 spaces).
 func Generate(cfg store.NginxConfig) (string, error) {
 	cfg.Domain = SanitizeDomain(cfg.Domain)
 	if err := validate(cfg); err != nil {
@@ -110,16 +166,31 @@ func Generate(cfg store.NginxConfig) (string, error) {
 	if timeout <= 0 {
 		timeout = 60
 	}
+	timeoutStr := fmt.Sprintf("%d", timeout)
+
 	maxBody := strings.TrimSpace(cfg.ClientMaxBodySize)
 	if maxBody == "" {
 		maxBody = "1m"
 	}
 
+	// Build server_name string.
+	serverNames := []string{cfg.Domain}
+	serverNames = append(serverNames, cfg.Aliases...)
+	allServerNames := strings.Join(serverNames, " ")
+
+	// Build access_log directive.
+	accessLogLine := "access_log off;"
+	if cfg.AccessLog {
+		accessLogLine = "access_log /var/log/nginx/" + sanitizeName(cfg.Domain) + ".access.log combined;"
+	}
+
 	data := templateData{
-		NginxConfig: cfg,
-		ReadTimeout: fmt.Sprintf("%d", timeout),
-		MaxBodySize: maxBody,
-		CustomBlock: indentDirectives(normalizeDirectives(cfg.CustomDirectives)),
+		NginxConfig:    cfg,
+		ReadTimeout:    timeoutStr,
+		MaxBodySize:    maxBody,
+		CustomBlock:    indentDirectives(normalizeDirectives(cfg.CustomDirectives)),
+		AllServerNames: allServerNames,
+		AccessLogLine:  accessLogLine,
 	}
 
 	var buf bytes.Buffer
@@ -133,7 +204,125 @@ func Generate(cfg store.NginxConfig) (string, error) {
 	return buf.String(), nil
 }
 
-// SanitizeDomain strips protocol prefixes (http://, https://) and trailing slashes/spaces.
+// GenerateProxyHost converts a ProxyHost to a NginxConfig and renders its config.
+func GenerateProxyHost(h store.ProxyHost) (string, error) {
+	cfg := store.NginxConfig{
+		Domain:            h.Domain,
+		Aliases:           h.Aliases,
+		UpstreamHost:      h.UpstreamHost,
+		UpstreamPort:      h.UpstreamPort,
+		SSLEnabled:        h.SSLEnabled,
+		SSLCertPath:       h.SSLCertPath,
+		SSLKeyPath:        h.SSLKeyPath,
+		ClientMaxBodySize: h.ClientMaxBodySize,
+		ProxyReadTimeout:  h.ProxyReadTimeout,
+		GzipEnabled:       h.GzipEnabled,
+		CustomDirectives:  h.CustomDirectives,
+		AccessLog:         h.AccessLog,
+	}
+	cfg.Domain = SanitizeDomain(cfg.Domain)
+	if err := validate(cfg); err != nil {
+		return "", err
+	}
+
+	timeout := cfg.ProxyReadTimeout
+	if timeout <= 0 {
+		timeout = 60
+	}
+	timeoutStr := fmt.Sprintf("%d", timeout)
+
+	maxBody := strings.TrimSpace(cfg.ClientMaxBodySize)
+	if maxBody == "" {
+		maxBody = "1m"
+	}
+
+	serverNames := []string{cfg.Domain}
+	for _, a := range h.Aliases {
+		a = SanitizeDomain(a)
+		if a != "" {
+			serverNames = append(serverNames, a)
+		}
+	}
+
+	accessLogLine := "access_log off;"
+	if cfg.AccessLog {
+		accessLogLine = "access_log /var/log/nginx/" + sanitizeName(cfg.Domain) + ".access.log combined;"
+	}
+
+	// Build extra location blocks.
+	locs := make([]extraLoc, 0, len(h.Locations))
+	for i, l := range h.Locations {
+		path := strings.TrimSpace(l.Path)
+		if path == "" || path == "/" {
+			continue // skip — that's the default location
+		}
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		trimmed := strings.TrimRight(path, "/")
+		if trimmed == "" {
+			trimmed = "/"
+		}
+		locs = append(locs, extraLoc{
+			Path:          path,
+			PathTrimSlash: trimmed,
+			VarName:       fmt.Sprintf("upstream_loc%d", i),
+			Host:          strings.TrimSpace(l.UpstreamHost),
+			Port:          l.UpstreamPort,
+			Strip:         l.StripPrefix,
+			WS:            l.WSEnabled,
+			Timeout:       timeoutStr,
+		})
+	}
+
+	data := templateData{
+		NginxConfig:    cfg,
+		ReadTimeout:    timeoutStr,
+		MaxBodySize:    maxBody,
+		CustomBlock:    indentDirectives(normalizeDirectives(cfg.CustomDirectives)),
+		AllServerNames: strings.Join(serverNames, " "),
+		ExtraLocations: locs,
+		AccessLogLine:  accessLogLine,
+	}
+
+	var buf bytes.Buffer
+	tmpl := httpTmpl
+	if cfg.SSLEnabled {
+		tmpl = httpsTmpl
+	}
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("render nginx template: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// GenerateDefaultServer returns catch-all server blocks that drop unknown requests.
+// This prevents raw-IP or unknown-Host requests from being accidentally served by
+// whichever named virtual host nginx picks first alphabetically.
+func GenerateDefaultServer() string {
+	return `# offdock-generated — default catch-all server
+# Closes connections for any request that does not match a configured server_name.
+# This means: accessing the server by raw IP or with an unknown Host header returns
+# no response (connection reset), not the content of a real site.
+server {
+    listen 80 default_server;
+    server_name _;
+    server_tokens off;
+    return 444;
+}
+
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    server_tokens off;
+    ssl_certificate     /etc/nginx/certs/catch-all.crt;
+    ssl_certificate_key /etc/nginx/certs/catch-all.key;
+    return 444;
+}
+`
+}
+
+// SanitizeDomain strips protocol prefixes and trailing slashes.
 func SanitizeDomain(d string) string {
 	d = strings.TrimSpace(d)
 	lower := strings.ToLower(d)
@@ -146,7 +335,6 @@ func SanitizeDomain(d string) string {
 	return strings.TrimRight(strings.TrimSpace(d), "/")
 }
 
-// normalizeDirectives ensures each nginx directive line ends with a semicolon.
 func normalizeDirectives(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -159,7 +347,6 @@ func normalizeDirectives(s string) string {
 			out = append(out, line)
 			continue
 		}
-		// Don't add semicolons to block starters/enders.
 		if !strings.HasSuffix(line, ";") &&
 			!strings.HasSuffix(line, "{") &&
 			!strings.HasSuffix(line, "}") {
@@ -170,7 +357,6 @@ func normalizeDirectives(s string) string {
 	return strings.Join(out, "\n")
 }
 
-// indentDirectives adds 8-space indent to each non-empty line.
 func indentDirectives(s string) string {
 	if s == "" {
 		return ""
@@ -189,7 +375,6 @@ func validate(cfg store.NginxConfig) error {
 	if strings.TrimSpace(cfg.Domain) == "" {
 		return fmt.Errorf("domain is required")
 	}
-	// Reject any remaining protocol/path markers after sanitization.
 	if strings.ContainsAny(cfg.Domain, ":/\\") {
 		return fmt.Errorf("domain %q must not contain protocol or path — enter only the hostname, e.g. app.example.com", cfg.Domain)
 	}

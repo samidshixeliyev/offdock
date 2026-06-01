@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	healthPollInterval = 3 * time.Second
-	defaultTimeout     = 120 * time.Second
-	runningStableFor   = 5 * time.Second
-	deployTimeout      = 300 * time.Second
+	healthPollInterval     = 3 * time.Second
+	defaultHealthTimeout   = 120 * time.Second
+	defaultStableFor       = 5 * time.Second
+	defaultDeployTimeout   = 300 * time.Second
 )
 
 // LogFunc is a callback invoked with each log line during deployment.
@@ -46,23 +46,50 @@ func New(db *store.DB, dockerClient *docker.Client, enc *crypto.Encryptor, proje
 	}
 }
 
-// Deploy runs a deployment using the latest compose version.
-func (e *Engine) Deploy(ctx context.Context, projectID, triggeredBy string, logFn LogFunc) (*store.DeploymentRecord, error) {
-	return e.DeployVersion(ctx, projectID, triggeredBy, 0, logFn)
+// resolveSettings returns per-project deploy settings, falling back to defaults.
+func (e *Engine) resolveSettings(projectID string) store.DeploySettings {
+	sets, _ := e.db.DeploySettings.FindWhere(func(s store.DeploySettings) bool {
+		return s.ProjectID == projectID
+	})
+	if len(sets) > 0 {
+		s := sets[0]
+		if s.HealthTimeoutSecs <= 0 {
+			s.HealthTimeoutSecs = int(defaultHealthTimeout.Seconds())
+		}
+		if s.DeployTimeoutSecs <= 0 {
+			s.DeployTimeoutSecs = int(defaultDeployTimeout.Seconds())
+		}
+		if s.HealthStableSecs <= 0 {
+			s.HealthStableSecs = int(defaultStableFor.Seconds())
+		}
+		return s
+	}
+	return store.DeploySettings{
+		ProjectID:         projectID,
+		HealthTimeoutSecs: int(defaultHealthTimeout.Seconds()),
+		DeployTimeoutSecs: int(defaultDeployTimeout.Seconds()),
+		HealthStableSecs:  int(defaultStableFor.Seconds()),
+	}
 }
 
-// DeployVersion deploys a specific compose version (0 = latest). Used for rollbacks.
+// Deploy runs a deployment using the latest compose + env version.
+func (e *Engine) Deploy(ctx context.Context, projectID, triggeredBy string, logFn LogFunc) (*store.DeploymentRecord, error) {
+	return e.DeployVersion(ctx, projectID, triggeredBy, 0, 0, logFn)
+}
+
+// DeployVersion deploys a specific compose+env version combination.
+// Pass 0 for either to use the latest. Used for rollbacks.
 //
 // Strategy: direct in-place replacement.
-//  1. Write latest compose + env to disk.
-//  2. docker compose up -d --force-recreate --remove-orphans   (recreates all containers)
-//  3. Poll health until stable or timeout.
+//  1. Write compose + env to disk.
+//  2. docker compose up -d --force-recreate --remove-orphans
+//  3. Poll health until stable or timeout (per-project settings).
 //  4. Reload nginx if a config is active.
-//
-// Force-recreate guarantees that every change — env vars, ports, volumes, images —
-// is applied even if Docker's dependency graph doesn't detect a diff.
-func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy string, composeVersion int, logFn LogFunc) (*store.DeploymentRecord, error) {
-	ctx, cancel := context.WithTimeout(ctx, deployTimeout)
+func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy string, composeVersion, envVersion int, logFn LogFunc) (*store.DeploymentRecord, error) {
+	settings := e.resolveSettings(projectID)
+	deployTimeoutDur := time.Duration(settings.DeployTimeoutSecs) * time.Second
+
+	ctx, cancel := context.WithTimeout(ctx, deployTimeoutDur)
 	defer cancel()
 
 	log := func(msg string, args ...any) {
@@ -104,18 +131,36 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	}
 
 	// ── Resolve env version ──────────────────────────────────────────────────
-	envSets, _ := e.db.EnvVars.FindWhere(func(v store.EnvVarSet) bool {
+	allEnvSets, _ := e.db.EnvVars.FindWhere(func(v store.EnvVarSet) bool {
 		return v.ProjectID == projectID
 	})
-	latestEnv := latestEnvSet(envSets)
+	var selectedEnv *store.EnvVarSet
+	if envVersion > 0 {
+		for i, s := range allEnvSets {
+			if s.Version == envVersion {
+				selectedEnv = &allEnvSets[i]
+				break
+			}
+		}
+		if selectedEnv == nil {
+			return nil, fmt.Errorf("env version %d not found", envVersion)
+		}
+	} else {
+		selectedEnv = latestEnvSet(allEnvSets)
+	}
 
 	// ── Create deployment record ─────────────────────────────────────────────
+	envVerUsed := 0
+	if selectedEnv != nil {
+		envVerUsed = selectedEnv.Version
+	}
 	rec := store.DeploymentRecord{
 		ID:                store.NewULID(),
 		ProjectID:         projectID,
 		TriggeredBy:       triggeredBy,
 		Strategy:          "direct-replace",
 		NewComposeVersion: selectedCompose.Version,
+		EnvVersion:        envVerUsed,
 		Status:            store.DeployStatusRunning,
 		StartedAt:         time.Now().UTC(),
 	}
@@ -152,11 +197,9 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		return fail(fmt.Errorf("create project dir: %w", err))
 	}
 
-	envVer := 0
-	if latestEnv != nil {
-		envVer = latestEnv.Version
-	}
-	appendLog("Deploy started — compose v%d, env v%d, project %q", selectedCompose.Version, envVer, project.Name)
+	appendLog("Deploy started — compose v%d, env v%d, project %q", selectedCompose.Version, envVerUsed, project.Name)
+	appendLog("Settings — health timeout %ds, deploy timeout %ds, stable %ds",
+		settings.HealthTimeoutSecs, settings.DeployTimeoutSecs, settings.HealthStableSecs)
 
 	// ── Step 1: Write docker-compose.yml ─────────────────────────────────────
 	composePath := filepath.Join(projectDir, "docker-compose.yml")
@@ -166,12 +209,12 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	}
 
 	// ── Step 2: Write .env ───────────────────────────────────────────────────
-	if latestEnv != nil {
-		appendLog("[2/4] Writing .env (env v%d — %d variables)", latestEnv.Version, len(latestEnv.Vars))
+	if selectedEnv != nil {
+		appendLog("[2/4] Writing .env (env v%d — %d variables)", selectedEnv.Version, len(selectedEnv.Vars))
 	} else {
 		appendLog("[2/4] Writing .env (no env vars configured)")
 	}
-	envContent, err := e.buildEnvFile(latestEnv)
+	envContent, err := e.buildEnvFile(selectedEnv)
 	if err != nil {
 		return fail(fmt.Errorf("build env file: %w", err))
 	}
@@ -194,8 +237,10 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	}
 
 	// ── Step 4: Health check ─────────────────────────────────────────────────
-	appendLog("[4/4] Waiting for containers to become healthy (timeout %s)…", defaultTimeout)
-	if err := e.waitHealthy(ctx, safeProject, composePath, appendLog); err != nil {
+	healthTimeout := time.Duration(settings.HealthTimeoutSecs) * time.Second
+	stableFor := time.Duration(settings.HealthStableSecs) * time.Second
+	appendLog("[4/4] Waiting for containers to become healthy (timeout %s, stable %s)…", healthTimeout, stableFor)
+	if err := e.waitHealthy(ctx, safeProject, composePath, healthTimeout, stableFor, appendLog); err != nil {
 		return fail(fmt.Errorf("health check failed: %w", err))
 	}
 
@@ -224,13 +269,13 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	return &rec, nil
 }
 
-func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, log func(string, ...any)) error {
-	deadline := time.Now().Add(defaultTimeout)
+func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, healthTimeout, stableFor time.Duration, log func(string, ...any)) error {
+	deadline := time.Now().Add(healthTimeout)
 	var firstRunning time.Time
 
 	for {
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout after %s", defaultTimeout)
+			return fmt.Errorf("timeout after %s", healthTimeout)
 		}
 		select {
 		case <-ctx.Done():
@@ -258,7 +303,7 @@ func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, l
 				if firstRunning.IsZero() {
 					firstRunning = time.Now()
 				}
-				if time.Since(firstRunning) < runningStableFor {
+				if time.Since(firstRunning) < stableFor {
 					allHealthy = false
 				}
 			default:

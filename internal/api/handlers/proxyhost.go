@@ -17,16 +17,19 @@ import (
 
 // proxyHostInput is the shared request body for create/update proxy hosts.
 type proxyHostInput struct {
-	Domain            string `json:"domain"`
-	UpstreamHost      string `json:"upstream_host"`
-	UpstreamPort      int    `json:"upstream_port"`
-	SSLEnabled        bool   `json:"ssl_enabled"`
-	SSLCertPath       string `json:"ssl_cert_path"`
-	SSLKeyPath        string `json:"ssl_key_path"`
-	ClientMaxBodySize string `json:"client_max_body_size"`
-	ProxyReadTimeout  int    `json:"proxy_read_timeout"`
-	GzipEnabled       bool   `json:"gzip_enabled"`
-	CustomDirectives  string `json:"custom_directives"`
+	Domain            string                `json:"domain"`
+	Aliases           []string              `json:"aliases"`
+	UpstreamHost      string                `json:"upstream_host"`
+	UpstreamPort      int                   `json:"upstream_port"`
+	SSLEnabled        bool                  `json:"ssl_enabled"`
+	SSLCertPath       string                `json:"ssl_cert_path"`
+	SSLKeyPath        string                `json:"ssl_key_path"`
+	ClientMaxBodySize string                `json:"client_max_body_size"`
+	ProxyReadTimeout  int                   `json:"proxy_read_timeout"`
+	GzipEnabled       bool                  `json:"gzip_enabled"`
+	CustomDirectives  string                `json:"custom_directives"`
+	Locations         []store.ProxyLocation `json:"locations"`
+	AccessLog         bool                  `json:"access_log"`
 }
 
 // ListProxyHosts returns all proxy hosts.
@@ -64,6 +67,7 @@ func (h *H) CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 	host := store.ProxyHost{
 		ID:                store.NewULID(),
 		Domain:            req.Domain,
+		Aliases:           req.Aliases,
 		UpstreamHost:      strings.TrimSpace(req.UpstreamHost),
 		UpstreamPort:      req.UpstreamPort,
 		SSLEnabled:        req.SSLEnabled,
@@ -73,6 +77,8 @@ func (h *H) CreateProxyHost(w http.ResponseWriter, r *http.Request) {
 		ProxyReadTimeout:  req.ProxyReadTimeout,
 		GzipEnabled:       req.GzipEnabled,
 		CustomDirectives:  req.CustomDirectives,
+		Locations:         req.Locations,
+		AccessLog:         req.AccessLog,
 		Enabled:           true,
 		CreatedAt:         time.Now().UTC(),
 		UpdatedAt:         time.Now().UTC(),
@@ -116,6 +122,7 @@ func (h *H) UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host.Domain = req.Domain
+	host.Aliases = req.Aliases
 	host.UpstreamHost = strings.TrimSpace(req.UpstreamHost)
 	host.UpstreamPort = req.UpstreamPort
 	host.SSLEnabled = req.SSLEnabled
@@ -125,6 +132,8 @@ func (h *H) UpdateProxyHost(w http.ResponseWriter, r *http.Request) {
 	host.ProxyReadTimeout = req.ProxyReadTimeout
 	host.GzipEnabled = req.GzipEnabled
 	host.CustomDirectives = req.CustomDirectives
+	host.Locations = req.Locations
+	host.AccessLog = req.AccessLog
 	host.UpdatedAt = time.Now().UTC()
 
 	if host.Enabled {
@@ -320,6 +329,7 @@ func (h *H) PreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 	}
 	host := store.ProxyHost{
 		Domain:            nginxpkg.SanitizeDomain(req.Domain),
+		Aliases:           req.Aliases,
 		UpstreamHost:      strings.TrimSpace(req.UpstreamHost),
 		UpstreamPort:      req.UpstreamPort,
 		SSLEnabled:        req.SSLEnabled,
@@ -329,6 +339,8 @@ func (h *H) PreviewProxyHost(w http.ResponseWriter, r *http.Request) {
 		ProxyReadTimeout:  req.ProxyReadTimeout,
 		GzipEnabled:       req.GzipEnabled,
 		CustomDirectives:  req.CustomDirectives,
+		Locations:         req.Locations,
+		AccessLog:         req.AccessLog,
 	}
 	config, err := nginxpkg.GenerateProxyHost(host)
 	if err != nil {
