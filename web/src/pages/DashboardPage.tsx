@@ -78,18 +78,18 @@ function StatCard({
   return (
     <div className={clsx('card flex-1 min-w-0', alert && 'border-red-900/50')}>
       <div className="flex items-start justify-between mb-2">
-        <span className="text-xs text-gray-500 font-medium uppercase tracking-wide">{label}</span>
+        <span className="text-xs text-slate-500 font-medium uppercase tracking-wide">{label}</span>
         {pct !== undefined && (
           <span className={clsx(
             'text-xs font-bold tabular-nums',
-            pct > 85 ? 'text-red-400' : pct > 65 ? 'text-yellow-400' : 'text-gray-300'
+            pct > 85 ? 'text-red-400' : pct > 65 ? 'text-yellow-400' : 'text-slate-300'
           )}>{pct}%</span>
         )}
       </div>
       <p className="text-xl font-bold text-white tabular-nums mb-1">{value}</p>
-      <p className="text-xs text-gray-600 mb-2">{sub}</p>
+      <p className="text-xs text-slate-600 mb-2">{sub}</p>
       {pct !== undefined && (
-        <div className="h-1 bg-gray-800 rounded-full overflow-hidden mb-2">
+        <div className="h-1 bg-slate-800 rounded-full overflow-hidden mb-2">
           <div
             className={clsx('h-full rounded-full transition-all duration-700',
               pct > 85 ? 'bg-red-500' : pct > 65 ? 'bg-yellow-500' : 'bg-blue-500'
@@ -108,7 +108,7 @@ function StatCard({
 // ─── Status helpers ───────────────────────────────────────────────────────────
 const STATUS_DOT: Record<string, string> = {
   running: 'bg-green-400 animate-pulse',
-  stopped: 'bg-gray-500',
+  stopped: 'bg-slate-500',
   error: 'bg-red-400 animate-pulse',
   degraded: 'bg-yellow-400',
 }
@@ -129,24 +129,24 @@ const DEP_BADGE: Record<string, string> = {
 // ─── Project card ─────────────────────────────────────────────────────────────
 function ProjectCard({ project, onDeploy }: { project: Project; onDeploy: (id: string) => void }) {
   return (
-    <div className="card flex flex-col gap-3 hover:border-gray-700 transition-all group">
+    <div className="card flex flex-col gap-3 hover:border-slate-700 transition-all group">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className={clsx('w-2 h-2 rounded-full shrink-0', STATUS_DOT[project.status] ?? 'bg-gray-500')} />
+            <span className={clsx('w-2 h-2 rounded-full shrink-0', STATUS_DOT[project.status] ?? 'bg-slate-500')} />
             <Link to={`/projects/${project.id}`}
-              className="font-semibold text-gray-100 hover:text-white text-sm truncate transition-colors">
+              className="font-semibold text-slate-100 hover:text-white text-sm truncate transition-colors">
               {project.name}
             </Link>
           </div>
           {project.description && (
-            <p className="text-xs text-gray-600 truncate pl-4">{project.description}</p>
+            <p className="text-xs text-slate-600 truncate pl-4">{project.description}</p>
           )}
         </div>
         <span className={STATUS_BADGE[project.status] ?? 'badge-stopped'}>{project.status}</span>
       </div>
 
-      <div className="flex items-center gap-1.5 pt-1 border-t border-gray-800">
+      <div className="flex items-center gap-1.5 pt-1 border-t border-slate-800">
         <button onClick={() => onDeploy(project.id)}
           className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-950/40 rounded-lg transition-colors border border-transparent hover:border-blue-900/40">
           <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 shrink-0">
@@ -155,14 +155,14 @@ function ProjectCard({ project, onDeploy }: { project: Project; onDeploy: (id: s
           Deploy
         </button>
         <Link to={`/projects/${project.id}`}
-          className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800 rounded-lg transition-colors">
+          className="flex-1 flex items-center justify-center gap-1.5 py-1.5 text-xs text-slate-500 hover:text-slate-300 hover:bg-slate-800 rounded-lg transition-colors">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M8 3H3v10h10V8M8 3l5 5M8 3h5v5"/>
           </svg>
           Open
         </Link>
         <Link to="/containers"
-          className="flex items-center justify-center px-2.5 py-1.5 text-gray-600 hover:text-gray-300 hover:bg-gray-800 rounded-lg transition-colors"
+          className="flex items-center justify-center px-2.5 py-1.5 text-slate-600 hover:text-slate-300 hover:bg-slate-800 rounded-lg transition-colors"
           title="View containers">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M8 2L14 5v6l-6 3L2 11V5l6-3z"/>
@@ -227,8 +227,8 @@ function DeployModal({ projectId, onClose }: { projectId: string; onClose: () =>
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-2xl flex flex-col shadow-2xl" style={{ maxHeight: '80vh' }}>
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800 shrink-0">
+      <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-2xl flex flex-col shadow-2xl" style={{ maxHeight: '80vh' }}>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-2">
             {deploying ? (
               <svg className="animate-spin w-4 h-4 text-blue-400" viewBox="0 0 24 24" fill="none">
@@ -247,7 +247,7 @@ function DeployModal({ projectId, onClose }: { projectId: string; onClose: () =>
           <div className="flex gap-2">
             {deploying && (
               <button onClick={cancel} disabled={cancelling}
-                className="text-xs text-gray-500 hover:text-red-400 px-3 py-1.5 border border-gray-700 hover:border-red-900/60 rounded-lg transition-colors disabled:opacity-40">
+                className="text-xs text-slate-500 hover:text-red-400 px-3 py-1.5 border border-slate-700 hover:border-red-900/60 rounded-lg transition-colors disabled:opacity-40">
                 {cancelling ? 'Cancelling…' : 'Cancel'}
               </button>
             )}
@@ -261,7 +261,7 @@ function DeployModal({ projectId, onClose }: { projectId: string; onClose: () =>
               l.startsWith('✓') || l.includes('complete') ? 'text-green-300 font-medium' :
               l.match(/\[\d+\/\d+\]/) ? 'text-blue-300 font-medium' :
               l.startsWith('⚠') ? 'text-yellow-400' :
-              l.startsWith('  ') ? 'text-gray-500' : ''
+              l.startsWith('  ') ? 'text-slate-500' : ''
             }>{l || ' '}</div>
           ))}
           {deploying && <span className="animate-pulse text-blue-400">▌</span>}
@@ -279,7 +279,7 @@ function ContainerHealthPanel({ containers }: { containers: ContainerStats[] }) 
     <div className="card">
       <div className="flex items-center justify-between mb-3">
         <p className="section-heading">Top Containers</p>
-        <Link to="/containers" className="text-xs text-gray-600 hover:text-gray-300 transition-colors">
+        <Link to="/containers" className="text-xs text-slate-600 hover:text-slate-300 transition-colors">
           View all →
         </Link>
       </div>
@@ -289,24 +289,24 @@ function ContainerHealthPanel({ containers }: { containers: ContainerStats[] }) 
           const mem = parseFloat(c.MemPerc)
           return (
             <div key={c.name} className="flex items-center gap-3">
-              <span className="text-xs font-mono text-gray-400 truncate w-32 shrink-0">{c.name}</span>
+              <span className="text-xs font-mono text-slate-400 truncate w-32 shrink-0">{c.name}</span>
               <div className="flex-1 flex items-center gap-1.5">
-                <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                <div className="w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden">
                   <div
                     className={clsx('h-full rounded-full', cpu > 70 ? 'bg-red-500' : 'bg-blue-500')}
                     style={{ width: `${Math.min(cpu, 100)}%` }}
                   />
                 </div>
-                <span className="text-xs text-gray-600 w-9 tabular-nums">{c.CPUPerc}</span>
+                <span className="text-xs text-slate-600 w-9 tabular-nums">{c.CPUPerc}</span>
               </div>
               <div className="flex-1 flex items-center gap-1.5">
-                <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                <div className="w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden">
                   <div
                     className={clsx('h-full rounded-full', mem > 70 ? 'bg-yellow-500' : 'bg-green-500')}
                     style={{ width: `${Math.min(mem, 100)}%` }}
                   />
                 </div>
-                <span className="text-xs text-gray-600 w-9 tabular-nums">{c.MemPerc}</span>
+                <span className="text-xs text-slate-600 w-9 tabular-nums">{c.MemPerc}</span>
               </div>
             </div>
           )
@@ -331,9 +331,9 @@ function QuickActions() {
           { to: '/usb',          label: 'Import USB',   icon: '⏏', color: 'text-orange-400' },
         ].map(a => (
           <Link key={a.to} to={a.to}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-800/50 hover:bg-gray-800 border border-gray-800 hover:border-gray-700 transition-all">
+            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-800/50 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 transition-all">
             <span className={clsx('text-sm font-mono shrink-0', a.color)}>{a.icon}</span>
-            <span className="text-xs text-gray-400">{a.label}</span>
+            <span className="text-xs text-slate-400">{a.label}</span>
           </Link>
         ))}
       </div>
@@ -391,12 +391,12 @@ export default function DashboardPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-lg font-semibold text-white">Dashboard</h1>
-          <p className="text-xs text-gray-600 mt-0.5">
+          <p className="text-xs text-slate-600 mt-0.5">
             {projects.length} project{projects.length !== 1 ? 's' : ''}
             {running > 0 && <> · <span className="text-green-400">{running} running</span></>}
             {errored > 0 && <> · <span className="text-red-400">{errored} error{errored !== 1 ? 's' : ''}</span></>}
-            {stopped > 0 && <> · <span className="text-gray-500">{stopped} stopped</span></>}
-            {stats && <> · <span className="text-gray-600">up {uptime(stats.uptime_secs)}</span></>}
+            {stopped > 0 && <> · <span className="text-slate-500">{stopped} stopped</span></>}
+            {stats && <> · <span className="text-slate-600">up {uptime(stats.uptime_secs)}</span></>}
           </p>
         </div>
         <Link to="/projects/new" className="btn-primary">
@@ -445,9 +445,9 @@ export default function DashboardPage() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
           {['CPU', 'Memory', 'Disk', 'Containers'].map(l => (
             <div key={l} className="card animate-pulse">
-              <div className="text-xs text-gray-700 mb-2">{l}</div>
-              <div className="h-6 bg-gray-800 rounded w-16 mb-1" />
-              <div className="h-3 bg-gray-800 rounded w-24" />
+              <div className="text-xs text-slate-700 mb-2">{l}</div>
+              <div className="h-6 bg-slate-800 rounded w-16 mb-1" />
+              <div className="h-3 bg-slate-800 rounded w-24" />
             </div>
           ))}
         </div>
@@ -459,18 +459,18 @@ export default function DashboardPage() {
         <section className="xl:col-span-2 space-y-4">
           <div className="flex items-center justify-between">
             <p className="section-heading">Projects</p>
-            <span className="text-xs text-gray-600">{projects.length} total</span>
+            <span className="text-xs text-slate-600">{projects.length} total</span>
           </div>
 
           {projects.length === 0 ? (
             <div className="card text-center py-12 border-dashed">
-              <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-3">
-                <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-gray-600">
+              <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center mx-auto mb-3">
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-slate-600">
                   <path d="M2 4a1 1 0 011-1h5a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1V4zM11 4a1 1 0 011-1h5a1 1 0 011 1v2a1 1 0 01-1 1h-5a1 1 0 01-1-1V4zM11 11a1 1 0 011-1h5a1 1 0 011 1v5a1 1 0 01-1 1h-5a1 1 0 01-1-1v-5zM2 11a1 1 0 011-1h5a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5z"/>
                 </svg>
               </div>
-              <p className="text-gray-500 text-sm mb-1">No projects yet</p>
-              <p className="text-gray-700 text-xs mb-4">Create a project to start managing deployments</p>
+              <p className="text-slate-500 text-sm mb-1">No projects yet</p>
+              <p className="text-slate-700 text-xs mb-4">Create a project to start managing deployments</p>
               <Link to="/projects/new" className="btn-primary">Create your first project</Link>
             </div>
           ) : (
@@ -495,29 +495,29 @@ export default function DashboardPage() {
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="section-heading">Recent Deployments</p>
-              <span className="text-xs text-gray-600">{recent.length}</span>
+              <span className="text-xs text-slate-600">{recent.length}</span>
             </div>
             {recent.length === 0 ? (
-              <div className="card text-center py-8 border-dashed text-gray-600 text-xs">No deployments yet</div>
+              <div className="card text-center py-8 border-dashed text-slate-600 text-xs">No deployments yet</div>
             ) : (
               <div className="space-y-1">
                 {recent.slice(0, 10).map(d => (
                   <div key={d.id}>
                     <div
-                      className="card p-3 cursor-pointer hover:border-gray-700 transition-all"
+                      className="card p-3 cursor-pointer hover:border-slate-700 transition-all"
                       onClick={() => setExpandedDep(expandedDep === d.id ? null : d.id)}
                     >
                       <div className="flex items-center justify-between gap-2 mb-1.5">
                         <span className={DEP_BADGE[d.status] ?? 'badge-stopped'}>{d.status}</span>
-                        <span className="text-xs text-gray-600 tabular-nums">{timeAgo(d.started_at)}</span>
+                        <span className="text-xs text-slate-600 tabular-nums">{timeAgo(d.started_at)}</span>
                       </div>
                       <div className="flex items-center justify-between gap-2">
                         <Link to={`/projects/${d.project_id}`}
                           onClick={e => e.stopPropagation()}
-                          className="text-xs text-gray-300 hover:text-white transition-colors font-medium truncate">
+                          className="text-xs text-slate-300 hover:text-white transition-colors font-medium truncate">
                           {d.project_name || d.project_id}
                         </Link>
-                        <span className="text-xs text-gray-600 font-mono shrink-0">
+                        <span className="text-xs text-slate-600 font-mono shrink-0">
                           v{d.new_compose_version} · {dur(d.started_at, d.finished_at)}
                         </span>
                       </div>
@@ -530,7 +530,7 @@ export default function DashboardPage() {
                             l.includes('FAILED') || l.startsWith('✗') ? 'text-red-400' :
                             l.match(/\[\d+\/\d+\]/) ? 'text-blue-300' :
                             l.includes('complete') ? 'text-green-300' :
-                            l.startsWith('  ') ? 'text-gray-600' : ''
+                            l.startsWith('  ') ? 'text-slate-600' : ''
                           }>{l || ' '}</div>
                         ))}
                       </div>

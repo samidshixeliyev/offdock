@@ -54,10 +54,10 @@ export default function LogsPage() {
         <button onClick={() => setLines([])} className="btn-ghost">Clear</button>
       </div>
 
-      <div ref={logRef} className="flex-1 font-mono text-xs bg-gray-950 border border-gray-800 rounded-xl p-4 overflow-y-auto">
-        {filtered.length === 0 && <span className="text-gray-600">Waiting for logs…</span>}
+      <div ref={logRef} className="flex-1 font-mono text-xs bg-slate-950 border border-slate-800 rounded-xl p-4 overflow-y-auto">
+        {filtered.length === 0 && <span className="text-slate-600">Waiting for logs…</span>}
         {filtered.map((line, i) => (
-          <div key={i} className={line.includes('ERROR') || line.includes('error') ? 'text-red-400' : line.includes('WARN') ? 'text-yellow-400' : 'text-gray-300'}>
+          <div key={i} className={line.includes('ERROR') || line.includes('error') ? 'text-red-400' : line.includes('WARN') ? 'text-yellow-400' : 'text-slate-300'}>
             {line}
           </div>
         ))}

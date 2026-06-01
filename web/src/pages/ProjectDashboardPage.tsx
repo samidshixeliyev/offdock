@@ -51,18 +51,18 @@ function LogsModal({ projectId, containerName, onClose }: {
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl"
+      <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl"
         onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800 shrink-0">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 shrink-0">
           <div>
             <h3 className="text-sm font-semibold text-white">Container Logs</h3>
-            <p className="text-xs text-gray-500 font-mono">{containerName}</p>
+            <p className="text-xs text-slate-500 font-mono">{containerName}</p>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
+          <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">×</button>
         </div>
         <div ref={logRef} className="flex-1 overflow-y-auto min-h-0 p-4 terminal text-green-400 text-xs leading-relaxed font-mono">
           {lines.length === 0
-            ? <span className="text-gray-600 animate-pulse">Connecting to log stream…</span>
+            ? <span className="text-slate-600 animate-pulse">Connecting to log stream…</span>
             : lines.map((l, i) => <div key={i}>{l || ' '}</div>)
           }
         </div>
@@ -94,21 +94,21 @@ function ExecModal({ containerName, onClose }: { containerName: string; onClose:
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl"
+      <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl"
         onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800 shrink-0">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 shrink-0">
           <div>
             <h3 className="text-sm font-semibold text-white">Run Command</h3>
-            <p className="text-xs text-gray-500">Commands run on the host. Use docker exec to reach containers.</p>
+            <p className="text-xs text-slate-500">Commands run on the host. Use docker exec to reach containers.</p>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
+          <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">×</button>
         </div>
         <div className="flex-1 overflow-y-auto min-h-0 p-4 terminal text-green-400 text-xs leading-relaxed">
           {output ? output.split('\n').map((l, i) => (
             <div key={i} className={l.startsWith('$') ? 'text-blue-300 mt-2' : ''}>{l || ' '}</div>
-          )) : <span className="text-gray-600">Type a command below and press Enter</span>}
+          )) : <span className="text-slate-600">Type a command below and press Enter</span>}
         </div>
-        <div className="flex gap-2 px-4 py-3 border-t border-gray-800 shrink-0">
+        <div className="flex gap-2 px-4 py-3 border-t border-slate-800 shrink-0">
           <span className="text-blue-400 text-xs font-mono mt-2">$</span>
           <input
             ref={inputRef}
@@ -137,14 +137,14 @@ function ServerFileRow({ entry, serverMount, onNavigate, onSelect, onPreview, fm
   fmtSize: (n: number) => string
 }) {
   return (
-    <div className="flex items-center justify-between px-4 py-1.5 border-b border-gray-800/40 hover:bg-gray-800/30">
+    <div className="flex items-center justify-between px-4 py-1.5 border-b border-slate-800/40 hover:bg-slate-800/30">
       <button className="flex items-center gap-2.5 text-left min-w-0 flex-1"
         onClick={() => entry.is_dir ? onNavigate(serverMount, entry.path) : onPreview(entry)}>
-        <span className={`text-xs w-3 shrink-0 ${entry.is_dir ? 'text-blue-400' : 'text-gray-600'}`}>
+        <span className={`text-xs w-3 shrink-0 ${entry.is_dir ? 'text-blue-400' : 'text-slate-600'}`}>
           {entry.is_dir ? '▸' : '·'}
         </span>
-        <span className="font-mono text-xs text-gray-300 truncate">{entry.name}</span>
-        {!entry.is_dir && entry.size > 0 && <span className="text-xs text-gray-700 shrink-0">{fmtSize(entry.size)}</span>}
+        <span className="font-mono text-xs text-slate-300 truncate">{entry.name}</span>
+        {!entry.is_dir && entry.size > 0 && <span className="text-xs text-slate-700 shrink-0">{fmtSize(entry.size)}</span>}
       </button>
       {!entry.is_dir && (
         <button onClick={() => onSelect(entry)} className="btn-primary text-xs py-0.5 shrink-0 ml-2">Use</button>
@@ -224,18 +224,18 @@ function FileBrowser({ onSelect, onClose }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl"
+      <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl"
         onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-gray-800 shrink-0">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 shrink-0">
           <h3 className="text-sm font-semibold text-white">Browse Files</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-white text-xl leading-none">×</button>
+          <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">×</button>
         </div>
 
-        <div className="flex border-b border-gray-800 shrink-0 px-5">
+        <div className="flex border-b border-slate-800 shrink-0 px-5">
           {(['local', 'server'] as BrowserTab[]).map(t => (
             <button key={t} onClick={() => setActiveTab(t)}
               className={`px-4 py-2.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
-                activeTab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-gray-500 hover:text-gray-300'
+                activeTab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-500 hover:text-slate-300'
               }`}>
               {t === 'local' ? 'My Computer' : 'Server Files'}
             </button>
@@ -245,14 +245,14 @@ function FileBrowser({ onSelect, onClose }: {
         {/* ── My Computer tab (client-side file picker) ── */}
         {activeTab === 'local' && (
           <div className="flex-1 flex flex-col items-center justify-center p-8 gap-5">
-            <div className="w-14 h-14 rounded-2xl bg-gray-800 flex items-center justify-center">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-7 h-7 text-gray-400">
+            <div className="w-14 h-14 rounded-2xl bg-slate-800 flex items-center justify-center">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-7 h-7 text-slate-400">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 13.5l3 3m0 0l3-3m-3 3v-6m1.06-4.19l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
               </svg>
             </div>
             <div className="text-center">
-              <p className="text-sm font-medium text-gray-200 mb-1">Choose a file from your computer</p>
-              <p className="text-xs text-gray-500">Supports .yml, .yaml, .env, .txt and other text files</p>
+              <p className="text-sm font-medium text-slate-200 mb-1">Choose a file from your computer</p>
+              <p className="text-xs text-slate-500">Supports .yml, .yaml, .env, .txt and other text files</p>
             </div>
             {localErr && <p className="text-xs text-red-400">{localErr}</p>}
             <label className="btn-primary cursor-pointer">
@@ -269,7 +269,7 @@ function FileBrowser({ onSelect, onClose }: {
         {/* ── Server Files tab ── */}
         {activeTab === 'server' && (
           <>
-            <div className="px-5 py-3 border-b border-gray-800 space-y-1.5 shrink-0">
+            <div className="px-5 py-3 border-b border-slate-800 space-y-1.5 shrink-0">
               <div className="flex gap-2">
                 <input className="input font-mono text-xs flex-1"
                   placeholder="Base directory"
@@ -279,17 +279,17 @@ function FileBrowser({ onSelect, onClose }: {
                 <button onClick={() => { setServerPath(serverMount); browseServer(serverMount, serverMount) }}
                   className="btn-ghost text-xs">Go</button>
               </div>
-              <p className="text-xs text-gray-600 font-mono truncate">{serverPath}</p>
+              <p className="text-xs text-slate-600 font-mono truncate">{serverPath}</p>
               {serverErr && <p className="text-xs text-red-400">{serverErr}</p>}
             </div>
             <div className="flex flex-1 min-h-0 overflow-hidden">
               {/* File list */}
-              <div className="w-1/2 overflow-y-auto border-r border-gray-800">
-                {serverLoading && <p className="px-5 py-6 text-gray-500 text-sm text-center">Loading…</p>}
+              <div className="w-1/2 overflow-y-auto border-r border-slate-800">
+                {serverLoading && <p className="px-5 py-6 text-slate-500 text-sm text-center">Loading…</p>}
                 {serverPath !== serverMount.replace(/\/$/, '') && (
                   <button onClick={serverUp}
-                    className="w-full flex items-center gap-2 px-5 py-2.5 text-sm text-gray-400 hover:bg-gray-800 border-b border-gray-800">
-                    <span className="text-gray-600">↑</span> ..
+                    className="w-full flex items-center gap-2 px-5 py-2.5 text-sm text-slate-400 hover:bg-slate-800 border-b border-slate-800">
+                    <span className="text-slate-600">↑</span> ..
                   </button>
                 )}
                 {serverEntries.map(e => (
@@ -309,7 +309,7 @@ function FileBrowser({ onSelect, onClose }: {
                   />
                 ))}
                 {!serverLoading && serverEntries.length === 0 && (
-                  <p className="px-5 py-8 text-gray-600 text-sm text-center">Empty directory</p>
+                  <p className="px-5 py-8 text-slate-600 text-sm text-center">Empty directory</p>
                 )}
               </div>
 
@@ -317,16 +317,16 @@ function FileBrowser({ onSelect, onClose }: {
               <div className="w-1/2 flex flex-col overflow-hidden">
                 {serverPreview ? (
                   <>
-                    <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 shrink-0">
-                      <span className="text-xs font-mono text-gray-400 truncate">{serverPreview.name}</span>
-                      <button onClick={() => setServerPreview(null)} className="text-gray-600 hover:text-gray-300 text-xs ml-2">✕</button>
+                    <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800 shrink-0">
+                      <span className="text-xs font-mono text-slate-400 truncate">{serverPreview.name}</span>
+                      <button onClick={() => setServerPreview(null)} className="text-slate-600 hover:text-slate-300 text-xs ml-2">✕</button>
                     </div>
-                    <pre className="flex-1 overflow-y-auto p-3 text-xs font-mono text-gray-300 leading-relaxed whitespace-pre-wrap bg-gray-950">
+                    <pre className="flex-1 overflow-y-auto p-3 text-xs font-mono text-slate-300 leading-relaxed whitespace-pre-wrap bg-slate-950">
                       {serverPreview.content}
                     </pre>
                   </>
                 ) : (
-                  <div className="flex-1 flex items-center justify-center text-xs text-gray-700">
+                  <div className="flex-1 flex items-center justify-center text-xs text-slate-700">
                     Click a file to preview its content
                   </div>
                 )}
@@ -365,7 +365,7 @@ function InlineLogViewer({ name, projectId }: { name: string; projectId: string 
   return (
     <div ref={ref} className="terminal p-3 text-green-400 text-xs h-40 overflow-y-auto mt-2">
       {lines.length === 0
-        ? <span className="text-gray-600 animate-pulse">Connecting…</span>
+        ? <span className="text-slate-600 animate-pulse">Connecting…</span>
         : lines.map((l, i) => {
             const lc = l.toLowerCase()
             const cls = lc.includes('error') || lc.includes('err:') ? 'text-red-400'
@@ -417,7 +417,7 @@ function OverviewTab({ projectId, onStatusSync }: {
   const stateColor = (state: string) =>
     state === 'running' ? 'text-green-300 bg-green-950 border-green-900/50' :
     state === 'exited'  ? 'text-red-300 bg-red-950 border-red-900/50' :
-                          'text-gray-400 bg-gray-800 border-gray-700'
+                          'text-slate-400 bg-slate-800 border-slate-700'
 
   return (
     <div className="space-y-4">
@@ -442,11 +442,11 @@ function OverviewTab({ projectId, onStatusSync }: {
         </div>
 
         {loading ? (
-          <div className="card text-gray-600 text-sm py-8 text-center">Loading…</div>
+          <div className="card text-slate-600 text-sm py-8 text-center">Loading…</div>
         ) : containers.length === 0 ? (
           <div className="card text-center py-10 border-dashed">
-            <p className="text-gray-500 text-sm">No containers running for this project.</p>
-            <p className="text-gray-700 text-xs mt-1 mb-4">Deploy the project to start containers.</p>
+            <p className="text-slate-500 text-sm">No containers running for this project.</p>
+            <p className="text-slate-700 text-xs mt-1 mb-4">Deploy the project to start containers.</p>
             <button onClick={syncStatus} disabled={syncing} className="btn-ghost text-xs">
               {syncing ? 'Syncing…' : 'Sync Status from Docker'}
             </button>
@@ -455,7 +455,7 @@ function OverviewTab({ projectId, onStatusSync }: {
           <div className="card overflow-x-auto p-0">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-800 text-gray-500">
+                <tr className="border-b border-slate-800 text-slate-500">
                   <th className="text-left px-4 py-3 text-xs font-medium">Name</th>
                   <th className="text-left px-4 py-3 text-xs font-medium">Image</th>
                   <th className="text-left px-4 py-3 text-xs font-medium">State</th>
@@ -466,24 +466,24 @@ function OverviewTab({ projectId, onStatusSync }: {
               <tbody>
                 {containers.map(c => (
                   <>
-                    <tr key={c.ID} className="border-b border-gray-800/50 hover:bg-gray-800/20">
-                      <td className="px-4 py-3 font-mono text-xs text-gray-200">{c.Names}</td>
-                      <td className="px-4 py-3 text-gray-500 text-xs truncate max-w-[160px]">{c.Image}</td>
+                    <tr key={c.ID} className="border-b border-slate-800/50 hover:bg-slate-800/20">
+                      <td className="px-4 py-3 font-mono text-xs text-slate-200">{c.Names}</td>
+                      <td className="px-4 py-3 text-slate-500 text-xs truncate max-w-[160px]">{c.Image}</td>
                       <td className="px-4 py-3">
                         <span className={`text-xs px-2 py-0.5 rounded-full border ${stateColor(c.State)}`}>
                           {c.Status}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-600 font-mono">{c.Ports || '—'}</td>
+                      <td className="px-4 py-3 text-xs text-slate-600 font-mono">{c.Ports || '—'}</td>
                       <td className="px-4 py-3">
                         <div className="flex gap-3">
                           <button
                             onClick={() => setInlineLogsFor(inlineLogsFor === c.Names ? null : c.Names)}
-                            className={`text-xs transition-colors ${inlineLogsFor === c.Names ? 'text-blue-400' : 'text-gray-500 hover:text-gray-300'}`}>
+                            className={`text-xs transition-colors ${inlineLogsFor === c.Names ? 'text-blue-400' : 'text-slate-500 hover:text-slate-300'}`}>
                             {inlineLogsFor === c.Names ? '▲ Logs' : '▼ Logs'}
                           </button>
                           <button onClick={() => setLogsFor(c.Names)}
-                            className="text-xs text-gray-500 hover:text-gray-300 transition-colors" title="Full screen logs">
+                            className="text-xs text-slate-500 hover:text-slate-300 transition-colors" title="Full screen logs">
                             ↗
                           </button>
                           <button onClick={() => doAction(c.Names, 'restart')} disabled={!!actionBusy}
@@ -505,7 +505,7 @@ function OverviewTab({ projectId, onStatusSync }: {
                       </td>
                     </tr>
                     {inlineLogsFor === c.Names && (
-                      <tr key={c.ID + '-logs'} className="border-b border-gray-800/50 bg-gray-950/50">
+                      <tr key={c.ID + '-logs'} className="border-b border-slate-800/50 bg-slate-950/50">
                         <td colSpan={5} className="px-4 pb-3 pt-0">
                           <InlineLogViewer name={c.Names} projectId={projectId} />
                         </td>
@@ -566,7 +566,7 @@ function ComposeTab({ projectId }: { projectId: string }) {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
         <div className="lg:col-span-3">
           <textarea
-            className="w-full font-mono text-xs bg-gray-900 border border-gray-700 rounded-xl p-4 text-gray-200 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/40 resize-y leading-relaxed"
+            className="w-full font-mono text-xs bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-200 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/40 resize-y leading-relaxed"
             style={{ minHeight: '24rem' }}
             placeholder={'services:\n  app:\n    image: myapp:latest\n    ports:\n      - "3000:3000"'}
             value={yaml}
@@ -575,9 +575,9 @@ function ComposeTab({ projectId }: { projectId: string }) {
           />
         </div>
         <div>
-          <p className="text-xs font-medium text-gray-600 uppercase tracking-widest mb-2">History</p>
+          <p className="text-xs font-medium text-slate-600 uppercase tracking-widest mb-2">History</p>
           {history.length === 0
-            ? <p className="text-xs text-gray-700 px-1">No versions yet</p>
+            ? <p className="text-xs text-slate-700 px-1">No versions yet</p>
             : (
               <div className="space-y-1">
                 {history.map(cfg => (
@@ -586,11 +586,11 @@ function ComposeTab({ projectId }: { projectId: string }) {
                     className={`w-full text-left px-3 py-2.5 rounded-lg text-xs transition-colors border ${
                       selected?.id === cfg.id
                         ? 'bg-blue-950 text-blue-300 border-blue-900/50'
-                        : 'text-gray-500 hover:bg-gray-800/70 border-transparent'
+                        : 'text-slate-500 hover:bg-slate-800/70 border-transparent'
                     }`}
                   >
                     <div className="font-medium">v{cfg.version}</div>
-                    <div className="text-gray-700 mt-0.5">{new Date(cfg.created_at).toLocaleString()}</div>
+                    <div className="text-slate-700 mt-0.5">{new Date(cfg.created_at).toLocaleString()}</div>
                   </button>
                 ))}
               </div>
@@ -701,9 +701,9 @@ function EnvTab({ projectId }: { projectId: string }) {
 
       {pasteMode && (
         <div className="card space-y-3">
-          <p className="text-xs text-gray-400">Paste .env content — existing keys will be updated, new keys added.</p>
+          <p className="text-xs text-slate-400">Paste .env content — existing keys will be updated, new keys added.</p>
           <textarea
-            className="w-full font-mono text-xs bg-gray-950 border border-gray-700 rounded-lg p-3 text-gray-200 focus:outline-none focus:border-blue-500 resize-y"
+            className="w-full font-mono text-xs bg-slate-950 border border-slate-700 rounded-lg p-3 text-slate-200 focus:outline-none focus:border-blue-500 resize-y"
             style={{ minHeight: '10rem' }}
             placeholder={'DATABASE_URL=postgres://localhost/mydb\nSECRET=changeme\nPORT=3000'}
             value={pasteText}
@@ -719,9 +719,9 @@ function EnvTab({ projectId }: { projectId: string }) {
 
       <div className="space-y-2">
         {vars.length === 0 && !pasteMode && (
-          <div className="card text-center text-gray-500 py-10 text-sm border-dashed">
+          <div className="card text-center text-slate-500 py-10 text-sm border-dashed">
             No variables yet.
-            <p className="text-xs text-gray-700 mt-1">Click "+ Add", "Browse Files" to pick a .env, or "Paste .env".</p>
+            <p className="text-xs text-slate-700 mt-1">Click "+ Add", "Browse Files" to pick a .env, or "Paste .env".</p>
           </div>
         )}
         {vars.map(v => (
@@ -745,20 +745,20 @@ function EnvTab({ projectId }: { projectId: string }) {
                 <button
                   type="button"
                   onClick={() => update(v._id, 'revealed', !v.revealed)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-xs"
                 >
                   {v.revealed ? 'hide' : 'show'}
                 </button>
               )}
             </div>
-            <label className="flex items-center gap-1.5 text-xs text-gray-500 shrink-0 cursor-pointer">
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 shrink-0 cursor-pointer">
               <input type="checkbox" checked={v.is_secret}
                 onChange={e => update(v._id, 'is_secret', e.target.checked)} className="rounded" />
               Secret
             </label>
             <button
               onClick={() => removeVar(v._id)}
-              className="text-gray-700 hover:text-red-400 text-sm transition-colors shrink-0"
+              className="text-slate-700 hover:text-red-400 text-sm transition-colors shrink-0"
             >
               ✕
             </button>
@@ -830,7 +830,7 @@ function StepPipeline({ statuses }: { statuses: StepStatus[] }) {
               <div className="text-xs leading-tight truncate">{label}</div>
             </div>
             {i < DEPLOY_STEPS.length - 1 && (
-              <div className={`w-3 h-px shrink-0 ${s === 'done' ? 'bg-green-700' : 'bg-gray-800'}`} />
+              <div className={`w-3 h-px shrink-0 ${s === 'done' ? 'bg-green-700' : 'bg-slate-800'}`} />
             )}
           </div>
         )
@@ -950,7 +950,7 @@ function DeployTab({ projectId }: { projectId: string }) {
             <button
               onClick={handleCancel}
               disabled={cancelling}
-              className="text-xs text-gray-500 hover:text-red-400 disabled:opacity-40 transition-colors px-3 py-1.5 border border-gray-700 hover:border-red-900/60 rounded-lg"
+              className="text-xs text-slate-500 hover:text-red-400 disabled:opacity-40 transition-colors px-3 py-1.5 border border-slate-700 hover:border-red-900/60 rounded-lg"
             >
               {cancelling ? 'Cancelling…' : 'Cancel'}
             </button>
@@ -982,7 +982,7 @@ function DeployTab({ projectId }: { projectId: string }) {
           <p className="section-heading">Pipeline</p>
           <StepPipeline statuses={stepStatuses} />
           <div>
-            <p className="text-xs text-gray-600 mb-2">Live output</p>
+            <p className="text-xs text-slate-600 mb-2">Live output</p>
             <div ref={logRef} className="terminal p-4 text-green-400 h-56">
               {log.map((line, i) => (
                 <div key={i} className={
@@ -1005,20 +1005,20 @@ function DeployTab({ projectId }: { projectId: string }) {
         <div className="flex items-center justify-between mb-3">
           <p className="section-heading">History</p>
           {deployments.some(d => d.status === 'success') && (
-            <span className="text-xs text-gray-600">
+            <span className="text-xs text-slate-600">
               {deployments.filter(d => d.status === 'success').length} successful · click row for logs · Rollback re-deploys a prior compose version
             </span>
           )}
         </div>
         {deployments.length === 0 ? (
-          <div className="card text-gray-600 text-sm text-center py-8 border-dashed">
+          <div className="card text-slate-600 text-sm text-center py-8 border-dashed">
             No deployments yet — trigger one above.
           </div>
         ) : (
           <div className="card p-0 overflow-hidden">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-800 text-gray-500">
+                <tr className="border-b border-slate-800 text-slate-500">
                   <th className="text-left px-4 py-3 text-xs font-medium">Status</th>
                   <th className="text-left px-4 py-3 text-xs font-medium">Compose</th>
                   <th className="text-left px-4 py-3 text-xs font-medium">By</th>
@@ -1032,19 +1032,19 @@ function DeployTab({ projectId }: { projectId: string }) {
                   <>
                     <tr
                       key={d.id}
-                      className="border-b border-gray-800/50 hover:bg-gray-800/20 cursor-pointer"
+                      className="border-b border-slate-800/50 hover:bg-slate-800/20 cursor-pointer"
                       onClick={() => setExpandedId(expandedId === d.id ? null : d.id)}
                     >
                       <td className="px-4 py-3">
                         <span className={depBadge[d.status] ?? 'badge-stopped'}>{d.status}</span>
                       </td>
-                      <td className="px-4 py-3 text-gray-400 text-xs font-mono font-medium">v{d.new_compose_version}</td>
-                      <td className="px-4 py-3 text-gray-500 text-xs">{d.triggered_by}</td>
-                      <td className="px-4 py-3 text-gray-600 text-xs">{new Date(d.started_at).toLocaleString()}</td>
-                      <td className="px-4 py-3 text-gray-600 text-xs tabular-nums">{durStr(d)}</td>
+                      <td className="px-4 py-3 text-slate-400 text-xs font-mono font-medium">v{d.new_compose_version}</td>
+                      <td className="px-4 py-3 text-slate-500 text-xs">{d.triggered_by}</td>
+                      <td className="px-4 py-3 text-slate-600 text-xs">{new Date(d.started_at).toLocaleString()}</td>
+                      <td className="px-4 py-3 text-slate-600 text-xs tabular-nums">{durStr(d)}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2 justify-end">
-                          <span className="text-xs text-gray-700">{expandedId === d.id ? '▲' : '▼'}</span>
+                          <span className="text-xs text-slate-700">{expandedId === d.id ? '▲' : '▼'}</span>
                           {d.status === 'success' && (
                             <button
                               onClick={e => { e.stopPropagation(); setRollbackTarget(d) }}
@@ -1057,7 +1057,7 @@ function DeployTab({ projectId }: { projectId: string }) {
                           {(d.status === 'success' || d.status === 'failed' || d.status === 'cancelled') && (
                             <button
                               onClick={e => { e.stopPropagation(); setDeleteTarget(d) }}
-                              className="text-xs text-gray-600 hover:text-red-400 transition-colors px-1"
+                              className="text-xs text-slate-600 hover:text-red-400 transition-colors px-1"
                             >
                               ✕
                             </button>
@@ -1067,12 +1067,12 @@ function DeployTab({ projectId }: { projectId: string }) {
                     </tr>
 
                     {expandedId === d.id && (
-                      <tr key={d.id + '-log'} className="border-b border-gray-800/50 bg-gray-950/60">
+                      <tr key={d.id + '-log'} className="border-b border-slate-800/50 bg-slate-950/60">
                         <td colSpan={6} className="px-4 pb-4 pt-3">
                           {d.status === 'success' && (
                             <div className="mb-3 flex items-center gap-2">
-                              <span className="text-xs text-gray-500">Rollback plan:</span>
-                              <span className="text-xs text-gray-300">Re-deploy compose <code className="text-blue-400 font-mono">v{d.new_compose_version}</code> through the full healthcheck-cutover pipeline</span>
+                              <span className="text-xs text-slate-500">Rollback plan:</span>
+                              <span className="text-xs text-slate-300">Re-deploy compose <code className="text-blue-400 font-mono">v{d.new_compose_version}</code> through the full healthcheck-cutover pipeline</span>
                               <button
                                 onClick={e => { e.stopPropagation(); setRollbackTarget(d) }}
                                 disabled={deploying}
@@ -1095,7 +1095,7 @@ function DeployTab({ projectId }: { projectId: string }) {
                                     {line || ' '}
                                   </div>
                                 ))
-                              : <span className="text-gray-600">No log captured</span>
+                              : <span className="text-slate-600">No log captured</span>
                             }
                           </div>
                         </td>
@@ -1152,7 +1152,7 @@ export default function ProjectDashboardPage() {
   }, [id])
 
   if (error) return <div className="p-6 text-red-400 text-sm">{error}</div>
-  if (!project) return <div className="p-6 text-gray-600 text-sm">Loading…</div>
+  if (!project) return <div className="p-6 text-slate-600 text-sm">Loading…</div>
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
@@ -1164,10 +1164,10 @@ export default function ProjectDashboardPage() {
   return (
     <div className="flex-1 overflow-y-auto p-6 max-w-6xl">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5 text-xs text-gray-600 mb-5">
-        <Link to="/" className="hover:text-gray-400 transition-colors">Dashboard</Link>
+      <div className="flex items-center gap-1.5 text-xs text-slate-600 mb-5">
+        <Link to="/" className="hover:text-slate-400 transition-colors">Dashboard</Link>
         <span>/</span>
-        <span className="text-gray-400">{project.name}</span>
+        <span className="text-slate-400">{project.name}</span>
       </div>
 
       {/* Header */}
@@ -1179,7 +1179,7 @@ export default function ProjectDashboardPage() {
             <span className={statusBadge[project.status] ?? 'badge-stopped'}>{project.status}</span>
           </div>
           {project.description && (
-            <p className="text-sm text-gray-600 mt-1 pl-4">{project.description}</p>
+            <p className="text-sm text-slate-600 mt-1 pl-4">{project.description}</p>
           )}
         </div>
         <button onClick={() => setTab('deploy')} className="btn-primary shrink-0">
@@ -1191,7 +1191,7 @@ export default function ProjectDashboardPage() {
       </div>
 
       {/* Tab navigation */}
-      <div className="flex gap-0.5 mb-6 border-b border-gray-800 overflow-x-auto">
+      <div className="flex gap-0.5 mb-6 border-b border-slate-800 overflow-x-auto">
         {tabs.map(t => (
           <button
             key={t.id}
@@ -1199,7 +1199,7 @@ export default function ProjectDashboardPage() {
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap ${
               tab === t.id
                 ? 'border-blue-500 text-blue-400'
-                : 'border-transparent text-gray-500 hover:text-gray-200'
+                : 'border-transparent text-slate-500 hover:text-slate-200'
             }`}
           >
             {t.label}

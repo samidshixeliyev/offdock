@@ -34,28 +34,28 @@ function GaugeFull({
   return (
     <div className="card">
       <div className="flex justify-between items-baseline mb-1">
-        <span className="text-sm text-gray-400">{label}</span>
+        <span className="text-sm text-slate-400">{label}</span>
         <span className={clsx('text-2xl font-bold tabular-nums', pct > 85 ? 'text-red-400' : 'text-white')}>
-          {pct.toFixed(1)}<span className="text-sm text-gray-500 font-normal ml-0.5">%</span>
+          {pct.toFixed(1)}<span className="text-sm text-slate-500 font-normal ml-0.5">%</span>
         </span>
       </div>
-      <div className="h-2 bg-gray-800 rounded-full overflow-hidden mb-2">
+      <div className="h-2 bg-slate-800 rounded-full overflow-hidden mb-2">
         <div className={clsx('h-full rounded-full transition-all duration-700', color)}
           style={{ width: `${Math.min(pct, 100)}%` }} />
       </div>
-      <p className="text-xs text-gray-500">{primary}</p>
-      {secondary && <p className="text-xs text-gray-700 mt-0.5">{secondary}</p>}
+      <p className="text-xs text-slate-500">{primary}</p>
+      {secondary && <p className="text-xs text-slate-700 mt-0.5">{secondary}</p>}
     </div>
   )
 }
 
 function MetricRow({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="flex items-center justify-between py-2.5 border-b border-gray-800/50 last:border-0">
-      <span className="text-xs text-gray-500">{label}</span>
+    <div className="flex items-center justify-between py-2.5 border-b border-slate-800/50 last:border-0">
+      <span className="text-xs text-slate-500">{label}</span>
       <div className="text-right">
-        <span className="text-xs font-medium text-gray-200 tabular-nums">{value}</span>
-        {sub && <span className="text-xs text-gray-600 ml-2">{sub}</span>}
+        <span className="text-xs font-medium text-slate-200 tabular-nums">{value}</span>
+        {sub && <span className="text-xs text-slate-600 ml-2">{sub}</span>}
       </div>
     </div>
   )
@@ -65,14 +65,14 @@ function CpuBar({ pct, label }: { pct: number; label: string }) {
   const val = parseFloat(pct.toString()) || 0
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs text-gray-600 w-28 truncate shrink-0">{label}</span>
-      <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+      <span className="text-xs text-slate-600 w-28 truncate shrink-0">{label}</span>
+      <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
         <div
           className={clsx('h-full rounded-full transition-all', val > 80 ? 'bg-red-500' : val > 50 ? 'bg-yellow-500' : 'bg-blue-500')}
           style={{ width: `${Math.min(val, 100)}%` }}
         />
       </div>
-      <span className="text-xs text-gray-400 tabular-nums w-12 text-right">{val.toFixed(1)}%</span>
+      <span className="text-xs text-slate-400 tabular-nums w-12 text-right">{val.toFixed(1)}%</span>
     </div>
   )
 }
@@ -143,7 +143,7 @@ export default function SystemPage() {
 
   if (!stats) {
     return (
-      <div className="p-6 flex items-center gap-3 text-gray-600">
+      <div className="p-6 flex items-center gap-3 text-slate-600">
         <span className="animate-spin">⟳</span>
         Connecting to stats stream…
       </div>
@@ -171,11 +171,11 @@ export default function SystemPage() {
       <div className="flex items-baseline justify-between mb-7">
         <div>
           <h1 className="text-lg font-semibold text-white">System Metrics</h1>
-          <p className="text-xs text-gray-600 mt-0.5">
+          <p className="text-xs text-slate-600 mt-0.5">
             Live · updated every 3s · uptime {fmtUptime(uptime)}
           </p>
         </div>
-        <p className="text-xs text-gray-700">{new Date(stats.timestamp).toLocaleTimeString()}</p>
+        <p className="text-xs text-slate-700">{new Date(stats.timestamp).toLocaleTimeString()}</p>
       </div>
 
       {/* Main gauges */}
@@ -218,17 +218,17 @@ export default function SystemPage() {
                   vectorEffect="non-scaling-stroke"
                 />
               </svg>
-              <div className="absolute bottom-0 left-0 right-0 flex justify-between text-xs text-gray-700">
+              <div className="absolute bottom-0 left-0 right-0 flex justify-between text-xs text-slate-700">
                 <span>30s ago</span>
                 <span>now</span>
               </div>
             </div>
           ) : (
-            <div className="h-20 flex items-center justify-center text-xs text-gray-700">
+            <div className="h-20 flex items-center justify-center text-xs text-slate-700">
               Collecting data…
             </div>
           )}
-          <div className="flex justify-between mt-2 text-xs text-gray-600">
+          <div className="flex justify-between mt-2 text-xs text-slate-600">
             <span>Min {Math.min(...history).toFixed(1)}%</span>
             <span>Avg {history.length ? (history.reduce((a, b) => a + b, 0) / history.length).toFixed(1) : 0}%</span>
             <span>Max {Math.max(...history).toFixed(1)}%</span>
@@ -245,17 +245,17 @@ export default function SystemPage() {
               { label: 'Free', bytes: stats.ram_free_bytes ?? 0, color: 'bg-green-600' },
             ].map(({ label, bytes, color }) => (
               <div key={label} className="flex items-center gap-2">
-                <span className="text-xs text-gray-500 w-14 shrink-0">{label}</span>
-                <div className="flex-1 h-2 bg-gray-800 rounded-full overflow-hidden">
+                <span className="text-xs text-slate-500 w-14 shrink-0">{label}</span>
+                <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
                   <div
                     className={clsx('h-full rounded-full', color)}
                     style={{ width: `${Math.min((bytes / stats.ram_total_bytes) * 100, 100)}%` }}
                   />
                 </div>
-                <span className="text-xs text-gray-400 tabular-nums w-16 text-right">{fmtGb(bytes)}</span>
+                <span className="text-xs text-slate-400 tabular-nums w-16 text-right">{fmtGb(bytes)}</span>
               </div>
             ))}
-            <div className="pt-1 border-t border-gray-800 flex justify-between text-xs text-gray-600">
+            <div className="pt-1 border-t border-slate-800 flex justify-between text-xs text-slate-600">
               <span>Total</span>
               <span>{fmtGb(stats.ram_total_bytes)} GB</span>
             </div>
@@ -291,14 +291,14 @@ export default function SystemPage() {
         <section>
           <p className="section-heading mb-3">
             Container Resources
-            <span className="ml-2 text-gray-600 normal-case font-normal">
+            <span className="ml-2 text-slate-600 normal-case font-normal">
               ({containers.length} running)
             </span>
           </p>
           <div className="card p-0 overflow-hidden">
             {/* CPU bars */}
-            <div className="px-5 py-4 border-b border-gray-800 space-y-2">
-              <p className="text-xs text-gray-600 mb-3">CPU utilization</p>
+            <div className="px-5 py-4 border-b border-slate-800 space-y-2">
+              <p className="text-xs text-slate-600 mb-3">CPU utilization</p>
               {containers.map(c => (
                 <CpuBar
                   key={c.name}
@@ -312,7 +312,7 @@ export default function SystemPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-gray-800 text-gray-500">
+                  <tr className="border-b border-slate-800 text-slate-500">
                     <th className="text-left px-4 py-3 text-xs font-medium">Container</th>
                     <th className="text-left px-4 py-3 text-xs font-medium">CPU</th>
                     <th className="text-left px-4 py-3 text-xs font-medium">Memory</th>
@@ -326,20 +326,20 @@ export default function SystemPage() {
                   {containers.map(c => {
                     const cpuVal = parseFloat(c.CPUPerc?.replace('%', '') || '0')
                     return (
-                      <tr key={c.name} className="border-b border-gray-800/50 hover:bg-gray-800/20">
-                        <td className="px-4 py-3 font-mono text-xs text-gray-300">{c.name}</td>
+                      <tr key={c.name} className="border-b border-slate-800/50 hover:bg-slate-800/20">
+                        <td className="px-4 py-3 font-mono text-xs text-slate-300">{c.name}</td>
                         <td className="px-4 py-3 text-xs">
                           <span className={clsx('tabular-nums',
-                            cpuVal > 80 ? 'text-red-400' : cpuVal > 50 ? 'text-yellow-400' : 'text-gray-400'
+                            cpuVal > 80 ? 'text-red-400' : cpuVal > 50 ? 'text-yellow-400' : 'text-slate-400'
                           )}>
                             {c.CPUPerc}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-gray-400 text-xs tabular-nums">{c.MemUsage}</td>
-                        <td className="px-4 py-3 text-gray-500 text-xs tabular-nums">{c.MemPerc}</td>
-                        <td className="px-4 py-3 text-gray-600 text-xs">{c.NetIO}</td>
-                        <td className="px-4 py-3 text-gray-600 text-xs">{c.BlockIO}</td>
-                        <td className="px-4 py-3 text-gray-600 text-xs text-center">{c.PIDs}</td>
+                        <td className="px-4 py-3 text-slate-400 text-xs tabular-nums">{c.MemUsage}</td>
+                        <td className="px-4 py-3 text-slate-500 text-xs tabular-nums">{c.MemPerc}</td>
+                        <td className="px-4 py-3 text-slate-600 text-xs">{c.NetIO}</td>
+                        <td className="px-4 py-3 text-slate-600 text-xs">{c.BlockIO}</td>
+                        <td className="px-4 py-3 text-slate-600 text-xs text-center">{c.PIDs}</td>
                       </tr>
                     )
                   })}
@@ -351,7 +351,7 @@ export default function SystemPage() {
       )}
 
       {containers.length === 0 && (
-        <div className="card text-center py-8 text-gray-600 text-sm border-dashed">
+        <div className="card text-center py-8 text-slate-600 text-sm border-dashed">
           No running containers
         </div>
       )}
@@ -363,14 +363,14 @@ export default function SystemPage() {
           {/* Status row */}
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-gray-200 mb-1">System Nginx</p>
-              <p className="text-xs text-gray-500">
+              <p className="text-sm font-medium text-slate-200 mb-1">System Nginx</p>
+              <p className="text-xs text-slate-500">
                 Native nginx on the host. Required for proxying domains (e.g. deploy.ao.az) to OffDock.
               </p>
             </div>
             <div className="flex items-center gap-2">
               {nginxStatus === null ? (
-                <span className="text-xs text-gray-600">Checking...</span>
+                <span className="text-xs text-slate-600">Checking...</span>
               ) : nginxStatus.available ? (
                 <span className={clsx(
                   'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium',
@@ -398,22 +398,22 @@ export default function SystemPage() {
               {/* Inputs */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="md:col-span-2">
-                  <label className="block text-xs text-gray-500 mb-1">Domain</label>
+                  <label className="block text-xs text-slate-500 mb-1">Domain</label>
                   <input
                     type="text"
                     value={nginxDomain}
                     onChange={e => setNginxDomain(e.target.value)}
                     placeholder="deploy.ao.az"
-                    className="w-full bg-gray-900 border border-gray-800 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-700"
+                    className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-slate-700"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">Port</label>
+                  <label className="block text-xs text-slate-500 mb-1">Port</label>
                   <input
                     type="number"
                     value={nginxPort}
                     onChange={e => setNginxPort(parseInt(e.target.value, 10) || 7070)}
-                    className="w-full bg-gray-900 border border-gray-800 rounded px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-gray-700"
+                    className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-slate-700"
                   />
                 </div>
               </div>
@@ -451,20 +451,20 @@ export default function SystemPage() {
               {/* Config preview */}
               {nginxConfigPreview && (
                 <div>
-                  <p className="text-xs text-gray-500 mb-1">Generated config</p>
-                  <pre className="bg-gray-950 border border-gray-800 rounded p-3 text-xs text-gray-400 overflow-x-auto whitespace-pre">
+                  <p className="text-xs text-slate-500 mb-1">Generated config</p>
+                  <pre className="bg-slate-950 border border-slate-800 rounded p-3 text-xs text-slate-400 overflow-x-auto whitespace-pre">
                     {nginxConfigPreview}
                   </pre>
                 </div>
               )}
 
               {/* DNS instructions */}
-              <div className="border-t border-gray-800 pt-3">
-                <p className="text-xs text-gray-500 mb-2">DNS Setup</p>
-                <p className="text-xs text-gray-600 mb-1.5">
+              <div className="border-t border-slate-800 pt-3">
+                <p className="text-xs text-slate-500 mb-2">DNS Setup</p>
+                <p className="text-xs text-slate-600 mb-1.5">
                   Create the following A record(s) in your DNS provider:
                 </p>
-                <pre className="bg-gray-950 border border-gray-800 rounded p-2.5 text-xs text-gray-500 font-mono">
+                <pre className="bg-slate-950 border border-slate-800 rounded p-2.5 text-xs text-slate-500 font-mono">
 {`${nginxDomain || 'deploy.ao.az'}   A   <this-server-ip>
 *.${(nginxDomain || 'deploy.ao.az').split('.').slice(-2).join('.')}        A   <this-server-ip>   (optional wildcard)`}
                 </pre>
@@ -473,12 +473,12 @@ export default function SystemPage() {
           )}
 
           {nginxStatus && !nginxStatus.available && (
-            <div className="text-xs text-gray-500 border-t border-gray-800 pt-3">
+            <div className="text-xs text-slate-500 border-t border-slate-800 pt-3">
               Install nginx on the host first:
-              <pre className="bg-gray-950 border border-gray-800 rounded p-2.5 mt-2 text-xs text-gray-500 font-mono">
+              <pre className="bg-slate-950 border border-slate-800 rounded p-2.5 mt-2 text-xs text-slate-500 font-mono">
 sudo apt-get install nginx
               </pre>
-              For air-gapped servers, use bundled debs via <code className="text-gray-400">prepare-usb.sh</code> on an
+              For air-gapped servers, use bundled debs via <code className="text-slate-400">prepare-usb.sh</code> on an
               internet-connected machine.
             </div>
           )}
@@ -491,8 +491,8 @@ sudo apt-get install nginx
         <div className="card">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-gray-200 mb-1">Configuration Backup</p>
-              <p className="text-xs text-gray-500">
+              <p className="text-sm font-medium text-slate-200 mb-1">Configuration Backup</p>
+              <p className="text-xs text-slate-500">
                 Downloads a ZIP archive of all OffDock configuration data (.db files).
               </p>
             </div>

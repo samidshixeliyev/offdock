@@ -20,15 +20,17 @@ import (
 
 // Deps bundles all service dependencies passed to handler constructors.
 type Deps struct {
-	DB          *store.DB
-	Auth        *auth.Service
-	Encryptor   *crypto.Encryptor
-	Docker      *docker.Client
-	Deployer    *deploy.Engine
-	Stats       *system.Collector
-	SSEHub      *sse.Hub
-	ProjectsDir string
-	DataDir     string
+	DB                 *store.DB
+	Auth               *auth.Service
+	Encryptor          *crypto.Encryptor
+	Docker             *docker.Client
+	Deployer           *deploy.Engine
+	Stats              *system.Collector
+	SSEHub             *sse.Hub
+	ProjectsDir        string
+	DataDir            string
+	DefaultCertPath    string
+	DefaultCertKeyPath string
 }
 
 // NewRouter builds and returns the fully configured Chi router.
@@ -43,7 +45,7 @@ func NewRouter(deps Deps) http.Handler {
 	r.Use(chimiddleware.Recoverer)
 	r.Use(jsonContentType)
 
-	h := handlers.New(deps.DB, deps.Auth, deps.Encryptor, deps.Docker, deps.Deployer, deps.Stats, deps.SSEHub, deps.ProjectsDir, deps.DataDir)
+	h := handlers.New(deps.DB, deps.Auth, deps.Encryptor, deps.Docker, deps.Deployer, deps.Stats, deps.SSEHub, deps.ProjectsDir, deps.DataDir, deps.DefaultCertPath, deps.DefaultCertKeyPath)
 
 	// --- Public routes ---
 	r.Post("/api/v1/auth/login", h.Login)

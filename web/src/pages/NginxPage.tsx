@@ -69,7 +69,7 @@ export default function NginxPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-white">Nginx Config</h1>
         <div className="flex items-center gap-2">
-          {msg && <span className="text-sm text-gray-400 max-w-xs truncate">{msg}</span>}
+          {msg && <span className="text-sm text-slate-400 max-w-xs truncate">{msg}</span>}
           <button onClick={handleSave} disabled={saving} className="btn-ghost">
             {saving ? 'Saving…' : 'Save'}
           </button>
@@ -82,43 +82,43 @@ export default function NginxPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="card space-y-4">
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Domain</label>
+            <label className="block text-xs text-slate-400 mb-1.5">Domain</label>
             <input className="input" value={form.domain} onChange={e => set('domain', e.target.value)} placeholder="app.example.com" />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Upstream Host</label>
+              <label className="block text-xs text-slate-400 mb-1.5">Upstream Host</label>
               <input className="input" value={form.upstream_host} onChange={e => set('upstream_host', e.target.value)} />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Upstream Port</label>
+              <label className="block text-xs text-slate-400 mb-1.5">Upstream Port</label>
               <input className="input" type="number" value={form.upstream_port} onChange={e => set('upstream_port', Number(e.target.value))} />
             </div>
           </div>
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" checked={form.ssl_enabled} onChange={e => set('ssl_enabled', e.target.checked)} />
-            <span className="text-sm text-gray-300">Enable SSL</span>
+            <span className="text-sm text-slate-300">Enable SSL</span>
           </label>
           {form.ssl_enabled && (
             <>
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5">Certificate Path</label>
+                <label className="block text-xs text-slate-400 mb-1.5">Certificate Path</label>
                 <input className="input font-mono text-xs" value={form.ssl_cert_path} onChange={e => set('ssl_cert_path', e.target.value)} placeholder="/var/offdock/certs/cert.pem" />
               </div>
               <div>
-                <label className="block text-xs text-gray-400 mb-1.5">Key Path</label>
+                <label className="block text-xs text-slate-400 mb-1.5">Key Path</label>
                 <input className="input font-mono text-xs" value={form.ssl_key_path} onChange={e => set('ssl_key_path', e.target.value)} placeholder="/var/offdock/certs/key.pem" />
               </div>
             </>
           )}
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Custom Directives</label>
+            <label className="block text-xs text-slate-400 mb-1.5">Custom Directives</label>
             <textarea className="input font-mono text-xs h-24 resize-none" value={form.custom_directives} onChange={e => set('custom_directives', e.target.value)} placeholder="client_max_body_size 50m;" />
           </div>
         </div>
 
         <div>
-          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Preview</h2>
+          <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Preview</h2>
           <pre className="card font-mono text-xs text-green-400 overflow-auto h-[calc(100%-2rem)] min-h-48 whitespace-pre-wrap">
             {preview || '# Save config to see preview'}
           </pre>

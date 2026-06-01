@@ -283,7 +283,8 @@ func (h *H) PreviewNginx(w http.ResponseWriter, r *http.Request) {
 }
 
 // SelfNginxConfig returns the generated nginx config for OffDock itself.
-// Query param: domain (default "localhost"), port (default 7070)
+// Query params: domain (default "localhost"), port (default 7070)
+// Uses the server's configured default SSL cert if available.
 func (h *H) SelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	domain := r.URL.Query().Get("domain")
 	if domain == "" {
@@ -293,16 +294,27 @@ func (h *H) SelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	if p, err := strconv.Atoi(r.URL.Query().Get("port")); err == nil && p > 0 {
 		port = p
 	}
-	config := nginxpkg.GenerateSelfConfig(domain, port)
-	writeJSON(w, http.StatusOK, map[string]string{"config": config, "domain": domain, "port": strconv.Itoa(port)})
+	config := nginxpkg.GenerateSelfConfig(domain, port, h.defaultCertPath, h.defaultCertKeyPath)
+	ssl := h.defaultCertPath != "" && h.defaultCertKeyPath != ""
+	writeJSON(w, http.StatusOK, map[string]any{
+		"config":    config,
+		"domain":    domain,
+		"port":      strconv.Itoa(port),
+		"ssl":       ssl,
+		"cert_path": h.defaultCertPath,
+		"key_path":  h.defaultCertKeyPath,
+	})
 }
 
 // ApplySelfNginxConfig writes the OffDock self-hosting nginx config to the system.
-// Body: { "domain": "deploy.ao.az", "port": 7070 }
+// Body: { "domain": "deploy.ao.az", "port": 7070, "cert_path": "...", "key_path": "..." }
+// cert_path/key_path are optional — falls back to server default cert if not provided.
 func (h *H) ApplySelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Domain string `json:"domain"`
-		Port   int    `json:"port"`
+		Domain   string `json:"domain"`
+		Port     int    `json:"port"`
+		CertPath string `json:"cert_path"`
+		KeyPath  string `json:"key_path"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.Domain == "" {
 		writeError(w, http.StatusBadRequest, "domain is required")
@@ -311,20 +323,31 @@ func (h *H) ApplySelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Port == 0 {
 		req.Port = 7070
 	}
+	// Use request certs → fall back to server default certs
+	certPath := req.CertPath
+	keyPath := req.KeyPath
+	if certPath == "" {
+		certPath = h.defaultCertPath
+	}
+	if keyPath == "" {
+		keyPath = h.defaultCertKeyPath
+	}
 	if !nginxpkg.SystemAvailable() {
 		writeError(w, http.StatusUnprocessableEntity, "system nginx is not installed — install nginx first")
 		return
 	}
-	result, err := nginxpkg.ApplySelfConfig(req.Domain, req.Port)
+	result, err := nginxpkg.ApplySelfConfig(req.Domain, req.Port, certPath, keyPath)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	h.logAudit(r, "apply_nginx_self", "system", "", req.Domain, fmt.Sprintf("port:%d", req.Port))
-	writeJSON(w, http.StatusOK, map[string]string{
+	ssl := certPath != "" && keyPath != ""
+	h.logAudit(r, "apply_nginx_self", "system", "", req.Domain, fmt.Sprintf("port:%d ssl:%v", req.Port, ssl))
+	writeJSON(w, http.StatusOK, map[string]any{
 		"status":      "applied",
 		"config_path": result.ConfigPath,
 		"test_output": result.NginxTestOutput,
+		"ssl":         ssl,
 	})
 }
 

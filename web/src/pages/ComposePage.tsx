@@ -42,7 +42,7 @@ export default function ComposePage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-white">docker-compose.yml</h1>
         <div className="flex items-center gap-3">
-          {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-gray-400'}`}>{msg}</span>}
+          {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-slate-400'}`}>{msg}</span>}
           <button onClick={save} disabled={saving} className="btn-primary">
             {saving ? 'Saving…' : 'Save Version'}
           </button>
@@ -50,7 +50,7 @@ export default function ComposePage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        <div className="lg:col-span-3 rounded-xl overflow-hidden border border-gray-800">
+        <div className="lg:col-span-3 rounded-xl overflow-hidden border border-slate-800">
           <Editor
             height="70vh"
             language="yaml"
@@ -62,17 +62,17 @@ export default function ComposePage() {
         </div>
 
         <div>
-          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">Version History</h2>
-          {history.length === 0 && <p className="text-xs text-gray-600 px-1">No versions yet</p>}
+          <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-2">Version History</h2>
+          {history.length === 0 && <p className="text-xs text-slate-600 px-1">No versions yet</p>}
           <div className="space-y-1.5">
             {history.map(cfg => (
               <button
                 key={cfg.id}
                 onClick={() => { setYaml(cfg.raw_yaml); setSelected(cfg) }}
-                className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors ${selected?.id === cfg.id ? 'bg-blue-600/20 text-blue-400' : 'text-gray-400 hover:bg-gray-800'}`}
+                className={`w-full text-left px-3 py-2 rounded-lg text-xs transition-colors ${selected?.id === cfg.id ? 'bg-blue-600/20 text-blue-400' : 'text-slate-400 hover:bg-slate-800'}`}
               >
                 <div className="font-medium">v{cfg.version}</div>
-                <div className="text-gray-600 mt-0.5">{new Date(cfg.created_at).toLocaleString()}</div>
+                <div className="text-slate-600 mt-0.5">{new Date(cfg.created_at).toLocaleString()}</div>
               </button>
             ))}
           </div>

@@ -16,37 +16,37 @@ function VolumeRow({ vol, onDelete, busy }: {
 
   return (
     <>
-      <tr className="border-b border-gray-800/40 hover:bg-gray-800/20 cursor-pointer" onClick={() => setExpanded(e => !e)}>
-        <td className="px-4 py-3 font-mono text-sm text-gray-200">{vol.Name}</td>
-        <td className="px-4 py-3 text-xs text-gray-500">{vol.Driver}</td>
-        <td className="px-4 py-3 text-xs text-gray-500">{vol.Scope}</td>
-        <td className="px-4 py-3 text-xs text-gray-600 font-mono truncate max-w-[220px]" title={vol.Mountpoint}>
+      <tr className="border-b border-slate-800/40 hover:bg-slate-800/20 cursor-pointer" onClick={() => setExpanded(e => !e)}>
+        <td className="px-4 py-3 font-mono text-sm text-slate-200">{vol.Name}</td>
+        <td className="px-4 py-3 text-xs text-slate-500">{vol.Driver}</td>
+        <td className="px-4 py-3 text-xs text-slate-500">{vol.Scope}</td>
+        <td className="px-4 py-3 text-xs text-slate-600 font-mono truncate max-w-[220px]" title={vol.Mountpoint}>
           {vol.Mountpoint}
         </td>
-        <td className="px-4 py-3 text-xs text-gray-600">{fmtDate(vol.CreatedAt)}</td>
+        <td className="px-4 py-3 text-xs text-slate-600">{fmtDate(vol.CreatedAt)}</td>
         <td className="px-4 py-3 text-right">
           <button
             onClick={e => { e.stopPropagation(); onDelete(vol.Name) }}
             disabled={busy}
-            className="text-xs text-gray-600 hover:text-red-400 transition-colors disabled:opacity-30">
+            className="text-xs text-slate-600 hover:text-red-400 transition-colors disabled:opacity-30">
             Delete
           </button>
         </td>
       </tr>
       {expanded && (
-        <tr className="bg-gray-950/60 border-b border-gray-800/40">
+        <tr className="bg-slate-950/60 border-b border-slate-800/40">
           <td colSpan={6} className="px-4 py-3">
             <div className="space-y-1.5 text-xs font-mono">
               <div className="flex gap-3">
-                <span className="text-gray-600 w-24">Mountpoint</span>
-                <span className="text-gray-300">{vol.Mountpoint}</span>
+                <span className="text-slate-600 w-24">Mountpoint</span>
+                <span className="text-slate-300">{vol.Mountpoint}</span>
               </div>
               {labelEntries.length > 0 && (
                 <div className="flex gap-3">
-                  <span className="text-gray-600 w-24">Labels</span>
+                  <span className="text-slate-600 w-24">Labels</span>
                   <div className="space-y-0.5">
                     {labelEntries.map(([k, v]) => (
-                      <p key={k} className="text-gray-400"><span className="text-gray-600">{k}=</span>{v}</p>
+                      <p key={k} className="text-slate-400"><span className="text-slate-600">{k}=</span>{v}</p>
                     ))}
                   </div>
                 </div>
@@ -78,17 +78,17 @@ function CreateVolumeModal({ onCreated, onClose }: { onCreated: () => void; onCl
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-80 shadow-2xl p-5 space-y-4">
+      <div className="bg-slate-900 border border-slate-700 rounded-xl w-80 shadow-2xl p-5 space-y-4">
         <h3 className="text-sm font-semibold text-white">Create Volume</h3>
         <div className="space-y-3">
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Volume name</label>
+            <label className="block text-xs text-slate-500 mb-1.5">Volume name</label>
             <input className="input w-full" placeholder="my-data"
               value={name} onChange={e => setName(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && create()} autoFocus />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1.5">Driver</label>
+            <label className="block text-xs text-slate-500 mb-1.5">Driver</label>
             <select value={driver} onChange={e => setDriver(e.target.value)} className="input w-full">
               <option value="local">local (default)</option>
             </select>
@@ -155,8 +155,8 @@ export default function VolumesPage() {
     <div className="flex flex-col h-full overflow-hidden">
 
       {/* Header */}
-      <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-gray-800 bg-gray-950">
-        <h1 className="text-sm font-semibold text-gray-100 flex-1">Docker Volumes</h1>
+      <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-slate-800 bg-slate-950">
+        <h1 className="text-sm font-semibold text-slate-100 flex-1">Docker Volumes</h1>
         {msg && (
           <span className={`text-xs px-2 py-0.5 rounded border ${msgErr ? 'text-red-300 bg-red-950/50 border-red-900/40' : 'text-green-300 bg-green-950/50 border-green-900/40'}`}>
             {msg}
@@ -173,9 +173,9 @@ export default function VolumesPage() {
 
       {deleteTarget && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={() => setDeleteTarget(null)}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-80 shadow-2xl space-y-4" onClick={e => e.stopPropagation()}>
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-80 shadow-2xl space-y-4" onClick={e => e.stopPropagation()}>
             <p className="text-sm font-semibold text-white">Delete volume?</p>
-            <p className="text-xs text-gray-500 font-mono">{deleteTarget}</p>
+            <p className="text-xs text-slate-500 font-mono">{deleteTarget}</p>
             <p className="text-xs text-yellow-600">This permanently deletes all data in the volume.</p>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setDeleteTarget(null)} className="btn-ghost text-sm">Cancel</button>
@@ -189,32 +189,32 @@ export default function VolumesPage() {
       )}
 
       {/* Usage guide */}
-      <div className="shrink-0 px-5 py-3 border-b border-gray-800 bg-gray-950/40 text-xs text-gray-600">
+      <div className="shrink-0 px-5 py-3 border-b border-slate-800 bg-slate-950/40 text-xs text-slate-600">
         Volumes persist data across container restarts. Mount them in your docker-compose.yml with{' '}
-        <code className="text-gray-400 bg-gray-800/60 px-1 rounded">volumes: [my-data:/app/data]</code>.
+        <code className="text-slate-400 bg-slate-800/60 px-1 rounded">volumes: [my-data:/app/data]</code>.
         Click a row to expand details.
       </div>
 
       {/* Table */}
       <div className="flex-1 overflow-y-auto p-5">
         {loading ? (
-          <div className="text-center py-12 text-gray-600 text-sm">Loading volumes…</div>
+          <div className="text-center py-12 text-slate-600 text-sm">Loading volumes…</div>
         ) : volumes.length === 0 ? (
           <div className="card text-center py-12 border-dashed space-y-3">
-            <p className="text-gray-500 text-sm">No volumes yet</p>
-            <p className="text-xs text-gray-700">Volumes are created automatically when containers use them, or you can create one here.</p>
+            <p className="text-slate-500 text-sm">No volumes yet</p>
+            <p className="text-xs text-slate-700">Volumes are created automatically when containers use them, or you can create one here.</p>
             <button onClick={() => setShowCreate(true)} className="btn-primary text-sm mx-auto">Create first volume</button>
           </div>
         ) : (
           <div className="card p-0 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-800">
-                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Name</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Driver</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Scope</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Mountpoint</th>
-                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Created</th>
+                <tr className="border-b border-slate-800">
+                  <th className="text-left px-4 py-3 text-xs font-medium text-slate-500">Name</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-slate-500">Driver</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-slate-500">Scope</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-slate-500">Mountpoint</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-slate-500">Created</th>
                   <th className="px-4 py-3" />
                 </tr>
               </thead>

@@ -57,16 +57,16 @@ export default function ImagesPage() {
         </div>
       </div>
 
-      <p className="text-xs text-gray-600 mb-4">
+      <p className="text-xs text-slate-600 mb-4">
         Use "Sync from Docker" to register images already loaded on the host.
         Use the <a href="/usb" className="text-blue-500">Import</a> page to load new .tar files.
       </p>
 
       {loading ? (
-        <div className="text-gray-500 text-sm">Loading…</div>
+        <div className="text-slate-500 text-sm">Loading…</div>
       ) : images.length === 0 ? (
         <div className="card text-center py-10">
-          <p className="text-gray-500 mb-2">No images tracked.</p>
+          <p className="text-slate-500 mb-2">No images tracked.</p>
           <div className="flex gap-3 justify-center mt-3">
             <button onClick={handleSync} disabled={syncing} className="btn-primary">
               Sync from Docker
@@ -77,7 +77,7 @@ export default function ImagesPage() {
         <div className="card overflow-x-auto p-0">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-800 text-gray-500 text-xs">
+              <tr className="border-b border-slate-800 text-slate-500 text-xs">
                 <th className="text-left px-4 py-2.5">Image</th>
                 <th className="text-left px-4 py-2.5">Tag</th>
                 <th className="text-left px-4 py-2.5">Docker ID</th>
@@ -87,13 +87,13 @@ export default function ImagesPage() {
             </thead>
             <tbody>
               {images.map(img => (
-                <tr key={img.id} className="border-b border-gray-800/50 hover:bg-gray-800/20">
-                  <td className="px-4 py-2.5 font-mono text-xs text-gray-300">{img.image_name}</td>
-                  <td className="px-4 py-2.5 text-gray-400 text-xs">{img.image_tag}</td>
-                  <td className="px-4 py-2.5 text-gray-600 text-xs font-mono">
+                <tr key={img.id} className="border-b border-slate-800/50 hover:bg-slate-800/20">
+                  <td className="px-4 py-2.5 font-mono text-xs text-slate-300">{img.image_name}</td>
+                  <td className="px-4 py-2.5 text-slate-400 text-xs">{img.image_tag}</td>
+                  <td className="px-4 py-2.5 text-slate-600 text-xs font-mono">
                     {(img.docker_image_id ?? '').replace('sha256:', '').slice(0, 12)}
                   </td>
-                  <td className="px-4 py-2.5 text-gray-500 text-xs">
+                  <td className="px-4 py-2.5 text-slate-500 text-xs">
                     {new Date(img.loaded_at).toLocaleString()}
                   </td>
                   <td className="px-4 py-2.5">

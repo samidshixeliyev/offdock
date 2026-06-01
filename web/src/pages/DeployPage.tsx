@@ -130,18 +130,18 @@ export default function DeployPage() {
   const latestEnv = envHistory[0]
 
   return (
-    <div className="p-6 max-w-5xl space-y-6">
+    <div className="p-6 max-w-5xl space-y-6 animate-fadeIn">
 
       {/* ── Deploy now ─────────────────────────────────────────────────────── */}
-      <div className="card">
-        <div className="flex items-center justify-between mb-3">
+      <div className="card-static">
+        <div className="flex items-center justify-between mb-4">
           <div>
-            <h2 className="text-sm font-semibold text-white">Deploy Latest</h2>
-            <p className="text-xs text-gray-500 mt-0.5">
+            <h2 className="text-base font-semibold text-slate-100">Deploy Latest</h2>
+            <p className="text-xs text-slate-500 mt-1">
               Uses&nbsp;
-              {latestCompose ? <span className="text-gray-300">compose v{latestCompose.version}</span> : <span className="text-yellow-500">no compose saved</span>}
+              {latestCompose ? <span className="text-slate-300 font-medium">compose v{latestCompose.version}</span> : <span className="text-amber-400">no compose saved</span>}
               &nbsp;·&nbsp;
-              {latestEnv ? <span className="text-gray-300">env v{latestEnv.version} ({latestEnv.vars.length} vars)</span> : <span className="text-gray-500">no env vars</span>}
+              {latestEnv ? <span className="text-slate-300 font-medium">env v{latestEnv.version} ({latestEnv.vars.length} vars)</span> : <span className="text-slate-500">no env vars</span>}
             </p>
           </div>
           <button
@@ -158,42 +158,78 @@ export default function DeployPage() {
                 Deploying…
               </>
             ) : (
-              <>▶ Deploy Latest</>
+              <>
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                  <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />
+                </svg>
+                Deploy Latest
+              </>
             )}
           </button>
         </div>
 
-        {log.length > 0 ? (
-          <div
-            ref={logRef}
-            onScroll={handleLogScroll}
-            className="font-mono text-xs text-green-400 bg-gray-950 rounded-lg p-4 h-56 overflow-y-auto mt-2"
-          >
-            {log.map((line, i) => <div key={i}>{line}</div>)}
-            {deploying && <span className="animate-pulse">▌</span>}
+        {/* Terminal-style log panel */}
+        <div className="rounded-xl border border-slate-800 overflow-hidden bg-slate-950">
+          <div className="flex items-center justify-between px-4 py-2 bg-slate-900 border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <div className="flex gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-500/60" />
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-500/60" />
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/60" />
+              </div>
+              <span className="text-xs font-mono text-slate-400 ml-2">deploy.log</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {deploying ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+                  <span className="text-xs text-blue-400 font-medium">Streaming</span>
+                </>
+              ) : log.length > 0 ? (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span className="text-xs text-emerald-400 font-medium">Idle</span>
+                </>
+              ) : (
+                <>
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                  <span className="text-xs text-slate-500 font-medium">Ready</span>
+                </>
+              )}
+            </div>
           </div>
-        ) : (
-          <div className="font-mono text-xs text-gray-600 bg-gray-950 rounded-lg p-4 h-56 flex items-center justify-center mt-2 border border-dashed border-gray-800">
-            No logs yet — click "Deploy Latest" to start
-          </div>
-        )}
+          {log.length > 0 ? (
+            <div
+              ref={logRef}
+              onScroll={handleLogScroll}
+              className="font-mono text-xs text-emerald-400 p-4 h-56 overflow-y-auto leading-relaxed"
+            >
+              {log.map((line, i) => <div key={i}>{line}</div>)}
+              {deploying && <span className="animate-pulse text-blue-400">▌</span>}
+            </div>
+          ) : (
+            <div className="font-mono text-xs text-slate-600 p-4 h-56 flex items-center justify-center">
+              No logs yet — click "Deploy Latest" to start
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Rollback ───────────────────────────────────────────────────────── */}
       <div className="card">
         <h2 className="text-sm font-semibold text-white mb-1">Rollback</h2>
-        <p className="text-xs text-gray-500 mb-4">
+        <p className="text-xs text-slate-500 mb-4">
           Pick a compose version and/or env version to deploy. Leave at "latest" to use the newest.
         </p>
 
         <div className="grid grid-cols-2 gap-4 mb-4">
           {/* Compose version picker */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Compose version</label>
+            <label className="block text-xs text-slate-400 mb-1.5">Compose version</label>
             <select
               value={rollbackCompose}
               onChange={e => setRollbackCompose(Number(e.target.value))}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
             >
               <option value={0}>Latest (v{latestCompose?.version ?? '—'})</option>
               {composeHistory.map(c => (
@@ -204,8 +240,8 @@ export default function DeployPage() {
             </select>
             {rollbackCompose > 0 && composeHistory.find(c => c.version === rollbackCompose) && (
               <details className="mt-2">
-                <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300">Preview compose v{rollbackCompose}</summary>
-                <pre className="mt-1 text-xs text-gray-400 bg-gray-950 rounded p-3 overflow-x-auto max-h-40">
+                <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-300">Preview compose v{rollbackCompose}</summary>
+                <pre className="mt-1 text-xs text-slate-400 bg-slate-950 rounded p-3 overflow-x-auto max-h-40">
                   {composeHistory.find(c => c.version === rollbackCompose)?.raw_yaml}
                 </pre>
               </details>
@@ -214,11 +250,11 @@ export default function DeployPage() {
 
           {/* Env version picker */}
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Env version</label>
+            <label className="block text-xs text-slate-400 mb-1.5">Env version</label>
             <select
               value={rollbackEnv}
               onChange={e => setRollbackEnv(Number(e.target.value))}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
             >
               <option value={0}>Latest (v{latestEnv?.version ?? '—'}, {latestEnv?.vars.length ?? 0} vars)</option>
               {envHistory.map(s => (
@@ -228,12 +264,12 @@ export default function DeployPage() {
               ))}
             </select>
             {rollbackEnv > 0 && envHistory.find(s => s.version === rollbackEnv) && (
-              <div className="mt-2 text-xs text-gray-500 bg-gray-950 rounded p-3 max-h-32 overflow-y-auto">
+              <div className="mt-2 text-xs text-slate-500 bg-slate-950 rounded p-3 max-h-32 overflow-y-auto">
                 {envHistory.find(s => s.version === rollbackEnv)?.vars.map(v => (
                   <div key={v.key} className="font-mono">
-                    <span className="text-gray-300">{v.key}</span>
-                    <span className="text-gray-600">=</span>
-                    <span className="text-gray-500">{v.is_secret ? '••••••••' : v.value}</span>
+                    <span className="text-slate-300">{v.key}</span>
+                    <span className="text-slate-600">=</span>
+                    <span className="text-slate-500">{v.is_secret ? '••••••••' : v.value}</span>
                   </div>
                 ))}
               </div>
@@ -255,40 +291,40 @@ export default function DeployPage() {
         <h2 className="text-sm font-semibold text-white mb-4">Deploy Settings</h2>
         <div className="grid grid-cols-3 gap-4">
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Health timeout (seconds)</label>
+            <label className="block text-xs text-slate-400 mb-1">Health timeout (seconds)</label>
             <input
               type="number"
               min={10}
               max={600}
               value={settingsDraft.health_timeout_secs}
               onChange={e => setSettingsDraft(d => ({ ...d, health_timeout_secs: Number(e.target.value) }))}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
             />
-            <p className="text-xs text-gray-600 mt-1">How long to wait for containers to become healthy</p>
+            <p className="text-xs text-slate-600 mt-1">How long to wait for containers to become healthy</p>
           </div>
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Deploy timeout (seconds)</label>
+            <label className="block text-xs text-slate-400 mb-1">Deploy timeout (seconds)</label>
             <input
               type="number"
               min={30}
               max={1800}
               value={settingsDraft.deploy_timeout_secs}
               onChange={e => setSettingsDraft(d => ({ ...d, deploy_timeout_secs: Number(e.target.value) }))}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
             />
-            <p className="text-xs text-gray-600 mt-1">Hard limit for the entire deploy operation</p>
+            <p className="text-xs text-slate-600 mt-1">Hard limit for the entire deploy operation</p>
           </div>
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Stable period (seconds)</label>
+            <label className="block text-xs text-slate-400 mb-1">Stable period (seconds)</label>
             <input
               type="number"
               min={0}
               max={60}
               value={settingsDraft.health_stable_secs}
               onChange={e => setSettingsDraft(d => ({ ...d, health_stable_secs: Number(e.target.value) }))}
-              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
             />
-            <p className="text-xs text-gray-600 mt-1">Time a "running" container must stay up before considered healthy</p>
+            <p className="text-xs text-slate-600 mt-1">Time a "running" container must stay up before considered healthy</p>
           </div>
         </div>
         <div className="flex items-center gap-3 mt-4">
@@ -301,7 +337,7 @@ export default function DeployPage() {
           </button>
           {settingsSaved && <span className="text-xs text-green-400">✓ Saved</span>}
           {settings && (
-            <span className="text-xs text-gray-600">
+            <span className="text-xs text-slate-600">
               Current: health {settings.health_timeout_secs}s · deploy {settings.deploy_timeout_secs}s · stable {settings.health_stable_secs}s
             </span>
           )}
@@ -310,14 +346,14 @@ export default function DeployPage() {
 
       {/* ── Deployment history ─────────────────────────────────────────────── */}
       <section>
-        <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Deployment History</h2>
+        <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">Deployment History</h2>
         {deployments.length === 0 ? (
-          <div className="card text-gray-500 text-sm text-center py-8">No deployments yet</div>
+          <div className="card text-slate-500 text-sm text-center py-8">No deployments yet</div>
         ) : (
           <div className="card overflow-x-auto p-0">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-800 text-gray-500 text-xs">
+                <tr className="border-b border-slate-800 text-slate-500 text-xs">
                   <th className="text-left px-4 py-2.5">Status</th>
                   <th className="text-left px-4 py-2.5">Compose</th>
                   <th className="text-left px-4 py-2.5">Env</th>
@@ -330,13 +366,13 @@ export default function DeployPage() {
               <tbody>
                 {deployments.map(d => (
                   <>
-                    <tr key={d.id} className="border-b border-gray-800/50 hover:bg-gray-800/20">
+                    <tr key={d.id} className="border-b border-slate-800/50 hover:bg-slate-800/20">
                       <td className="px-4 py-2.5"><span className={statusBadge(d.status)}>{d.status}</span></td>
-                      <td className="px-4 py-2.5 text-gray-300 text-xs font-mono">v{d.new_compose_version}</td>
-                      <td className="px-4 py-2.5 text-gray-300 text-xs font-mono">{d.env_version > 0 ? `v${d.env_version}` : <span className="text-gray-600">—</span>}</td>
-                      <td className="px-4 py-2.5 text-gray-400 text-xs">{d.triggered_by}</td>
-                      <td className="px-4 py-2.5 text-gray-500 text-xs">{new Date(d.started_at).toLocaleString()}</td>
-                      <td className="px-4 py-2.5 text-gray-500 text-xs">{duration(d)}</td>
+                      <td className="px-4 py-2.5 text-slate-300 text-xs font-mono">v{d.new_compose_version}</td>
+                      <td className="px-4 py-2.5 text-slate-300 text-xs font-mono">{d.env_version > 0 ? `v${d.env_version}` : <span className="text-slate-600">—</span>}</td>
+                      <td className="px-4 py-2.5 text-slate-400 text-xs">{d.triggered_by}</td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs">{new Date(d.started_at).toLocaleString()}</td>
+                      <td className="px-4 py-2.5 text-slate-500 text-xs">{duration(d)}</td>
                       <td className="px-4 py-2.5">
                         {d.log_text ? (
                           <button
@@ -345,13 +381,13 @@ export default function DeployPage() {
                           >
                             {expandLog === d.id ? 'hide' : 'show'}
                           </button>
-                        ) : <span className="text-gray-700 text-xs">—</span>}
+                        ) : <span className="text-slate-700 text-xs">—</span>}
                       </td>
                     </tr>
                     {expandLog === d.id && (
-                      <tr key={`${d.id}-log`} className="border-b border-gray-800/50">
+                      <tr key={`${d.id}-log`} className="border-b border-slate-800/50">
                         <td colSpan={7} className="px-4 pb-3">
-                          <pre className="font-mono text-xs text-green-400 bg-gray-950 rounded p-3 max-h-64 overflow-y-auto whitespace-pre-wrap">
+                          <pre className="font-mono text-xs text-green-400 bg-slate-950 rounded p-3 max-h-64 overflow-y-auto whitespace-pre-wrap">
                             {d.log_text}
                           </pre>
                         </td>

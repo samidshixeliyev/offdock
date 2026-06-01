@@ -39,7 +39,7 @@ export default function UsersPage() {
   }
 
   if (me?.role !== 'superadmin') {
-    return <div className="p-6 text-gray-400">Access restricted to superadmin.</div>
+    return <div className="p-6 text-slate-400">Access restricted to superadmin.</div>
   }
 
   return (
@@ -47,7 +47,7 @@ export default function UsersPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-white">Users</h1>
         <div className="flex items-center gap-3">
-          {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-gray-400'}`}>{msg}</span>}
+          {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-slate-400'}`}>{msg}</span>}
           <button onClick={() => setShowCreate(!showCreate)} className="btn-primary">+ Add User</button>
         </div>
       </div>
@@ -74,7 +74,7 @@ export default function UsersPage() {
       <div className="card overflow-x-auto p-0">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-gray-800 text-gray-500 text-xs">
+            <tr className="border-b border-slate-800 text-slate-500 text-xs">
               <th className="text-left px-4 py-2.5">Username</th>
               <th className="text-left px-4 py-2.5">Role</th>
               <th className="text-left px-4 py-2.5">Status</th>
@@ -83,16 +83,16 @@ export default function UsersPage() {
           </thead>
           <tbody>
             {users.map(u => (
-              <tr key={u.id} className="border-b border-gray-800/50">
-                <td className="px-4 py-2.5 text-gray-300">{u.username}</td>
-                <td className="px-4 py-2.5 text-gray-400 text-xs">{u.role}</td>
+              <tr key={u.id} className="border-b border-slate-800/50">
+                <td className="px-4 py-2.5 text-slate-300">{u.username}</td>
+                <td className="px-4 py-2.5 text-slate-400 text-xs">{u.role}</td>
                 <td className="px-4 py-2.5">
                   <span className={u.active ? 'badge-running' : 'badge-stopped'}>{u.active ? 'active' : 'inactive'}</span>
                 </td>
                 <td className="px-4 py-2.5">
                   {u.id !== me?.id && (
                     <div className="flex gap-2 justify-end">
-                      <button onClick={() => handleToggleActive(u)} className="text-xs text-gray-400 hover:text-white">{u.active ? 'Deactivate' : 'Activate'}</button>
+                      <button onClick={() => handleToggleActive(u)} className="text-xs text-slate-400 hover:text-white">{u.active ? 'Deactivate' : 'Activate'}</button>
                       <button onClick={() => handleDelete(u)} className="text-xs text-red-500 hover:text-red-400">Delete</button>
                     </div>
                   )}

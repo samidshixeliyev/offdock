@@ -10,11 +10,15 @@ import (
 
 // Config holds all runtime-configurable options.
 type Config struct {
-	Port    int    `yaml:"port"`
-	DataDir string `yaml:"data_dir"`
-	LogDir  string `yaml:"log_dir"`
-	LogLevel string `yaml:"log_level"`
-	JWTSecret string `yaml:"jwt_secret"`
+	Port               int    `yaml:"port"`
+	DataDir            string `yaml:"data_dir"`
+	LogDir             string `yaml:"log_dir"`
+	LogLevel           string `yaml:"log_level"`
+	JWTSecret          string `yaml:"jwt_secret"`
+	// DefaultCertPath and DefaultCertKeyPath are optional SSL certificate paths.
+	// When set, all nginx server blocks (OffDock UI + deployed apps) use HTTPS by default.
+	DefaultCertPath    string `yaml:"default_cert_path"`
+	DefaultCertKeyPath string `yaml:"default_cert_key_path"`
 }
 
 const defaultConfigPath = "/etc/offdock/config.yaml"

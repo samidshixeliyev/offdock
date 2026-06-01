@@ -146,9 +146,9 @@ export default function USBPage() {
           <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
           <div className="flex-1 min-w-0">
             <p className="text-blue-300 text-sm font-medium">Loading Docker image…</p>
-            <p className="text-xs text-gray-500 font-mono truncate">{loadingImageName}</p>
+            <p className="text-xs text-slate-500 font-mono truncate">{loadingImageName}</p>
           </div>
-          <p className="text-xs text-gray-600 shrink-0">may take a few minutes</p>
+          <p className="text-xs text-slate-600 shrink-0">may take a few minutes</p>
         </div>
       )}
 
@@ -158,7 +158,7 @@ export default function USBPage() {
           <button
             key={m}
             onClick={() => setMode(m as Mode)}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${mode === m ? 'bg-blue-600 text-white' : 'text-gray-400 bg-gray-800 hover:text-white'}`}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${mode === m ? 'bg-blue-600 text-white' : 'text-slate-400 bg-slate-800 hover:text-white'}`}
           >
             {label}
           </button>
@@ -169,13 +169,13 @@ export default function USBPage() {
       {mode === 'usb' && (
         <section className="mb-6">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">Detected Drives</h2>
+            <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider">Detected Drives</h2>
             <button onClick={refreshDrives} className="btn-ghost text-xs">Refresh</button>
           </div>
           {drives.length === 0 ? (
-            <div className="card text-gray-500 text-sm text-center py-6">
+            <div className="card text-slate-500 text-sm text-center py-6">
               No drives detected at /media or /mnt
-              <p className="text-xs text-gray-600 mt-1">Switch to "Server Disk" or "Upload from PC" instead</p>
+              <p className="text-xs text-slate-600 mt-1">Switch to "Server Disk" or "Upload from PC" instead</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -186,8 +186,8 @@ export default function USBPage() {
                   className={`card text-left hover:border-blue-600 transition-colors ${selectedDrive?.mount_point === d.mount_point ? 'border-blue-600' : ''}`}
                 >
                   <p className="font-medium text-white text-sm">{d.label}</p>
-                  <p className="text-xs text-gray-500 mt-0.5 font-mono">{d.mount_point}</p>
-                  <p className="text-xs text-gray-600 mt-1">{humanBytes(d.free_bytes)} free / {humanBytes(d.total_bytes)}</p>
+                  <p className="text-xs text-slate-500 mt-0.5 font-mono">{d.mount_point}</p>
+                  <p className="text-xs text-slate-600 mt-1">{humanBytes(d.free_bytes)} free / {humanBytes(d.total_bytes)}</p>
                 </button>
               ))}
             </div>
@@ -198,10 +198,10 @@ export default function USBPage() {
       {/* Disk mode */}
       {mode === 'disk' && (
         <section className="mb-6">
-          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-3">Browse Server Filesystem</h2>
+          <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">Browse Server Filesystem</h2>
           <div className="card space-y-3">
             <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Security boundary (files must stay within this directory)</label>
+              <label className="block text-xs text-slate-400 mb-1.5">Security boundary (files must stay within this directory)</label>
               <input className="input font-mono text-xs" value={diskMount} onChange={e => setDiskMount(e.target.value)} placeholder="/var/offdock" />
             </div>
             <div className="flex gap-2">
@@ -221,9 +221,9 @@ export default function USBPage() {
       {/* Upload mode */}
       {mode === 'upload' && (
         <section className="mb-6 space-y-4">
-          <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+          <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider">
             Upload from your computer
-            <span className="ml-2 text-gray-600 normal-case font-normal">· max 5 GB</span>
+            <span className="ml-2 text-slate-600 normal-case font-normal">· max 5 GB</span>
           </h2>
 
           {/* ── Progress panel (visible while uploading) ── */}
@@ -234,13 +234,13 @@ export default function USBPage() {
                 <span className="text-blue-400 text-sm font-mono font-bold">{uploadPct}%</span>
               </div>
               {/* thick progress bar */}
-              <div className="h-3 bg-gray-800 rounded-full overflow-hidden">
+              <div className="h-3 bg-slate-800 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-blue-500 rounded-full transition-all duration-200"
                   style={{ width: `${uploadPct}%` }}
                 />
               </div>
-              <div className="flex justify-between text-xs text-gray-500 font-mono">
+              <div className="flex justify-between text-xs text-slate-500 font-mono">
                 <span>{humanBytes(uploadLoaded)}</span>
                 <span>{humanBytes(uploadTotal)}</span>
               </div>
@@ -256,8 +256,8 @@ export default function USBPage() {
                   <p className={`text-sm font-medium ${msgType === 'err' ? 'text-red-300' : 'text-green-300'}`}>
                     {msgType === 'err' ? 'Upload issue' : 'Upload complete'}
                   </p>
-                  <p className="text-xs text-gray-400 font-mono mt-1 truncate">{uploadedPath}</p>
-                  {msg && <p className={`text-xs mt-1 ${msgType === 'err' ? 'text-red-400' : 'text-gray-400'}`}>{msg}</p>}
+                  <p className="text-xs text-slate-400 font-mono mt-1 truncate">{uploadedPath}</p>
+                  {msg && <p className={`text-xs mt-1 ${msgType === 'err' ? 'text-red-400' : 'text-slate-400'}`}>{msg}</p>}
                 </div>
               </div>
               <div className="flex gap-2 mt-3">
@@ -296,16 +296,16 @@ export default function USBPage() {
           {/* ── Drop zone (only shown when not uploading/done) ── */}
           {!uploading && !uploadedPath && (
             <div
-              className={`card border-2 border-dashed text-center py-12 transition-colors cursor-pointer ${dragOver ? 'border-blue-500 bg-blue-900/10' : 'border-gray-700 hover:border-gray-600'}`}
+              className={`card border-2 border-dashed text-center py-12 transition-colors cursor-pointer ${dragOver ? 'border-blue-500 bg-blue-900/10' : 'border-slate-700 hover:border-slate-600'}`}
               onDragOver={e => { e.preventDefault(); setDragOver(true) }}
               onDragLeave={() => setDragOver(false)}
               onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handleUpload(f) }}
               onClick={() => fileRef.current?.click()}
             >
               <p className="text-4xl mb-3">📂</p>
-              <p className="text-gray-300 text-sm font-medium">Drag &amp; drop a file here</p>
-              <p className="text-gray-500 text-xs mt-1">or click to select</p>
-              <p className="text-gray-600 text-xs mt-2">.tar .yml .yaml .env .pem .crt .key · max 5 GB</p>
+              <p className="text-slate-300 text-sm font-medium">Drag &amp; drop a file here</p>
+              <p className="text-slate-500 text-xs mt-1">or click to select</p>
+              <p className="text-slate-600 text-xs mt-2">.tar .yml .yaml .env .pem .crt .key · max 5 GB</p>
             </div>
           )}
 
@@ -323,24 +323,24 @@ export default function USBPage() {
       {(mode === 'usb' || mode === 'disk') && (entries.length > 0 || (path && path !== mountPoint)) && (
         <section>
           <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-xs font-medium text-gray-500 uppercase tracking-wider">Files</h2>
-            <span className="text-xs text-gray-600 font-mono truncate">{path}</span>
+            <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider">Files</h2>
+            <span className="text-xs text-slate-600 font-mono truncate">{path}</span>
           </div>
           <div className="card overflow-hidden p-0">
             {path !== mountPoint && (
-              <button onClick={navigateUp} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-gray-400 hover:bg-gray-800 border-b border-gray-800">
+              <button onClick={navigateUp} className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-400 hover:bg-slate-800 border-b border-slate-800">
                 &larr; ..
               </button>
             )}
             {entries.length === 0 && (
-              <p className="px-4 py-6 text-gray-500 text-sm text-center">Empty directory or no supported files</p>
+              <p className="px-4 py-6 text-slate-500 text-sm text-center">Empty directory or no supported files</p>
             )}
             {entries.map(e => (
-              <div key={e.path} className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800/50 hover:bg-gray-800/30">
+              <div key={e.path} className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800/50 hover:bg-slate-800/30">
                 <button className="flex items-center gap-2 text-sm text-left min-w-0 flex-1" onClick={() => e.is_dir && browse(mode === 'usb' ? selectedDrive : null, e.path)}>
                   <span>{e.is_dir ? '📁' : '📄'}</span>
-                  <span className="font-mono text-xs text-gray-300 truncate">{e.name}</span>
-                  {!e.is_dir && <span className="text-xs text-gray-600 shrink-0">{humanBytes(e.size)}</span>}
+                  <span className="font-mono text-xs text-slate-300 truncate">{e.name}</span>
+                  {!e.is_dir && <span className="text-xs text-slate-600 shrink-0">{humanBytes(e.size)}</span>}
                 </button>
                 {!e.is_dir && e.name.endsWith('.tar') && (
                   <button onClick={() => loadTar(e)} className="btn-primary text-xs py-1 shrink-0 ml-3">Load Image</button>

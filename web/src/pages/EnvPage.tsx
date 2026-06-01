@@ -48,7 +48,7 @@ export default function EnvPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-white">Environment Variables</h1>
         <div className="flex items-center gap-3">
-          {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-gray-400'}`}>{msg}</span>}
+          {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-slate-400'}`}>{msg}</span>}
           <button onClick={addVar} className="btn-ghost">+ Add</button>
           <button onClick={save} disabled={saving} className="btn-primary">
             {saving ? 'Saving…' : 'Save Version'}
@@ -58,7 +58,7 @@ export default function EnvPage() {
 
       <div className="space-y-2">
         {vars.length === 0 && (
-          <div className="card text-center text-gray-500 py-8">No variables. Click "+ Add" to create one.</div>
+          <div className="card text-center text-slate-500 py-8">No variables. Click "+ Add" to create one.</div>
         )}
         {vars.map((v, i) => (
           <div key={i} className="card flex items-center gap-3 py-3">
@@ -77,16 +77,16 @@ export default function EnvPage() {
                 onChange={e => updateVar(i, 'value', e.target.value)}
               />
               {v.is_secret && (
-                <button type="button" onClick={() => toggleReveal(i)} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 text-xs">
+                <button type="button" onClick={() => toggleReveal(i)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-xs">
                   {v.revealed ? 'hide' : 'show'}
                 </button>
               )}
             </div>
-            <label className="flex items-center gap-1.5 text-xs text-gray-400 shrink-0 cursor-pointer">
+            <label className="flex items-center gap-1.5 text-xs text-slate-400 shrink-0 cursor-pointer">
               <input type="checkbox" checked={v.is_secret} onChange={e => updateVar(i, 'is_secret', e.target.checked)} className="rounded" />
               Secret
             </label>
-            <button onClick={() => removeVar(i)} className="text-gray-600 hover:text-red-400 text-sm transition-colors shrink-0">✕</button>
+            <button onClick={() => removeVar(i)} className="text-slate-600 hover:text-red-400 text-sm transition-colors shrink-0">✕</button>
           </div>
         ))}
       </div>

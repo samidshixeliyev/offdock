@@ -64,20 +64,10 @@ func RemoveProxyHostSystem(domain string) error {
 }
 
 // GenerateSelfConfig returns an nginx server block that proxies the given domain
-// to OffDock running on localhost:port. Includes WebSocket support for SSE/terminals.
-func GenerateSelfConfig(domain string, port int) string {
-	return fmt.Sprintf(`server {
-    listen 80;
-    server_name %s;
-    server_tokens off;
-    client_max_body_size 100m;
-
-    # WebSocket / SSE / terminal support
-    proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
-    proxy_connect_timeout 10s;
-
-    location / {
+// to OffDock on localhost:port. If certPath+keyPath are provided the block uses
+// HTTPS (port 443 with HTTP→HTTPS redirect). Otherwise plain HTTP port 80.
+func GenerateSelfConfig(domain string, port int, certPath, keyPath string) string {
+	locationBlock := fmt.Sprintf(`    location / {
         proxy_pass http://127.0.0.1:%d;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -87,14 +77,56 @@ func GenerateSelfConfig(domain string, port int) string {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_buffering off;
-    }
+    }`, port)
+
+	if certPath != "" && keyPath != "" {
+		return fmt.Sprintf(`server {
+    listen 80;
+    server_name %s;
+    server_tokens off;
+    return 301 https://$host$request_uri;
 }
-`, domain, port)
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name %s;
+    server_tokens off;
+    client_max_body_size 100m;
+
+    ssl_certificate     %s;
+    ssl_certificate_key %s;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_connect_timeout 10s;
+
+%s
+}
+`, domain, domain, certPath, keyPath, locationBlock)
+	}
+
+	return fmt.Sprintf(`server {
+    listen 80;
+    server_name %s;
+    server_tokens off;
+    client_max_body_size 100m;
+
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_connect_timeout 10s;
+
+%s
+}
+`, domain, locationBlock)
 }
 
 // ApplySelfConfig writes the OffDock self-hosting nginx config to sites-available.
-func ApplySelfConfig(domain string, port int) (*ApplyResult, error) {
-	content := GenerateSelfConfig(domain, port)
+// certPath and keyPath are optional — when set, HTTPS is configured.
+func ApplySelfConfig(domain string, port int, certPath, keyPath string) (*ApplyResult, error) {
+	content := GenerateSelfConfig(domain, port, certPath, keyPath)
 	return applySystemConfig("offdock-self", content)
 }
 

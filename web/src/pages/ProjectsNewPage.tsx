@@ -29,11 +29,11 @@ export default function ProjectsNewPage() {
       <div className="card">
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Project Name <span className="text-red-400">*</span></label>
+            <label className="block text-xs text-slate-400 mb-1.5">Project Name <span className="text-red-400">*</span></label>
             <input className="input" value={name} onChange={e => setName(e.target.value)} required autoFocus placeholder="my-app" />
           </div>
           <div>
-            <label className="block text-xs text-gray-400 mb-1.5">Description</label>
+            <label className="block text-xs text-slate-400 mb-1.5">Description</label>
             <input className="input" value={description} onChange={e => setDescription(e.target.value)} placeholder="Optional description" />
           </div>
           {error && <p className="text-red-400 text-sm">{error}</p>}

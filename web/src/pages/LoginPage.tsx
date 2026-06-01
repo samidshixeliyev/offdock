@@ -3,6 +3,21 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { api } from '../api/client'
 
+function LockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+    </svg>
+  )
+}
+function UserIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+    </svg>
+  )
+}
+
 export default function LoginPage() {
   const { login, user } = useAuth()
   const navigate = useNavigate()
@@ -33,28 +48,79 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-950">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-white">Off<span className="text-blue-500">Dock</span></h1>
-          <p className="text-gray-500 text-sm mt-1">Offline Docker deployment manager</p>
+    <div className="min-h-screen relative flex items-center justify-center bg-slate-950 bg-dot-grid overflow-hidden">
+      {/* Decorative glow */}
+      <div className="pointer-events-none absolute -top-32 -left-32 w-96 h-96 rounded-full bg-blue-600/10 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-32 -right-32 w-96 h-96 rounded-full bg-indigo-600/10 blur-3xl" />
+
+      <div className="relative w-full max-w-md px-6">
+        {/* Logo */}
+        <div className="flex flex-col items-center mb-6 animate-fadeIn">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-xl shadow-blue-500/30 mb-4">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-8 h-8 text-white">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
+            </svg>
+          </div>
+          <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">OffDock</h1>
+          <p className="text-slate-500 text-sm mt-1">Offline Docker Deployment Manager</p>
         </div>
-        <div className="card">
+
+        {/* Login card */}
+        <div className="bg-slate-900/80 backdrop-blur border border-slate-800 rounded-2xl p-8 shadow-2xl animate-scaleIn">
+          <h2 className="text-lg font-semibold text-slate-100 mb-1">Welcome back</h2>
+          <p className="text-sm text-slate-500 mb-6">Sign in to continue to your dashboard.</p>
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Username</label>
-              <input className="input" value={username} onChange={e => setUsername(e.target.value)} required autoFocus />
+              <label className="block text-xs font-medium text-slate-400 mb-1.5">Username</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"><UserIcon /></span>
+                <input
+                  className="input pl-9"
+                  value={username}
+                  onChange={e => setUsername(e.target.value)}
+                  required
+                  autoFocus
+                  placeholder="admin"
+                />
+              </div>
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1.5">Password</label>
-              <input className="input" type="password" value={password} onChange={e => setPassword(e.target.value)} required />
+              <label className="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"><LockIcon /></span>
+                <input
+                  className="input pl-9"
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                  placeholder="••••••••"
+                />
+              </div>
             </div>
-            {error && <p className="text-red-400 text-sm">{error}</p>}
-            <button type="submit" disabled={loading} className="btn-primary w-full justify-center">
-              {loading ? 'Signing in…' : 'Sign in'}
+            {error && (
+              <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm animate-fadeIn">
+                {error}
+              </div>
+            )}
+            <button type="submit" disabled={loading} className="btn-primary w-full justify-center py-2.5">
+              {loading ? (
+                <>
+                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Signing in…
+                </>
+              ) : 'Sign in'}
             </button>
           </form>
         </div>
+
+        <p className="text-center text-xs text-slate-600 mt-6">
+          Powered by Docker · runs entirely offline
+        </p>
       </div>
     </div>
   )

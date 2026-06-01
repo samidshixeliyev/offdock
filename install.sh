@@ -8,9 +8,16 @@
 # Options:
 #   --port PORT          OffDock listen port (default 7070)
 #   --domain DOMAIN      Domain for OffDock UI (e.g. deploy.ao.az)
+#   --cert PATH          Path to SSL certificate file (.crt / .pem)
+#   --cert-key PATH      Path to SSL private key file (.key / .pem)
 #   --data-dir DIR       Data directory (default /var/offdock/data)
 #   --no-nginx           Skip nginx configuration
 #   --uninstall          Remove OffDock
+#
+# SSL example:
+#   sudo bash install.sh --domain deploy.ao.az \
+#     --cert /etc/ssl/ao.az/fullchain.pem \
+#     --cert-key /etc/ssl/ao.az/privkey.pem
 
 set -euo pipefail
 
@@ -26,6 +33,8 @@ PROJECTS_DIR="/var/offdock/projects"
 
 PORT=7070
 DOMAIN=""
+CERT_PATH=""
+CERT_KEY_PATH=""
 SKIP_NGINX=false
 UNINSTALL=false
 
@@ -34,11 +43,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- argument parsing -------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --port)      PORT="$2";    shift 2 ;;
-    --domain)    DOMAIN="$2";  shift 2 ;;
-    --data-dir)  DATA_DIR="$2"; shift 2 ;;
-    --no-nginx)  SKIP_NGINX=true; shift ;;
-    --uninstall) UNINSTALL=true; shift ;;
+    --port)      PORT="$2";         shift 2 ;;
+    --domain)    DOMAIN="$2";       shift 2 ;;
+    --cert)      CERT_PATH="$2";    shift 2 ;;
+    --cert-key)  CERT_KEY_PATH="$2"; shift 2 ;;
+    --data-dir)  DATA_DIR="$2";     shift 2 ;;
+    --no-nginx)  SKIP_NGINX=true;   shift ;;
+    --uninstall) UNINSTALL=true;    shift ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -131,6 +142,11 @@ log_level: info
 
 # KEEP THIS SECRET — changing it invalidates all sessions.
 jwt_secret: "${JWT_SECRET}"
+
+# SSL certificate for HTTPS (used by nginx for all virtual hosts).
+# Leave empty to use HTTP only.
+default_cert_path: "${CERT_PATH}"
+default_cert_key_path: "${CERT_KEY_PATH}"
 EOF
   chmod 600 "${CONFIG_FILE}"
   echo "  Config written to ${CONFIG_FILE}"
@@ -185,14 +201,28 @@ NGINXEOF
     NGINX_DOMAIN="${SERVER_IP}"
   fi
 
-  cat >/etc/nginx/sites-available/offdock-self.conf <<NGINXEOF
+  # Generate nginx config — HTTPS if certs provided, HTTP otherwise
+  if [[ -n "${CERT_PATH}" && -n "${CERT_KEY_PATH}" ]]; then
+    cat >/etc/nginx/sites-available/offdock-self.conf <<NGINXEOF
 server {
     listen 80;
     server_name ${NGINX_DOMAIN};
     server_tokens off;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${NGINX_DOMAIN};
+    server_tokens off;
     client_max_body_size 100m;
 
-    # WebSocket, SSE, and terminal support
+    ssl_certificate     ${CERT_PATH};
+    ssl_certificate_key ${CERT_KEY_PATH};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
     proxy_read_timeout 3600s;
     proxy_send_timeout 3600s;
     proxy_connect_timeout 10s;
@@ -210,6 +240,34 @@ server {
     }
 }
 NGINXEOF
+    echo "  SSL enabled: ${CERT_PATH}"
+  else
+    cat >/etc/nginx/sites-available/offdock-self.conf <<NGINXEOF
+server {
+    listen 80;
+    server_name ${NGINX_DOMAIN};
+    server_tokens off;
+    client_max_body_size 100m;
+
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+    proxy_connect_timeout 10s;
+
+    location / {
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+    }
+}
+NGINXEOF
+    echo "  HTTP only (no --cert/--cert-key provided)"
+  fi
   ln -sf /etc/nginx/sites-available/offdock-self.conf \
          /etc/nginx/sites-enabled/offdock-self.conf
 

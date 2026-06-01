@@ -186,7 +186,7 @@ const XTerminal = forwardRef<XTerminalHandle, Props>(({ wsUrl, onClose, classNam
 
       const menu = document.createElement('div')
       menu.className =
-        'fixed z-[9999] bg-gray-800 border border-gray-600 rounded-lg shadow-xl py-1 text-xs min-w-[130px] select-none'
+        'fixed z-[9999] bg-slate-800 border border-slate-600 rounded-lg shadow-xl py-1 text-xs min-w-[130px] select-none'
       menu.style.left = `${Math.min(e.clientX, window.innerWidth - 140)}px`
       menu.style.top = `${Math.min(e.clientY, window.innerHeight - 100)}px`
 

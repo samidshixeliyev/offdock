@@ -14,7 +14,7 @@ function stateStyle(state: string) {
     case 'exited':  return { dot: 'bg-red-500',                 badge: 'bg-red-950/60  text-red-300  border-red-900/50'  }
     case 'paused':  return { dot: 'bg-yellow-400',              badge: 'bg-yellow-950/60 text-yellow-300 border-yellow-900/50' }
     case 'created': return { dot: 'bg-blue-400',                badge: 'bg-blue-950/60 text-blue-300 border-blue-900/50' }
-    default:        return { dot: 'bg-gray-500',                badge: 'bg-gray-800 text-gray-400 border-gray-700' }
+    default:        return { dot: 'bg-slate-500',                badge: 'bg-slate-800 text-slate-400 border-slate-700' }
   }
 }
 
@@ -67,7 +67,7 @@ function LogsModal({ name, onClose }: { name: string; onClose: () => void }) {
     if (lc.includes('error') || lc.includes('fatal') || lc.includes('panic')) return 'text-red-400'
     if (lc.includes('warn')) return 'text-yellow-400'
     if (lc.includes('info')) return 'text-blue-300'
-    if (lc.includes('debug')) return 'text-gray-500'
+    if (lc.includes('debug')) return 'text-slate-500'
     return 'text-green-300'
   }
 
@@ -85,29 +85,29 @@ function LogsModal({ name, onClose }: { name: string; onClose: () => void }) {
       fullscreen ? 'inset-0' : 'inset-0'
     )}>
       <div className={clsx(
-        'bg-gray-900 border border-gray-700 rounded-xl flex flex-col shadow-2xl',
+        'bg-slate-900 border border-slate-700 rounded-xl flex flex-col shadow-2xl',
         fullscreen ? 'w-full h-full rounded-none' : 'w-full max-w-6xl'
       )} style={fullscreen ? {} : { height: '88vh' }}>
         {/* Header */}
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-800 shrink-0 flex-wrap">
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-800 shrink-0 flex-wrap">
           <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold text-white">Live Logs</p>
-            <p className="text-xs text-gray-500 font-mono truncate">{name}</p>
+            <p className="text-xs text-slate-500 font-mono truncate">{name}</p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <div className="relative">
-              <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+              <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-600" viewBox="0 0 20 20" fill="currentColor">
                 <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd"/>
               </svg>
               <input className="input pl-7 text-xs w-36 py-1.5" placeholder="Filter…"
                 value={filter} onChange={e => setFilter(e.target.value)} />
             </div>
-            <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
               <input type="checkbox" checked={showTs} onChange={e => setShowTs(e.target.checked)} />
               Timestamps
             </label>
-            <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+            <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
               <input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} />
               Follow
             </label>
@@ -127,15 +127,15 @@ function LogsModal({ name, onClose }: { name: string; onClose: () => void }) {
               {fullscreen ? '⊡' : '⊞'}
             </button>
           </div>
-          <button onClick={onClose} className="text-gray-500 hover:text-white text-lg leading-none ml-1">×</button>
+          <button onClick={onClose} className="text-slate-500 hover:text-white text-lg leading-none ml-1">×</button>
         </div>
 
         {/* Log view */}
-        <div ref={ref} className="flex-1 overflow-y-auto min-h-0 p-4 font-mono text-xs leading-relaxed bg-gray-950">
+        <div ref={ref} className="flex-1 overflow-y-auto min-h-0 p-4 font-mono text-xs leading-relaxed bg-slate-950">
           {lines.length === 0
-            ? <span className="text-gray-600 animate-pulse">Connecting…</span>
+            ? <span className="text-slate-600 animate-pulse">Connecting…</span>
             : filtered.length === 0
-              ? <span className="text-gray-600">No lines match "{filter}"</span>
+              ? <span className="text-slate-600">No lines match "{filter}"</span>
               : filtered.map((l, i) => (
                   <div key={i} className={lineColor(stripTs(l))}>{stripTs(l) || ' '}</div>
                 ))
@@ -143,11 +143,11 @@ function LogsModal({ name, onClose }: { name: string; onClose: () => void }) {
         </div>
 
         {/* Footer */}
-        <div className="px-4 py-2 border-t border-gray-800 shrink-0 flex items-center justify-between">
-          <span className="text-xs text-gray-600">
+        <div className="px-4 py-2 border-t border-slate-800 shrink-0 flex items-center justify-between">
+          <span className="text-xs text-slate-600">
             {filtered.length}{filter ? ` of ${lines.length}` : ''} lines
           </span>
-          <span className="text-xs text-gray-600">ESC to close · Ctrl+Shift+C to copy</span>
+          <span className="text-xs text-slate-600">ESC to close · Ctrl+Shift+C to copy</span>
         </div>
       </div>
     </div>
@@ -237,20 +237,20 @@ function MetricsBar({ stat }: { stat: ContainerStats }) {
   return (
     <div className="flex items-center gap-3 text-xs">
       <div className="flex items-center gap-1.5 min-w-[90px]">
-        <span className="text-gray-600 w-7 shrink-0">CPU</span>
-        <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden w-14">
+        <span className="text-slate-600 w-7 shrink-0">CPU</span>
+        <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden w-14">
           <div className={`h-full rounded-full ${cpuColor}`} style={{ width: `${Math.min(cpu, 100)}%` }} />
         </div>
-        <span className="text-gray-400 tabular-nums w-9 text-right">{stat.CPUPerc}</span>
+        <span className="text-slate-400 tabular-nums w-9 text-right">{stat.CPUPerc}</span>
       </div>
       <div className="flex items-center gap-1.5 min-w-[120px]">
-        <span className="text-gray-600 w-7 shrink-0">MEM</span>
-        <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden w-14">
+        <span className="text-slate-600 w-7 shrink-0">MEM</span>
+        <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden w-14">
           <div className={`h-full rounded-full ${memColor}`} style={{ width: `${Math.min(mem, 100)}%` }} />
         </div>
-        <span className="text-gray-400 tabular-nums w-9 text-right">{stat.MemPerc}</span>
+        <span className="text-slate-400 tabular-nums w-9 text-right">{stat.MemPerc}</span>
       </div>
-      <span className="text-gray-600 hidden lg:inline tabular-nums">{stat.NetIO}</span>
+      <span className="text-slate-600 hidden lg:inline tabular-nums">{stat.NetIO}</span>
     </div>
   )
 }
@@ -261,10 +261,10 @@ function DeleteConfirm({ name, onConfirm, onCancel }: {
 }) {
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-gray-900 border border-red-900/50 rounded-xl p-6 w-full max-w-sm shadow-2xl">
+      <div className="bg-slate-900 border border-red-900/50 rounded-xl p-6 w-full max-w-sm shadow-2xl">
         <h3 className="text-sm font-semibold text-white mb-2">Delete Container?</h3>
-        <p className="text-xs text-gray-400 mb-5">
-          This will force-remove <span className="font-mono text-gray-200">{name}</span>.
+        <p className="text-xs text-slate-400 mb-5">
+          This will force-remove <span className="font-mono text-slate-200">{name}</span>.
           Any unsaved data inside the container will be lost.
         </p>
         <div className="flex gap-2 justify-end">
@@ -403,7 +403,7 @@ export default function ContainersPage() {
       <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
           <h1 className="text-lg font-semibold text-white">Containers</h1>
-          <p className="text-xs text-gray-600 mt-0.5">
+          <p className="text-xs text-slate-600 mt-0.5">
             <span className="text-green-400">{counts.running} running</span>
             {counts.exited > 0 && <> · <span className="text-red-400">{counts.exited} exited</span></>}
             {' '}· {counts.all} total
@@ -422,7 +422,7 @@ export default function ContainersPage() {
       {/* Filters */}
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <div className="relative flex-1 min-w-[180px] max-w-xs">
-          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-600" viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
           </svg>
           <input className="input pl-8 text-xs w-full" placeholder="Search name or image…"
@@ -434,28 +434,28 @@ export default function ContainersPage() {
               className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
                 stateFilter === f
                   ? 'bg-blue-600/20 text-blue-300 border-blue-700/50'
-                  : 'text-gray-500 border-gray-800 hover:text-gray-300 hover:border-gray-700'
+                  : 'text-slate-500 border-slate-800 hover:text-slate-300 hover:border-slate-700'
               }`}>
               {f.charAt(0).toUpperCase() + f.slice(1)}
-              <span className="ml-1.5 text-gray-600 tabular-nums">{counts[f]}</span>
+              <span className="ml-1.5 text-slate-600 tabular-nums">{counts[f]}</span>
             </button>
           ))}
         </div>
 
         {/* Bulk actions — visible when anything is selected */}
         {selected.size > 0 && (
-          <div className="flex items-center gap-2 ml-auto pl-3 border-l border-gray-800">
-            <span className="text-xs text-gray-500">{selected.size} selected</span>
+          <div className="flex items-center gap-2 ml-auto pl-3 border-l border-slate-800">
+            <span className="text-xs text-slate-500">{selected.size} selected</span>
             <button onClick={() => doBulkAction('start')}
-              className="text-xs px-2 py-1 rounded border border-gray-700 text-green-400 hover:bg-green-950/30 transition-colors">
+              className="text-xs px-2 py-1 rounded border border-slate-700 text-green-400 hover:bg-green-950/30 transition-colors">
               Start all
             </button>
             <button onClick={() => doBulkAction('stop')}
-              className="text-xs px-2 py-1 rounded border border-gray-700 text-yellow-400 hover:bg-yellow-950/30 transition-colors">
+              className="text-xs px-2 py-1 rounded border border-slate-700 text-yellow-400 hover:bg-yellow-950/30 transition-colors">
               Stop all
             </button>
             <button onClick={() => doBulkAction('restart')}
-              className="text-xs px-2 py-1 rounded border border-gray-700 text-blue-400 hover:bg-blue-950/30 transition-colors">
+              className="text-xs px-2 py-1 rounded border border-slate-700 text-blue-400 hover:bg-blue-950/30 transition-colors">
               Restart all
             </button>
             <button onClick={() => {
@@ -464,51 +464,51 @@ export default function ContainersPage() {
               className="text-xs px-2 py-1 rounded border border-red-900/50 text-red-400 hover:bg-red-950/30 transition-colors">
               Delete all
             </button>
-            <button onClick={() => setSelected(new Set())} className="text-xs text-gray-600 hover:text-gray-300">✕</button>
+            <button onClick={() => setSelected(new Set())} className="text-xs text-slate-600 hover:text-slate-300">✕</button>
           </div>
         )}
       </div>
 
       {/* Table */}
       {loading ? (
-        <div className="card text-center py-16 text-gray-600 text-sm">
-          <div className="w-5 h-5 border-2 border-gray-600 border-t-blue-400 rounded-full animate-spin mx-auto mb-3" />
+        <div className="card text-center py-16 text-slate-600 text-sm">
+          <div className="w-5 h-5 border-2 border-slate-600 border-t-blue-400 rounded-full animate-spin mx-auto mb-3" />
           Loading containers…
         </div>
       ) : filtered.length === 0 ? (
         <div className="card text-center py-16 text-sm border-dashed">
           {containers.length === 0 ? (
             <>
-              <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center mx-auto mb-3">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-5 h-5 text-gray-600">
+              <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center mx-auto mb-3">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-5 h-5 text-slate-600">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M21 7.5l-9-5.25L3 7.5m18 0l-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9" />
                 </svg>
               </div>
-              <p className="text-gray-500 text-sm mb-1">No containers running</p>
-              <p className="text-gray-700 text-xs">Start a deployment to create containers</p>
+              <p className="text-slate-500 text-sm mb-1">No containers running</p>
+              <p className="text-slate-700 text-xs">Start a deployment to create containers</p>
             </>
           ) : (
-            <p className="text-gray-600">{`No containers match "${search || stateFilter}"`}</p>
+            <p className="text-slate-600">{`No containers match "${search || stateFilter}"`}</p>
           )}
         </div>
       ) : (
         <div className="card p-0 overflow-x-auto">
           <table className="w-full text-sm min-w-[800px]">
             <thead>
-              <tr className="border-b border-gray-800">
+              <tr className="border-b border-slate-800">
                 <th className="px-4 py-3 w-8">
                   <input type="checkbox"
-                    className="rounded border-gray-700 bg-gray-800 cursor-pointer"
+                    className="rounded border-slate-700 bg-slate-800 cursor-pointer"
                     checked={selected.size === filtered.length && filtered.length > 0}
                     onChange={toggleAll}
                   />
                 </th>
-                <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 w-6"></th>
-                <th className="text-left px-3 py-3 text-xs font-medium text-gray-500">Name</th>
-                <th className="text-left px-3 py-3 text-xs font-medium text-gray-500">Image</th>
-                <th className="text-left px-3 py-3 text-xs font-medium text-gray-500">State</th>
-                <th className="text-left px-3 py-3 text-xs font-medium text-gray-500">Ports</th>
-                <th className="text-left px-3 py-3 text-xs font-medium text-gray-500 hidden xl:table-cell">Metrics</th>
+                <th className="text-left px-3 py-3 text-xs font-medium text-slate-500 w-6"></th>
+                <th className="text-left px-3 py-3 text-xs font-medium text-slate-500">Name</th>
+                <th className="text-left px-3 py-3 text-xs font-medium text-slate-500">Image</th>
+                <th className="text-left px-3 py-3 text-xs font-medium text-slate-500">State</th>
+                <th className="text-left px-3 py-3 text-xs font-medium text-slate-500">Ports</th>
+                <th className="text-left px-3 py-3 text-xs font-medium text-slate-500 hidden xl:table-cell">Metrics</th>
                 <th className="px-3 py-3"></th>
               </tr>
             </thead>
@@ -523,13 +523,13 @@ export default function ContainersPage() {
                 return (
                   <tr key={c.ID}
                     className={clsx(
-                      'border-b border-gray-800/40 transition-colors',
-                      isSelected ? 'bg-blue-950/20' : 'hover:bg-gray-800/20'
+                      'border-b border-slate-800/40 transition-colors',
+                      isSelected ? 'bg-blue-950/20' : 'hover:bg-slate-800/20'
                     )}>
                     {/* Checkbox */}
                     <td className="px-4 py-3">
                       <input type="checkbox"
-                        className="rounded border-gray-700 bg-gray-800 cursor-pointer"
+                        className="rounded border-slate-700 bg-slate-800 cursor-pointer"
                         checked={isSelected}
                         onChange={() => toggleSelect(c.Names)}
                       />
@@ -542,11 +542,11 @@ export default function ContainersPage() {
 
                     {/* Name */}
                     <td className="px-3 py-3">
-                      <span className="font-mono text-sm text-gray-200 font-medium">{c.Names}</span>
+                      <span className="font-mono text-sm text-slate-200 font-medium">{c.Names}</span>
                     </td>
 
                     {/* Image */}
-                    <td className="px-3 py-3 text-xs text-gray-500 font-mono max-w-[200px]">
+                    <td className="px-3 py-3 text-xs text-slate-500 font-mono max-w-[200px]">
                       <span className="truncate block" title={c.Image}>{c.Image}</span>
                     </td>
 
@@ -558,7 +558,7 @@ export default function ContainersPage() {
                     </td>
 
                     {/* Ports */}
-                    <td className="px-3 py-3 text-xs text-gray-600 font-mono max-w-[160px]">
+                    <td className="px-3 py-3 text-xs text-slate-600 font-mono max-w-[160px]">
                       <span className="truncate block" title={c.Ports}>{c.Ports || '—'}</span>
                     </td>
 
@@ -567,8 +567,8 @@ export default function ContainersPage() {
                       {stat
                         ? <MetricsBar stat={stat} />
                         : isRunning
-                          ? <span className="text-xs text-gray-700">collecting…</span>
-                          : <span className="text-xs text-gray-700">—</span>
+                          ? <span className="text-xs text-slate-700">collecting…</span>
+                          : <span className="text-xs text-slate-700">—</span>
                       }
                     </td>
 
@@ -576,13 +576,13 @@ export default function ContainersPage() {
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-1.5 justify-end">
                         <button onClick={() => setLogsFor(c.Names)}
-                          className="text-xs px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition-colors"
+                          className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600 transition-colors"
                           title="View logs">
                           Logs
                         </button>
                         {isRunning && (
                           <button onClick={() => setExecFor(c.Names)}
-                            className="text-xs px-2 py-1 rounded border border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600 transition-colors"
+                            className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600 transition-colors"
                             title="Open terminal">
                             Exec
                           </button>

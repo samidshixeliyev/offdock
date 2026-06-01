@@ -59,10 +59,10 @@ function FileIcon({ entry }: { entry: FileEntry }) {
   const colorMap: Record<string, string> = {
     'text/yaml': 'text-orange-400', 'text/x-shellscript': 'text-green-400',
     'application/json': 'text-yellow-400', 'text/x-go': 'text-cyan-400',
-    'text/x-python': 'text-blue-400', 'text/plain': 'text-gray-400',
-    'text/markdown': 'text-gray-300',
+    'text/x-python': 'text-blue-400', 'text/plain': 'text-slate-400',
+    'text/markdown': 'text-slate-300',
   }
-  const color = colorMap[mime] ?? 'text-gray-500'
+  const color = colorMap[mime] ?? 'text-slate-500'
   return (
     <svg viewBox="0 0 20 20" fill="currentColor" className={`w-4 h-4 ${color} shrink-0`}>
       <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd"/>
@@ -81,7 +81,7 @@ function Breadcrumb({ path, onNavigate }: { path: string; onNavigate: (p: string
         const isLast = i === parts.length - 1
         return (
           <span key={i} className="flex items-center gap-1 shrink-0">
-            <span className="text-gray-700">/</span>
+            <span className="text-slate-700">/</span>
             <button
               onClick={() => !isLast && onNavigate(p)}
               className={isLast ? 'text-white cursor-default' : 'text-blue-400 hover:text-blue-300'}
@@ -124,17 +124,17 @@ function ContentViewer({ file, onClose, onEdit }: {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-800 shrink-0 flex-wrap">
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-800 shrink-0 flex-wrap">
         <div className="flex-1 min-w-0">
           <p className="text-sm font-medium text-white truncate">{file.name}</p>
-          <p className="text-xs text-gray-600 font-mono">{file.path}</p>
+          <p className="text-xs text-slate-600 font-mono">{file.path}</p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-600">{fmtSize(file.size)}</span>
-          <span className="text-xs text-gray-700 font-mono">{file.mode}</span>
+          <span className="text-xs text-slate-600">{fmtSize(file.size)}</span>
+          <span className="text-xs text-slate-700 font-mono">{file.mode}</span>
           {!file.is_binary && !editing && (
             <button onClick={() => setEditing(true)}
-              className="text-xs px-2.5 py-1 rounded border border-gray-700 text-gray-400 hover:text-white hover:border-gray-600 transition-colors">
+              className="text-xs px-2.5 py-1 rounded border border-slate-700 text-slate-400 hover:text-white hover:border-slate-600 transition-colors">
               Edit
             </button>
           )}
@@ -149,17 +149,17 @@ function ContentViewer({ file, onClose, onEdit }: {
             </>
           )}
           <a href={api.fileDownloadUrl(file.path)} download={file.name}
-            className="text-xs px-2.5 py-1 rounded border border-gray-700 text-gray-400 hover:text-white hover:border-gray-600 transition-colors">
+            className="text-xs px-2.5 py-1 rounded border border-slate-700 text-slate-400 hover:text-white hover:border-slate-600 transition-colors">
             ↓ Download
           </a>
-          <button onClick={onClose} className="text-gray-500 hover:text-white ml-1">×</button>
+          <button onClick={onClose} className="text-slate-500 hover:text-white ml-1">×</button>
         </div>
       </div>
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {file.is_binary ? (
-          <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-500">
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-500">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-10 h-10 opacity-40">
               <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
             </svg>
@@ -175,7 +175,7 @@ function ContentViewer({ file, onClose, onEdit }: {
           </div>
         ) : editing ? (
           <textarea
-            className="w-full h-full resize-none font-mono text-xs text-gray-200 bg-gray-950 p-4 focus:outline-none leading-relaxed"
+            className="w-full h-full resize-none font-mono text-xs text-slate-200 bg-slate-950 p-4 focus:outline-none leading-relaxed"
             value={draft}
             onChange={e => setDraft(e.target.value)}
             spellCheck={false}
@@ -185,14 +185,14 @@ function ContentViewer({ file, onClose, onEdit }: {
           <div className="h-full overflow-auto">
             <div className="flex min-h-full">
               {/* Line numbers */}
-              <div className="select-none text-right pr-3 pt-4 pb-4 pl-3 font-mono text-xs text-gray-700 bg-gray-950/60 border-r border-gray-800/50 shrink-0 leading-relaxed"
+              <div className="select-none text-right pr-3 pt-4 pb-4 pl-3 font-mono text-xs text-slate-700 bg-slate-950/60 border-r border-slate-800/50 shrink-0 leading-relaxed"
                 style={{ minWidth: `${String(lineCount).length * 8 + 24}px` }}>
                 {file.content.split('\n').map((_, i) => (
                   <div key={i}>{i + 1}</div>
                 ))}
               </div>
               {/* Code */}
-              <pre className="flex-1 p-4 font-mono text-xs text-gray-200 leading-relaxed bg-gray-950 overflow-x-auto whitespace-pre">
+              <pre className="flex-1 p-4 font-mono text-xs text-slate-200 leading-relaxed bg-slate-950 overflow-x-auto whitespace-pre">
                 {file.content}
               </pre>
             </div>
@@ -202,7 +202,7 @@ function ContentViewer({ file, onClose, onEdit }: {
 
       {/* Footer bar */}
       {!file.is_binary && (
-        <div className="px-4 py-1.5 border-t border-gray-800 shrink-0 flex items-center gap-4 text-xs text-gray-600">
+        <div className="px-4 py-1.5 border-t border-slate-800 shrink-0 flex items-center gap-4 text-xs text-slate-600">
           <span>{lineCount} lines</span>
           <span>{fmtSize(file.size)}</span>
           <span className="font-mono">{langFromMime(file.mime)}</span>
@@ -257,19 +257,19 @@ function NewItemModal({ basePath, onClose, onCreated }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-sm p-5 shadow-2xl">
+      <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-sm p-5 shadow-2xl">
         <h3 className="text-sm font-semibold text-white mb-4">New {type === 'dir' ? 'Directory' : 'File'}</h3>
         <div className="flex gap-2 mb-3">
           {(['file', 'dir'] as const).map(t => (
             <button key={t} onClick={() => setType(t)}
               className={`flex-1 py-1.5 text-xs rounded-lg border transition-colors ${
-                type === t ? 'bg-blue-600/20 text-blue-300 border-blue-700/50' : 'text-gray-500 border-gray-700 hover:border-gray-600'
+                type === t ? 'bg-blue-600/20 text-blue-300 border-blue-700/50' : 'text-slate-500 border-slate-700 hover:border-slate-600'
               }`}>
               {t === 'dir' ? 'Directory' : 'File'}
             </button>
           ))}
         </div>
-        <p className="text-xs text-gray-600 font-mono mb-2">{basePath}/</p>
+        <p className="text-xs text-slate-600 font-mono mb-2">{basePath}/</p>
         <input ref={inputRef} className="input w-full text-sm font-mono mb-3"
           placeholder={type === 'dir' ? 'dirname' : 'filename.txt'}
           value={name} onChange={e => setName(e.target.value)}
@@ -304,9 +304,9 @@ function DeleteModal({ entry, onClose, onDeleted }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-gray-900 border border-red-900/50 rounded-xl w-full max-w-sm p-5 shadow-2xl">
+      <div className="bg-slate-900 border border-red-900/50 rounded-xl w-full max-w-sm p-5 shadow-2xl">
         <h3 className="text-sm font-semibold text-white mb-2">Delete {entry.is_dir ? 'Directory' : 'File'}?</h3>
-        <p className="text-xs text-gray-400 mb-4 font-mono break-all">{entry.path}</p>
+        <p className="text-xs text-slate-400 mb-4 font-mono break-all">{entry.path}</p>
         {entry.is_dir && <p className="text-xs text-yellow-400 mb-4">⚠ All contents will be permanently removed.</p>}
         {err && <p className="text-xs text-red-400 mb-2">{err}</p>}
         <div className="flex gap-2 justify-end">
@@ -345,7 +345,7 @@ function RenameModal({ entry, onClose, onRenamed }: {
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-      <div className="bg-gray-900 border border-gray-700 rounded-xl w-full max-w-sm p-5 shadow-2xl">
+      <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-sm p-5 shadow-2xl">
         <h3 className="text-sm font-semibold text-white mb-3">Rename</h3>
         <input ref={inputRef} className="input w-full text-sm font-mono mb-3"
           value={name} onChange={e => setName(e.target.value)}
@@ -434,9 +434,9 @@ export default function FilesPage() {
       {renameEntry && <RenameModal entry={renameEntry} onClose={() => setRenameEntry(null)} onRenamed={() => browse(cwd)} />}
 
       {/* Sidebar */}
-      <aside className="w-44 bg-gray-900/60 border-r border-gray-800 flex flex-col shrink-0">
-        <div className="px-3 py-3 border-b border-gray-800">
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Quick Access</p>
+      <aside className="w-44 bg-slate-900/60 border-r border-slate-800 flex flex-col shrink-0">
+        <div className="px-3 py-3 border-b border-slate-800">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Quick Access</p>
         </div>
         <nav className="flex-1 overflow-y-auto py-2">
           {QUICK_PATHS.map(q => (
@@ -445,7 +445,7 @@ export default function FilesPage() {
                 'w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors text-left',
                 cwd === q.path
                   ? 'text-blue-400 bg-blue-950/30'
-                  : 'text-gray-500 hover:text-gray-200 hover:bg-gray-800/50'
+                  : 'text-slate-500 hover:text-slate-200 hover:bg-slate-800/50'
               )}>
               <span className="font-mono text-[10px] w-3 text-center shrink-0">{q.icon}</span>
               {q.label}
@@ -457,13 +457,13 @@ export default function FilesPage() {
       {/* Main area */}
       <div className={clsx('flex-1 flex overflow-hidden', openFile ? 'flex-row' : 'flex-col')}>
         {/* File browser panel */}
-        <div className={clsx('flex flex-col overflow-hidden', openFile ? 'w-80 shrink-0 border-r border-gray-800' : 'flex-1')}>
+        <div className={clsx('flex flex-col overflow-hidden', openFile ? 'w-80 shrink-0 border-r border-slate-800' : 'flex-1')}>
           {/* Toolbar */}
-          <div className="px-4 py-2.5 border-b border-gray-800 shrink-0 space-y-2">
+          <div className="px-4 py-2.5 border-b border-slate-800 shrink-0 space-y-2">
             {/* Path bar */}
             <div className="flex items-center gap-2">
               <button onClick={() => browse(parentPath(cwd))} disabled={cwd === '/'}
-                className="text-gray-500 hover:text-gray-200 disabled:opacity-30 text-sm px-1" title="Up">↑</button>
+                className="text-slate-500 hover:text-slate-200 disabled:opacity-30 text-sm px-1" title="Up">↑</button>
               {editingPath ? (
                 <input
                   ref={pathInputRef}
@@ -482,14 +482,14 @@ export default function FilesPage() {
                   <Breadcrumb path={cwd} onNavigate={browse} />
                 </div>
               )}
-              <button onClick={() => browse(cwd)} className="text-gray-600 hover:text-gray-300 text-sm px-1" title="Refresh">↻</button>
+              <button onClick={() => browse(cwd)} className="text-slate-600 hover:text-slate-300 text-sm px-1" title="Refresh">↻</button>
             </div>
 
             {/* Search + actions */}
             <div className="flex items-center gap-1.5">
               <div className="flex-1 flex items-center gap-1">
                 <div className="relative flex-1">
-                  <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-600" viewBox="0 0 20 20" fill="currentColor">
+                  <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-600" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd"/>
                   </svg>
                   <input className="input pl-7 text-xs w-full py-1.5"
@@ -500,11 +500,11 @@ export default function FilesPage() {
                 </div>
                 {searchResults && (
                   <button onClick={() => { setSearchResults(null); setSearchQuery('') }}
-                    className="text-xs text-gray-500 hover:text-gray-300 px-1">✕</button>
+                    className="text-xs text-slate-500 hover:text-slate-300 px-1">✕</button>
                 )}
               </div>
               <button onClick={() => setShowNew(true)}
-                className="text-xs px-2 py-1.5 rounded border border-gray-700 text-gray-400 hover:text-white hover:border-gray-600 transition-colors shrink-0"
+                className="text-xs px-2 py-1.5 rounded border border-slate-700 text-slate-400 hover:text-white hover:border-slate-600 transition-colors shrink-0"
                 title="New file or directory">
                 + New
               </button>
@@ -529,12 +529,12 @@ export default function FilesPage() {
           {/* File list */}
           <div className="flex-1 overflow-y-auto">
             {loading ? (
-              <div className="flex items-center justify-center py-16 text-gray-600 text-sm">
-                <div className="w-5 h-5 border-2 border-gray-700 border-t-blue-400 rounded-full animate-spin mr-3" />
+              <div className="flex items-center justify-center py-16 text-slate-600 text-sm">
+                <div className="w-5 h-5 border-2 border-slate-700 border-t-blue-400 rounded-full animate-spin mr-3" />
                 Loading…
               </div>
             ) : displayEntries.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-gray-600 text-sm">
+              <div className="flex flex-col items-center justify-center py-16 text-slate-600 text-sm">
                 <p>{searchResults ? 'No matches' : 'Empty directory'}</p>
               </div>
             ) : (
@@ -546,11 +546,11 @@ export default function FilesPage() {
                   <col className={clsx('w-20', openFile && 'hidden')} />
                   <col className={clsx('w-16', openFile && 'hidden')} />
                 </colgroup>
-                <thead className="sticky top-0 bg-gray-900 z-10">
-                  <tr className="border-b border-gray-800 text-gray-600">
+                <thead className="sticky top-0 bg-slate-900 z-10">
+                  <tr className="border-b border-slate-800 text-slate-600">
                     <th className="px-2 py-2 text-left">
                       <input type="checkbox"
-                        className="rounded border-gray-700 bg-gray-800 cursor-pointer"
+                        className="rounded border-slate-700 bg-slate-800 cursor-pointer"
                         checked={selected.size > 0 && selected.size === displayEntries.length}
                         onChange={() => {
                           if (selected.size === displayEntries.length) setSelected(new Set())
@@ -570,15 +570,15 @@ export default function FilesPage() {
                 </thead>
                 <tbody>
                   {!searchResults && cwd !== '/' && (
-                    <tr className="border-b border-gray-800/30 hover:bg-gray-800/20 cursor-pointer"
+                    <tr className="border-b border-slate-800/30 hover:bg-slate-800/20 cursor-pointer"
                       onClick={() => browse(parentPath(cwd))}>
                       <td className="px-2 py-1.5" />
                       <td className="px-2 py-1.5">
                         <div className="flex items-center gap-2">
-                          <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-gray-600 shrink-0">
+                          <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-slate-600 shrink-0">
                             <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
                           </svg>
-                          <span className="text-gray-600 font-mono">..</span>
+                          <span className="text-slate-600 font-mono">..</span>
                         </div>
                       </td>
                       <td colSpan={openFile ? 1 : 3} />
@@ -591,53 +591,53 @@ export default function FilesPage() {
                     return (
                       <tr key={entry.path}
                         className={clsx(
-                          'border-b border-gray-800/30 cursor-pointer transition-colors group',
-                          isOpen ? 'bg-blue-950/30' : isSel ? 'bg-blue-950/10' : 'hover:bg-gray-800/20'
+                          'border-b border-slate-800/30 cursor-pointer transition-colors group',
+                          isOpen ? 'bg-blue-950/30' : isSel ? 'bg-blue-950/10' : 'hover:bg-slate-800/20'
                         )}
                         onClick={() => openEntry(entry)}
                       >
                         <td className="px-2 py-1.5" onClick={e => { e.stopPropagation(); toggleSelect(entry.path) }}>
                           <input type="checkbox"
-                            className="rounded border-gray-700 bg-gray-800 cursor-pointer"
+                            className="rounded border-slate-700 bg-slate-800 cursor-pointer"
                             checked={isSel} onChange={() => {}} />
                         </td>
                         <td className="px-2 py-1.5">
                           <div className="flex items-center gap-2 min-w-0">
                             {busy ? (
-                              <div className="w-4 h-4 border border-gray-600 border-t-blue-400 rounded-full animate-spin shrink-0" />
+                              <div className="w-4 h-4 border border-slate-600 border-t-blue-400 rounded-full animate-spin shrink-0" />
                             ) : (
                               <FileIcon entry={entry} />
                             )}
                             <span className={clsx(
                               'font-mono truncate',
-                              entry.is_dir ? 'text-blue-300' : 'text-gray-300',
+                              entry.is_dir ? 'text-blue-300' : 'text-slate-300',
                               entry.is_symlink && 'italic opacity-80'
                             )}>
                               {entry.name}{entry.is_dir ? '/' : ''}
                             </span>
                           </div>
                         </td>
-                        <td className="px-2 py-1.5 text-right text-gray-600 tabular-nums">
+                        <td className="px-2 py-1.5 text-right text-slate-600 tabular-nums">
                           {entry.is_dir ? '—' : fmtSize(entry.size)}
                         </td>
                         {!openFile && (
                           <>
-                            <td className="px-2 py-1.5 text-gray-700 tabular-nums">{fmtDate(entry.mod_time)}</td>
+                            <td className="px-2 py-1.5 text-slate-700 tabular-nums">{fmtDate(entry.mod_time)}</td>
                             <td className="px-2 py-1.5">
                               <div className="flex items-center gap-1.5">
-                                <span className="text-gray-700 font-mono text-[10px]">{entry.mode?.slice(0, 4)}</span>
+                                <span className="text-slate-700 font-mono text-[10px]">{entry.mode?.slice(0, 4)}</span>
                                 {/* Context actions — show on hover */}
                                 <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 ml-auto transition-opacity">
                                   <button
                                     onClick={e => { e.stopPropagation(); setRenameEntry(entry) }}
-                                    className="text-gray-500 hover:text-gray-200 px-1 text-xs" title="Rename">✎</button>
+                                    className="text-slate-500 hover:text-slate-200 px-1 text-xs" title="Rename">✎</button>
                                   <a
                                     href={api.fileDownloadUrl(entry.path)} download={entry.name}
                                     onClick={e => e.stopPropagation()}
-                                    className="text-gray-500 hover:text-gray-200 px-1 text-xs" title="Download">↓</a>
+                                    className="text-slate-500 hover:text-slate-200 px-1 text-xs" title="Download">↓</a>
                                   <button
                                     onClick={e => { e.stopPropagation(); setDeleteEntry(entry) }}
-                                    className="text-gray-600 hover:text-red-400 px-1 text-xs" title="Delete">✕</button>
+                                    className="text-slate-600 hover:text-red-400 px-1 text-xs" title="Delete">✕</button>
                                 </div>
                               </div>
                             </td>
@@ -652,7 +652,7 @@ export default function FilesPage() {
           </div>
 
           {/* Status bar */}
-          <div className="px-4 py-1.5 border-t border-gray-800 shrink-0 flex items-center justify-between text-xs text-gray-700">
+          <div className="px-4 py-1.5 border-t border-slate-800 shrink-0 flex items-center justify-between text-xs text-slate-700">
             <span>
               {displayEntries.length} item{displayEntries.length !== 1 ? 's' : ''}
               {selected.size > 0 && ` · ${selected.size} selected`}
@@ -672,7 +672,7 @@ export default function FilesPage() {
 
         {/* Content viewer panel */}
         {openFile && (
-          <div className="flex-1 min-w-0 overflow-hidden flex flex-col bg-gray-950">
+          <div className="flex-1 min-w-0 overflow-hidden flex flex-col bg-slate-950">
             <ContentViewer
               file={openFile}
               onClose={() => setOpenFile(null)}

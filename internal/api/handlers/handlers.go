@@ -19,17 +19,19 @@ import (
 
 // H bundles all dependencies required by handlers.
 type H struct {
-	db            *store.DB
-	auth          *auth.Service
-	enc           *crypto.Encryptor
-	docker        *docker.Client
-	deployer      *deploy.Engine
-	stats         *system.Collector
-	hub           *sse.Hub
-	projectsDir   string
-	dataDir       string
-	deployCancels sync.Map // streamKey → context.CancelFunc
-	limiter       *authmw.LoginLimiter
+	db                 *store.DB
+	auth               *auth.Service
+	enc                *crypto.Encryptor
+	docker             *docker.Client
+	deployer           *deploy.Engine
+	stats              *system.Collector
+	hub                *sse.Hub
+	projectsDir        string
+	dataDir            string
+	defaultCertPath    string
+	defaultCertKeyPath string
+	deployCancels      sync.Map // streamKey → context.CancelFunc
+	limiter            *authmw.LoginLimiter
 }
 
 // New returns an initialised handler bundle.
@@ -43,18 +45,22 @@ func New(
 	hub *sse.Hub,
 	projectsDir string,
 	dataDir string,
+	defaultCertPath string,
+	defaultCertKeyPath string,
 ) *H {
 	return &H{
-		db:          db,
-		auth:        authSvc,
-		enc:         enc,
-		docker:      dockerClient,
-		deployer:    deployer,
-		stats:       stats,
-		hub:         hub,
-		projectsDir: projectsDir,
-		dataDir:     dataDir,
-		limiter:     authmw.NewLoginLimiter(10, time.Minute),
+		db:                 db,
+		auth:               authSvc,
+		enc:                enc,
+		docker:             dockerClient,
+		deployer:           deployer,
+		stats:              stats,
+		hub:                hub,
+		projectsDir:        projectsDir,
+		dataDir:            dataDir,
+		defaultCertPath:    defaultCertPath,
+		defaultCertKeyPath: defaultCertKeyPath,
+		limiter:            authmw.NewLoginLimiter(10, time.Minute),
 	}
 }
 
