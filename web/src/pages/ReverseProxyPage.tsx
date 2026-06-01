@@ -1,223 +1,24 @@
 import { useEffect, useState } from 'react'
 import {
-  api, NginxContainerStatus, Networks, NetworkContainer,
+  api,
   ProxyHost, ProxyHostInput, ProxyLocation,
 } from '../api/client'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 function useNginxStatus() {
-  const [status, setStatus] = useState<NginxContainerStatus | null>(null)
-  const load = async () => { try { setStatus(await api.nginxContainerStatus()) } catch {} }
-  useEffect(() => { load() }, [])
-  return { status, reload: load }
-}
-
-// ─── Network panel ────────────────────────────────────────────────────────────
-function NetworkPanel() {
-  const [nets, setNets] = useState<Networks | null>(null)
-  const [allContainers, setAllContainers] = useState<string[]>([])
-  const [busy, setBusy] = useState('')
-  const [msg, setMsg] = useState('')
-  const [msgErr, setMsgErr] = useState(false)
-  const [selected, setSelected] = useState<{ external: string; internal: string }>({ external: '', internal: '' })
-
+  const [available, setAvailable] = useState(false)
+  const [status, setStatus] = useState('')
   const load = async () => {
     try {
-      const [n, cs] = await Promise.all([api.listNetworks(), api.listAllContainers()])
-      setNets(n)
-      setAllContainers(cs.map(c => c.Names))
+      const s = await api.getNginxSystemStatus()
+      setAvailable(s.available)
+      setStatus(s.status)
     } catch {}
   }
   useEffect(() => { load() }, [])
-
-  const showMsg = (text: string, err = false) => {
-    setMsg(text); setMsgErr(err)
-    setTimeout(() => setMsg(''), 3000)
-  }
-
-  const connect = async (networkName: string, netKey: 'external' | 'internal') => {
-    const container = selected[netKey]
-    if (!container) return
-    setBusy(networkName)
-    try {
-      await api.networkConnect(networkName, container)
-      showMsg(`${container} → ${networkName}`)
-      setSelected(s => ({ ...s, [netKey]: '' }))
-      load()
-    } catch (e) { showMsg(e instanceof Error ? e.message : 'Failed', true) }
-    finally { setBusy('') }
-  }
-
-  const disconnect = async (networkName: string, container: string) => {
-    setBusy(`${networkName}-${container}`)
-    try {
-      await api.networkDisconnect(networkName, container)
-      showMsg(`Disconnected ${container}`)
-      load()
-    } catch (e) { showMsg(e instanceof Error ? e.message : 'Failed', true) }
-    finally { setBusy('') }
-  }
-
-  // Containers not yet in a given network
-  const available = (netKey: 'external' | 'internal') => {
-    const connected = new Set((nets?.[netKey]?.containers ?? []).map(c => c.name))
-    return allContainers.filter(n => !connected.has(n))
-  }
-
-  const NetworkSection = ({ title, description, netKey, dotColor, info }: {
-    title: string
-    description: string
-    netKey: 'external' | 'internal'
-    dotColor: string
-    info?: { name: string; exists: boolean; containers: NetworkContainer[] }
-  }) => {
-    const connected = info?.containers ?? []
-    const options = available(netKey)
-    const isBusy = busy === info?.name
-
-    return (
-      <div className="flex-1 min-w-0 space-y-3">
-        {/* Header */}
-        <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full shrink-0 ${dotColor}`} />
-          <span className="text-xs font-semibold text-slate-200">{title}</span>
-          {info && (
-            <code className={`text-[10px] px-1.5 py-0.5 rounded border font-mono ${
-              info.exists
-                ? 'bg-slate-800/80 text-slate-500 border-slate-700/60'
-                : 'bg-red-950/50 text-red-400 border-red-900/40'
-            }`}>
-              {info.exists ? info.name : 'not created'}
-            </code>
-          )}
-          <span className="text-[10px] text-slate-700 ml-auto">{description}</span>
-        </div>
-
-        {/* Connected containers list */}
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 overflow-hidden">
-          {connected.length === 0 ? (
-            <div className="px-3 py-2.5 text-xs text-slate-700 italic">No containers connected</div>
-          ) : (
-            connected.map((c, i) => (
-              <div key={c.id}
-                className={`flex items-center gap-2.5 px-3 py-2 text-xs group ${
-                  i < connected.length - 1 ? 'border-b border-slate-800/60' : ''
-                }`}>
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
-                <span className="font-mono text-slate-200 flex-1 truncate">{c.name}</span>
-                <span className="text-[10px] text-slate-700 font-mono hidden sm:inline">{c.id.slice(0, 8)}</span>
-                <button
-                  onClick={() => disconnect(info!.name, c.name)}
-                  disabled={busy === `${info!.name}-${c.name}`}
-                  className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all ml-1 disabled:opacity-30"
-                  title="Disconnect">
-                  {busy === `${info!.name}-${c.name}` ? (
-                    <span className="animate-pulse">…</span>
-                  ) : '✕'}
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-
-        {/* Add container — styled select + button */}
-        {info?.exists && (
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
-              <select
-                value={selected[netKey]}
-                onChange={e => setSelected(s => ({ ...s, [netKey]: e.target.value }))}
-                className={`w-full appearance-none bg-slate-900 border rounded-lg px-3 py-2 text-xs pr-8 focus:outline-none focus:ring-1 transition-colors ${
-                  selected[netKey]
-                    ? 'border-blue-600/60 text-slate-200 focus:ring-blue-500/40'
-                    : 'border-slate-700 text-slate-500 focus:ring-slate-600/40'
-                }`}
-              >
-                <option value="">
-                  {options.length === 0 ? 'All containers connected' : 'Select container to add…'}
-                </option>
-                {options.map(name => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
-              {/* Custom dropdown arrow */}
-              <svg
-                className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500"
-                viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd"
-                  d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06z"
-                  clipRule="evenodd" />
-              </svg>
-            </div>
-            <button
-              onClick={() => connect(info.name, netKey)}
-              disabled={!selected[netKey] || isBusy}
-              className="px-3 py-2 text-xs font-medium rounded-lg border transition-colors disabled:opacity-40 disabled:cursor-not-allowed
-                bg-blue-600/10 border-blue-700/50 text-blue-400 hover:bg-blue-600/20 hover:border-blue-600/60
-                disabled:bg-transparent disabled:border-slate-700 disabled:text-slate-600">
-              {isBusy ? (
-                <span className="flex items-center gap-1.5">
-                  <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                  </svg>
-                  Adding…
-                </span>
-              ) : 'Connect'}
-            </button>
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <div className="shrink-0 border-b border-slate-800 px-5 py-4 bg-slate-950/60">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5 text-slate-500">
-            <path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v1h8v-1zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-1a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v1h-3zM4.75 14.094A5.973 5.973 0 004 17v1H1v-1a3 3 0 013.75-2.906z"/>
-          </svg>
-          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Docker Networks</span>
-        </div>
-        <div className="flex items-center gap-3">
-          {msg && (
-            <span className={`text-xs px-2 py-0.5 rounded border ${
-              msgErr
-                ? 'text-red-300 bg-red-950/50 border-red-900/40'
-                : 'text-green-300 bg-green-950/50 border-green-900/40'
-            }`}>{msg}</span>
-          )}
-          <button onClick={load} title="Refresh"
-            className="text-slate-600 hover:text-slate-300 transition-colors">
-            <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
-              <path fillRule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clipRule="evenodd"/>
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      {/* Two-column layout */}
-      <div className="grid grid-cols-2 gap-5">
-        <NetworkSection
-          title="External Network"
-          description="nginx proxy targets"
-          netKey="external"
-          dotColor="bg-blue-400"
-          info={nets?.external}
-        />
-        <NetworkSection
-          title="Internal Network"
-          description="isolated services (DB, cache…)"
-          netKey="internal"
-          dotColor="bg-slate-500"
-          info={nets?.internal}
-        />
-      </div>
-    </div>
-  )
+  return { available, status, reload: load }
 }
+
 
 // ─── Host form modal ──────────────────────────────────────────────────────────
 const emptyForm: ProxyHostInput = {
@@ -436,7 +237,7 @@ function HostModal({ host, onSave, onClose }: {
               <input type="checkbox" checked={form.access_log}
                 onChange={e => set('access_log', e.target.checked)} />
               <span className="text-xs text-slate-300">Access log</span>
-              <span className="text-xs text-slate-700">(inside nginx container)</span>
+              <span className="text-xs text-slate-700">(absolute path on server)</span>
             </label>
           </div>
 
@@ -738,8 +539,7 @@ function HostsSection() {
         <div className="card text-center py-12 border-dashed space-y-3">
           <p className="text-slate-500 text-sm">No proxy hosts yet</p>
           <p className="text-xs text-slate-700 max-w-sm mx-auto">
-            Add a host to map a domain to a running container.<br/>
-            Make sure the container is on the <code className="text-slate-500">offdock-external</code> network above.
+            Add a host to map a domain to any upstream — a running container, a local port, or any IP:port.
           </p>
           <button onClick={openAdd} className="btn-primary text-sm mx-auto">Add first host</button>
         </div>
@@ -845,76 +645,30 @@ function HostsSection() {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function ReverseProxyPage() {
-  const { status, reload } = useNginxStatus()
-  const [busy, setBusy] = useState('')
-  const [msg, setMsg] = useState('')
-  const [msgErr, setMsgErr] = useState(false)
-
-  const running = status?.running ?? false
-  const state = status?.state ?? 'unknown'
-
-  const act = async (action: 'start' | 'stop' | 'reload') => {
-    setBusy(action); setMsg('')
-    try {
-      if (action === 'start') await api.nginxContainerStart()
-      else if (action === 'stop') await api.nginxContainerStop()
-      else await api.nginxContainerReload()
-      setMsg(action === 'start' ? 'Started' : action === 'stop' ? 'Stopped' : 'Reloaded')
-      setMsgErr(false); setTimeout(reload, 1200)
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Failed'); setMsgErr(true)
-    } finally { setBusy('') }
-  }
+  const { available, status, reload } = useNginxStatus()
 
   return (
     <div className="flex flex-col h-full">
 
       {/* ── nginx status bar ──────────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-slate-800 bg-slate-950">
-        <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-green-400 animate-pulse' : 'bg-slate-600'}`} />
+        <span className={`w-2 h-2 rounded-full shrink-0 ${available && status === 'active' ? 'bg-green-400 animate-pulse' : 'bg-red-500'}`} />
         <div className="flex-1 min-w-0">
           <span className="text-sm font-semibold text-slate-100">nginx</span>
-          <span className="ml-2 text-xs text-slate-600">offdock-nginx · nginx:alpine</span>
-          {status && (
-            <span className={`ml-2 text-xs px-1.5 py-0.5 rounded border ${
-              running ? 'bg-green-950 text-green-300 border-green-900/40'
-              : state === 'not_found' ? 'bg-slate-800 text-slate-500 border-slate-700'
+          <span className="ml-2 text-xs text-slate-600">system · native</span>
+          <span className={`ml-2 text-xs px-1.5 py-0.5 rounded border ${
+            available && status === 'active'
+              ? 'bg-green-950 text-green-300 border-green-900/40'
               : 'bg-red-950 text-red-300 border-red-900/40'
-            }`}>
-              {running ? 'Running' : state === 'not_found' ? 'Not created' : status.status_text}
-            </span>
-          )}
-          {!running && (
-            <span className="ml-2 text-xs text-slate-600">
-              {state === 'not_found' ? 'nginx:alpine auto-loads from bundled tar on first start' : ''}
-            </span>
+          }`}>
+            {available ? (status || 'unknown') : 'not installed'}
+          </span>
+          {!available && (
+            <span className="ml-2 text-xs text-slate-600">Install nginx: sudo apt-get install -y nginx</span>
           )}
         </div>
-        {msg && <span className={`text-xs ${msgErr ? 'text-red-400' : 'text-green-400'}`}>{msg}</span>}
-        <div className="flex items-center gap-2 shrink-0">
-          <button onClick={reload} className="btn-ghost text-xs px-2">↻</button>
-          {running ? (
-            <>
-              <button onClick={() => act('reload')} disabled={!!busy} className="btn-ghost text-xs">
-                {busy === 'reload' ? 'Reloading…' : 'Reload nginx'}
-              </button>
-              <button onClick={() => act('stop')} disabled={!!busy}
-                className="text-xs text-slate-600 hover:text-red-400 transition-colors px-2">
-                {busy === 'stop' ? 'Stopping…' : 'Stop'}
-              </button>
-            </>
-          ) : (
-            <button onClick={() => act('start')} disabled={busy === 'start'} className="btn-primary text-xs">
-              {busy === 'start' ? (
-                <><svg className="animate-spin w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Starting…</>
-              ) : 'Start nginx'}
-            </button>
-          )}
-        </div>
+        <button onClick={reload} className="btn-ghost text-xs px-2 shrink-0">↻</button>
       </div>
-
-      {/* ── Networks panel ────────────────────────────────────────────────── */}
-      <NetworkPanel />
 
       {/* ── Proxy hosts ───────────────────────────────────────────────────── */}
       <HostsSection />

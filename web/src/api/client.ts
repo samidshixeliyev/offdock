@@ -170,12 +170,6 @@ export interface NginxEntry {
   config: NginxConfig | null
 }
 
-export interface NginxContainerStatus {
-  running: boolean
-  state: 'running' | 'exited' | 'not_found' | 'unknown'
-  status_text: string
-  image: string
-}
 
 export interface RecentDeployment extends DeploymentRecord {
   project_name: string
@@ -362,12 +356,6 @@ export const api = {
       '/api/v1/nginx/system/self-config',
       { method: 'POST', body: JSON.stringify({ domain, port: port ?? 7070 }) },
     ),
-
-  // Nginx — Docker container control
-  nginxContainerStatus: () => request<NginxContainerStatus>('/api/v1/nginx/container'),
-  nginxContainerStart: () => request<{ status: string }>('/api/v1/nginx/container/start', { method: 'POST' }),
-  nginxContainerStop: () => request<{ status: string }>('/api/v1/nginx/container/stop', { method: 'POST' }),
-  nginxContainerReload: () => request<{ status: string; output: string }>('/api/v1/nginx/container/reload', { method: 'POST' }),
 
   // Nginx — global view
   listAllNginx: () => request<NginxEntry[]>('/api/v1/nginx'),

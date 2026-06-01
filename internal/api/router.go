@@ -122,12 +122,6 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/nginx/system/self-config", h.SelfNginxConfig)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/system/self-config", h.ApplySelfNginxConfig)
 
-		// Nginx — Docker container control (nginx:alpine)
-		r.Get("/api/v1/nginx/container", h.NginxContainerStatus)
-		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/start", h.NginxContainerStart)
-		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/stop", h.NginxContainerStop)
-		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/nginx/container/reload", h.NginxContainerReload)
-
 		// Proxy hosts — managed reverse-proxy virtual hosts
 		r.Get("/api/v1/proxy/hosts", h.ListProxyHosts)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Post("/api/v1/proxy/hosts", h.CreateProxyHost)

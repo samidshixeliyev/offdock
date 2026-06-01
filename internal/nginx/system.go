@@ -17,6 +17,12 @@ const (
 	SystemSitesEnabled   = "/etc/nginx/sites-enabled"
 )
 
+// ApplyResult describes what Apply wrote.
+type ApplyResult struct {
+	ConfigPath      string
+	NginxTestOutput string
+}
+
 // SystemAvailable reports whether system nginx (not the Docker container) is installed.
 func SystemAvailable() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

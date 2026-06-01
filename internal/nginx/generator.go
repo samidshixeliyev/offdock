@@ -45,14 +45,9 @@ var httpTmpl = template.Must(template.New("http").Parse(`server {
     gzip_vary on;
     gzip_min_length 1024;
 {{ end }}
-    # Docker embedded DNS — resolves upstream names at request time.
-    resolver 127.0.0.11 valid=10s ipv6=off;
-    set $upstream http://{{ .UpstreamHost }}:{{ .UpstreamPort }};
-{{ range .ExtraLocations }}    set ${{ .VarName }} http://{{ .Host }}:{{ .Port }};
-{{ end }}
 {{ range .ExtraLocations }}    location {{ .Path }} {
 {{ if .Strip }}        rewrite ^{{ .PathTrimSlash }}/?(.*)$ /$1 break;
-{{ end }}        proxy_pass ${{ .VarName }};
+{{ end }}        proxy_pass http://{{ .Host }}:{{ .Port }};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection {{ if .WS }}"upgrade"{{ else }}""{{ end }};
@@ -67,7 +62,7 @@ var httpTmpl = template.Must(template.New("http").Parse(`server {
     }
 {{ end }}
     location / {
-        proxy_pass $upstream;
+        proxy_pass http://{{ .UpstreamHost }}:{{ .UpstreamPort }};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -117,13 +112,9 @@ server {
     gzip_vary on;
     gzip_min_length 1024;
 {{ end }}
-    resolver 127.0.0.11 valid=10s ipv6=off;
-    set $upstream http://{{ .UpstreamHost }}:{{ .UpstreamPort }};
-{{ range .ExtraLocations }}    set ${{ .VarName }} http://{{ .Host }}:{{ .Port }};
-{{ end }}
 {{ range .ExtraLocations }}    location {{ .Path }} {
 {{ if .Strip }}        rewrite ^{{ .PathTrimSlash }}/?(.*)$ /$1 break;
-{{ end }}        proxy_pass ${{ .VarName }};
+{{ end }}        proxy_pass http://{{ .Host }}:{{ .Port }};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection {{ if .WS }}"upgrade"{{ else }}""{{ end }};
@@ -138,7 +129,7 @@ server {
     }
 {{ end }}
     location / {
-        proxy_pass $upstream;
+        proxy_pass http://{{ .UpstreamHost }}:{{ .UpstreamPort }};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -296,27 +287,14 @@ func GenerateProxyHost(h store.ProxyHost) (string, error) {
 	return buf.String(), nil
 }
 
-// GenerateDefaultServer returns catch-all server blocks that drop unknown requests.
-// This prevents raw-IP or unknown-Host requests from being accidentally served by
-// whichever named virtual host nginx picks first alphabetically.
+// GenerateDefaultServer returns a catch-all server block that drops unknown requests.
 func GenerateDefaultServer() string {
 	return `# offdock-generated — default catch-all server
-# Closes connections for any request that does not match a configured server_name.
-# This means: accessing the server by raw IP or with an unknown Host header returns
-# no response (connection reset), not the content of a real site.
 server {
     listen 80 default_server;
+    listen [::]:80 default_server;
     server_name _;
     server_tokens off;
-    return 444;
-}
-
-server {
-    listen 443 ssl default_server;
-    server_name _;
-    server_tokens off;
-    ssl_certificate     /etc/nginx/certs/catch-all.crt;
-    ssl_certificate_key /etc/nginx/certs/catch-all.key;
     return 444;
 }
 `

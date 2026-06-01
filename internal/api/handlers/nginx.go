@@ -60,11 +60,7 @@ func (h *H) RemoveNginx(w http.ResponseWriter, r *http.Request) {
 		cfg.Active = false
 		h.db.Nginx.Save(cfg) //nolint:errcheck
 	}
-	if nginxpkg.SystemAvailable() {
-		nginxpkg.RemoveSystem(project.Name) //nolint:errcheck
-	} else {
-		nginxpkg.Remove(project.Name) //nolint:errcheck
-	}
+	nginxpkg.Remove(project.Name) //nolint:errcheck
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -96,7 +92,6 @@ func (h *H) SaveNginx(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ProjectID = projectID
 
-	// Validate and pre-generate config text.
 	generated, err := nginxpkg.Generate(req)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
@@ -104,7 +99,6 @@ func (h *H) SaveNginx(w http.ResponseWriter, r *http.Request) {
 	}
 	req.GeneratedConfig = generated
 
-	// Deactivate any existing config for this project.
 	existing, _ := h.db.Nginx.FindWhere(func(n store.NginxConfig) bool {
 		return n.ProjectID == projectID && n.Active
 	})
@@ -123,7 +117,7 @@ func (h *H) SaveNginx(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, req)
 }
 
-// ApplyNginx writes the nginx config to disk and reloads nginx.
+// ApplyNginx writes the nginx config to disk and reloads system nginx.
 func (h *H) ApplyNginx(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 
@@ -141,18 +135,12 @@ func (h *H) ApplyNginx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var result *nginxpkg.ApplyResult
-	if nginxpkg.SystemAvailable() {
-		result, err = nginxpkg.ApplySystem(cfgs[0], project.Name)
-	} else {
-		result, err = nginxpkg.Apply(cfgs[0], project.Name)
-	}
+	result, err := nginxpkg.Apply(cfgs[0], project.Name)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
 
-	// Mark config as applied.
 	now := timeNow()
 	cfg := cfgs[0]
 	cfg.Applied = true
@@ -189,8 +177,6 @@ func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
 		days = 365
 	}
 
-	// Certs must live in the nginx container's mounted directory so nginx can read them.
-	// NginxCertsDir (/var/offdock/nginx/certs) is mounted as /etc/nginx/certs inside the container.
 	certsDir := nginxpkg.NginxCertsDir
 	if err := os.MkdirAll(certsDir, 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not create certs directory")
@@ -217,49 +203,32 @@ func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return the container-visible paths so they can be used directly in nginx config.
 	writeJSON(w, http.StatusOK, map[string]string{
-		"cert_path": "/etc/nginx/certs/" + filename + ".crt",
-		"key_path":  "/etc/nginx/certs/" + filename + ".key",
+		"cert_path": certPath,
+		"key_path":  keyPath,
 		"domain":    domain,
 		"days":      strconv.Itoa(days),
 	})
 }
 
-// NginxContainerStatus returns the live status of the offdock-nginx Docker container.
-func (h *H) NginxContainerStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, nginxpkg.GetContainerStatus())
-}
-
-
-// NginxContainerStart creates (if needed) and starts the offdock-nginx container.
-// Always writes the default catch-all server block first so raw-IP requests return 444.
-func (h *H) NginxContainerStart(w http.ResponseWriter, r *http.Request) {
-	nginxpkg.WriteDefaultServer() //nolint:errcheck
-	if err := nginxpkg.StartNginxContainer(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+// NginxSystemStatus returns whether system nginx is available and its status.
+func (h *H) NginxSystemStatus(w http.ResponseWriter, r *http.Request) {
+	available := nginxpkg.SystemAvailable()
+	var statusText string
+	if available {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "systemctl", "is-active", "nginx").Output()
+		if err == nil {
+			statusText = strings.TrimSpace(string(out))
+		} else {
+			statusText = "inactive"
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
-}
-
-// NginxContainerStop stops the offdock-nginx container.
-func (h *H) NginxContainerStop(w http.ResponseWriter, r *http.Request) {
-	if err := nginxpkg.StopNginxContainer(); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
-}
-
-// NginxContainerReload sends nginx -s reload inside the running container.
-func (h *H) NginxContainerReload(w http.ResponseWriter, r *http.Request) {
-	out, err := nginxpkg.ReloadNginxContainer()
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "reload failed: "+out)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded", "output": out})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"available": available,
+		"status":    statusText,
+	})
 }
 
 // PreviewNginx returns the generated nginx config text without writing it to disk.
@@ -283,8 +252,6 @@ func (h *H) PreviewNginx(w http.ResponseWriter, r *http.Request) {
 }
 
 // SelfNginxConfig returns the generated nginx config for OffDock itself.
-// Query params: domain (default "localhost"), port (default 7070)
-// Uses the server's configured default SSL cert if available.
 func (h *H) SelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	domain := r.URL.Query().Get("domain")
 	if domain == "" {
@@ -307,8 +274,6 @@ func (h *H) SelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // ApplySelfNginxConfig writes the OffDock self-hosting nginx config to the system.
-// Body: { "domain": "deploy.ao.az", "port": 7070, "cert_path": "...", "key_path": "..." }
-// cert_path/key_path are optional — falls back to server default cert if not provided.
 func (h *H) ApplySelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Domain   string `json:"domain"`
@@ -323,7 +288,6 @@ func (h *H) ApplySelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Port == 0 {
 		req.Port = 7070
 	}
-	// Use request certs → fall back to server default certs
 	certPath := req.CertPath
 	keyPath := req.KeyPath
 	if certPath == "" {
@@ -348,25 +312,5 @@ func (h *H) ApplySelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 		"config_path": result.ConfigPath,
 		"test_output": result.NginxTestOutput,
 		"ssl":         ssl,
-	})
-}
-
-// NginxSystemStatus returns whether system nginx is available and its status.
-func (h *H) NginxSystemStatus(w http.ResponseWriter, r *http.Request) {
-	available := nginxpkg.SystemAvailable()
-	var statusText string
-	if available {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, "systemctl", "is-active", "nginx").Output()
-		if err == nil {
-			statusText = strings.TrimSpace(string(out))
-		} else {
-			statusText = "inactive"
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"available": available,
-		"status":    statusText,
 	})
 }

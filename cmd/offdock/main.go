@@ -177,45 +177,19 @@ func markStuckDeployments(db *store.DB) {
 }
 
 // bootstrapNginx runs at startup in a goroutine.
-// Loads the bundled nginx:alpine image if not present, starts the container,
-// and re-applies all active proxy host and project nginx configs.
+// Re-applies all active proxy host and project nginx configs via system nginx.
 func bootstrapNginx(db *store.DB) {
 	slog.Info("nginx bootstrap: starting")
 
-	// ── Step 0: ensure Docker networks ────────────────────────────────────────
-	if err := nginxpkg.EnsureNetworks(); err != nil {
-		slog.Warn("nginx bootstrap: could not create networks", "err", err)
-	} else {
-		slog.Info("nginx bootstrap: networks ready")
-	}
-
-	// ── Step 1: ensure nginx:alpine image is present (load from bundled tar) ──
-	if err := nginxpkg.EnsureImage(); err != nil {
-		slog.Warn("nginx bootstrap: image unavailable", "err", err)
+	if !nginxpkg.SystemAvailable() {
+		slog.Warn("nginx bootstrap: system nginx not available — skipping")
 		return
 	}
-	slog.Info("nginx bootstrap: image ready")
-
-	// ── Step 2: start offdock-nginx (replace if it's running the wrong image) ───
-	status := nginxpkg.GetContainerStatus()
-	if status.Running && status.Image == nginxpkg.ContainerImage {
-		slog.Info("nginx bootstrap: container already running")
-	} else {
-		if status.Running {
-			slog.Info("nginx bootstrap: replacing container", "old_image", status.Image, "new_image", nginxpkg.ContainerImage)
-		} else {
-			slog.Info("nginx bootstrap: starting offdock-nginx container")
-		}
-		if err := nginxpkg.StartNginxContainer(); err != nil {
-			slog.Warn("nginx bootstrap: container start failed", "err", err)
-			return
-		}
-		slog.Info("nginx bootstrap: container ready")
-	}
+	slog.Info("nginx bootstrap: system nginx ready")
 
 	applied := 0
 
-	// ── Step 3: re-apply proxy hosts ──────────────────────────────────────────
+	// Re-apply proxy hosts.
 	hosts, _ := db.ProxyHosts.FindWhere(func(h store.ProxyHost) bool { return h.Enabled })
 	for _, host := range hosts {
 		if _, err := nginxpkg.ApplyProxyHost(host); err != nil {
@@ -226,7 +200,7 @@ func bootstrapNginx(db *store.DB) {
 		}
 	}
 
-	// ── Step 4: re-apply per-project nginx configs ────────────────────────────
+	// Re-apply per-project nginx configs.
 	projects, err := db.Projects.FindAll()
 	if err != nil {
 		slog.Warn("nginx bootstrap: could not list projects", "err", err)
