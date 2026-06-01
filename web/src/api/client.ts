@@ -48,8 +48,7 @@ export interface NginxConfig {
   project_id: string
   domain: string
   ssl_enabled: boolean
-  ssl_cert_path: string
-  ssl_key_path: string
+  ssl_pem_path: string
   upstream_host: string
   upstream_port: number
   client_max_body_size: string
@@ -190,8 +189,7 @@ export interface ProxyHost {
   upstream_host: string
   upstream_port: number
   ssl_enabled: boolean
-  ssl_cert_path: string
-  ssl_key_path: string
+  ssl_pem_path: string
   client_max_body_size: string
   proxy_read_timeout: number
   gzip_enabled: boolean
@@ -377,7 +375,7 @@ export const api = {
   previewNginx: (projectId: string) =>
     request<{ config: string }>(`/api/v1/projects/${projectId}/nginx/preview`),
   generateCert: (projectId: string, domain: string, days?: number) =>
-    request<{ cert_path: string; key_path: string; domain: string; days: string }>(
+    request<{ pem_path: string; domain: string; days: string }>(
       `/api/v1/projects/${projectId}/nginx/cert`,
       { method: 'POST', body: JSON.stringify({ domain, days: days ?? 365 }) }
     ),

@@ -15,10 +15,10 @@ type Config struct {
 	LogDir             string `yaml:"log_dir"`
 	LogLevel           string `yaml:"log_level"`
 	JWTSecret          string `yaml:"jwt_secret"`
-	// DefaultCertPath and DefaultCertKeyPath are optional SSL certificate paths.
+	// DefaultPEMPath is an optional path to a combined PEM file (cert chain + private key).
 	// When set, all nginx server blocks (OffDock UI + deployed apps) use HTTPS by default.
-	DefaultCertPath    string `yaml:"default_cert_path"`
-	DefaultCertKeyPath string `yaml:"default_cert_key_path"`
+	// The wildcard cert (e.g. *.ao.az) covers all subdomains.
+	DefaultPEMPath string `yaml:"default_pem_path"`
 }
 
 const defaultConfigPath = "/etc/offdock/config.yaml"

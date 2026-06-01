@@ -28,10 +28,9 @@ type H struct {
 	hub                *sse.Hub
 	projectsDir        string
 	dataDir            string
-	defaultCertPath    string
-	defaultCertKeyPath string
-	deployCancels      sync.Map // streamKey → context.CancelFunc
-	limiter            *authmw.LoginLimiter
+	defaultPEMPath  string
+	deployCancels   sync.Map // streamKey → context.CancelFunc
+	limiter         *authmw.LoginLimiter
 }
 
 // New returns an initialised handler bundle.
@@ -45,22 +44,20 @@ func New(
 	hub *sse.Hub,
 	projectsDir string,
 	dataDir string,
-	defaultCertPath string,
-	defaultCertKeyPath string,
+	defaultPEMPath string,
 ) *H {
 	return &H{
-		db:                 db,
-		auth:               authSvc,
-		enc:                enc,
-		docker:             dockerClient,
-		deployer:           deployer,
-		stats:              stats,
-		hub:                hub,
-		projectsDir:        projectsDir,
-		dataDir:            dataDir,
-		defaultCertPath:    defaultCertPath,
-		defaultCertKeyPath: defaultCertKeyPath,
-		limiter:            authmw.NewLoginLimiter(10, time.Minute),
+		db:             db,
+		auth:           authSvc,
+		enc:            enc,
+		docker:         dockerClient,
+		deployer:       deployer,
+		stats:          stats,
+		hub:            hub,
+		projectsDir:    projectsDir,
+		dataDir:        dataDir,
+		defaultPEMPath: defaultPEMPath,
+		limiter:        authmw.NewLoginLimiter(10, time.Minute),
 	}
 }
 

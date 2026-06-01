@@ -155,7 +155,8 @@ func (h *H) ApplyNginx(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GenerateCert generates a self-signed SSL certificate for a project using openssl.
+// GenerateCert generates a self-signed SSL certificate for a project using openssl
+// and writes it as a combined PEM file (key + cert concatenated).
 func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 
@@ -183,31 +184,49 @@ func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filename := projectID
-	keyPath := filepath.Join(certsDir, filename+".key")
-	certPath := filepath.Join(certsDir, filename+".crt")
+	pemPath := filepath.Join(certsDir, projectID+".pem")
+	tmpKey := pemPath + ".key.tmp"
+	tmpCert := pemPath + ".crt.tmp"
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// Generate key + cert into temp files, then combine into a single PEM.
 	cmd := exec.CommandContext(ctx, "openssl", "req", "-x509", "-nodes",
 		"-days", strconv.Itoa(days),
 		"-newkey", "rsa:2048",
-		"-keyout", keyPath,
-		"-out", certPath,
+		"-keyout", tmpKey,
+		"-out", tmpCert,
 		"-subj", "/CN="+domain,
 	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	if out, err := cmd.CombinedOutput(); err != nil {
 		writeError(w, http.StatusInternalServerError, "openssl failed: "+strings.TrimSpace(string(out)))
+		return
+	}
+	defer os.Remove(tmpKey)
+	defer os.Remove(tmpCert)
+
+	keyData, err := os.ReadFile(tmpKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read key: "+err.Error())
+		return
+	}
+	certData, err := os.ReadFile(tmpCert)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "read cert: "+err.Error())
+		return
+	}
+
+	combined := append(keyData, certData...)
+	if err := os.WriteFile(pemPath, combined, 0o600); err != nil {
+		writeError(w, http.StatusInternalServerError, "write pem: "+err.Error())
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"cert_path": certPath,
-		"key_path":  keyPath,
-		"domain":    domain,
-		"days":      strconv.Itoa(days),
+		"pem_path": pemPath,
+		"domain":   domain,
+		"days":     strconv.Itoa(days),
 	})
 }
 
@@ -261,25 +280,22 @@ func (h *H) SelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	if p, err := strconv.Atoi(r.URL.Query().Get("port")); err == nil && p > 0 {
 		port = p
 	}
-	config := nginxpkg.GenerateSelfConfig(domain, port, h.defaultCertPath, h.defaultCertKeyPath)
-	ssl := h.defaultCertPath != "" && h.defaultCertKeyPath != ""
+	config := nginxpkg.GenerateSelfConfig(domain, port, h.defaultPEMPath)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"config":    config,
-		"domain":    domain,
-		"port":      strconv.Itoa(port),
-		"ssl":       ssl,
-		"cert_path": h.defaultCertPath,
-		"key_path":  h.defaultCertKeyPath,
+		"config":   config,
+		"domain":   domain,
+		"port":     strconv.Itoa(port),
+		"ssl":      h.defaultPEMPath != "",
+		"pem_path": h.defaultPEMPath,
 	})
 }
 
 // ApplySelfNginxConfig writes the OffDock self-hosting nginx config to the system.
 func (h *H) ApplySelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Domain   string `json:"domain"`
-		Port     int    `json:"port"`
-		CertPath string `json:"cert_path"`
-		KeyPath  string `json:"key_path"`
+		Domain  string `json:"domain"`
+		Port    int    `json:"port"`
+		PEMPath string `json:"pem_path"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.Domain == "" {
 		writeError(w, http.StatusBadRequest, "domain is required")
@@ -288,29 +304,24 @@ func (h *H) ApplySelfNginxConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Port == 0 {
 		req.Port = 7070
 	}
-	certPath := req.CertPath
-	keyPath := req.KeyPath
-	if certPath == "" {
-		certPath = h.defaultCertPath
-	}
-	if keyPath == "" {
-		keyPath = h.defaultCertKeyPath
+	pemPath := req.PEMPath
+	if pemPath == "" {
+		pemPath = h.defaultPEMPath
 	}
 	if !nginxpkg.SystemAvailable() {
 		writeError(w, http.StatusUnprocessableEntity, "system nginx is not installed — install nginx first")
 		return
 	}
-	result, err := nginxpkg.ApplySelfConfig(req.Domain, req.Port, certPath, keyPath)
+	result, err := nginxpkg.ApplySelfConfig(req.Domain, req.Port, pemPath)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	ssl := certPath != "" && keyPath != ""
-	h.logAudit(r, "apply_nginx_self", "system", "", req.Domain, fmt.Sprintf("port:%d ssl:%v", req.Port, ssl))
+	h.logAudit(r, "apply_nginx_self", "system", "", req.Domain, fmt.Sprintf("port:%d ssl:%v", req.Port, pemPath != ""))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":      "applied",
 		"config_path": result.ConfigPath,
 		"test_output": result.NginxTestOutput,
-		"ssl":         ssl,
+		"ssl":         pemPath != "",
 	})
 }

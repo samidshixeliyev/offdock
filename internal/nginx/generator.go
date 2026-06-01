@@ -184,6 +184,11 @@ func Generate(cfg store.NginxConfig) (string, error) {
 		AccessLogLine:  accessLogLine,
 	}
 
+	// Resolve PEM → cert/key before rendering
+	if cfg.SSLEnabled {
+		cfg.SSLCertPath, cfg.SSLKeyPath = resolveSSLPaths(cfg.SSLPEMPath, cfg.SSLCertPath, cfg.SSLKeyPath)
+	}
+
 	var buf bytes.Buffer
 	tmpl := httpTmpl
 	if cfg.SSLEnabled {
@@ -197,14 +202,15 @@ func Generate(cfg store.NginxConfig) (string, error) {
 
 // GenerateProxyHost converts a ProxyHost to a NginxConfig and renders its config.
 func GenerateProxyHost(h store.ProxyHost) (string, error) {
+	certPath, keyPath := resolveSSLPaths(h.SSLPEMPath, h.SSLCertPath, h.SSLKeyPath)
 	cfg := store.NginxConfig{
 		Domain:            h.Domain,
 		Aliases:           h.Aliases,
 		UpstreamHost:      h.UpstreamHost,
 		UpstreamPort:      h.UpstreamPort,
 		SSLEnabled:        h.SSLEnabled,
-		SSLCertPath:       h.SSLCertPath,
-		SSLKeyPath:        h.SSLKeyPath,
+		SSLCertPath:       certPath,
+		SSLKeyPath:        keyPath,
 		ClientMaxBodySize: h.ClientMaxBodySize,
 		ProxyReadTimeout:  h.ProxyReadTimeout,
 		GzipEnabled:       h.GzipEnabled,
@@ -370,6 +376,15 @@ func indentDirectives(s string) string {
 	return strings.Join(out, "\n")
 }
 
+// resolveSSLPaths returns (certPath, keyPath) from a config, preferring the
+// combined PEM file over separate cert/key files.
+func resolveSSLPaths(pemPath, certPath, keyPath string) (string, string) {
+	if strings.TrimSpace(pemPath) != "" {
+		return pemPath, pemPath
+	}
+	return certPath, keyPath
+}
+
 func validate(cfg store.NginxConfig) error {
 	if strings.TrimSpace(cfg.Domain) == "" {
 		return fmt.Errorf("domain is required")
@@ -384,11 +399,9 @@ func validate(cfg store.NginxConfig) error {
 		return fmt.Errorf("upstream_host is required")
 	}
 	if cfg.SSLEnabled {
-		if strings.TrimSpace(cfg.SSLCertPath) == "" {
-			return fmt.Errorf("ssl_cert_path is required when SSL is enabled")
-		}
-		if strings.TrimSpace(cfg.SSLKeyPath) == "" {
-			return fmt.Errorf("ssl_key_path is required when SSL is enabled")
+		cert, key := resolveSSLPaths(cfg.SSLPEMPath, cfg.SSLCertPath, cfg.SSLKeyPath)
+		if strings.TrimSpace(cert) == "" || strings.TrimSpace(key) == "" {
+			return fmt.Errorf("ssl_pem_path (or ssl_cert_path + ssl_key_path) is required when SSL is enabled")
 		}
 	}
 	return nil

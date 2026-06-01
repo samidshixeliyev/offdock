@@ -23,7 +23,7 @@ function useNginxStatus() {
 // ─── Host form modal ──────────────────────────────────────────────────────────
 const emptyForm: ProxyHostInput = {
   domain: '', aliases: [], upstream_host: '', upstream_port: 80,
-  ssl_enabled: false, ssl_cert_path: '', ssl_key_path: '',
+  ssl_enabled: false, ssl_pem_path: '',
   client_max_body_size: '10m', proxy_read_timeout: 60,
   gzip_enabled: true, custom_directives: '',
   locations: [], access_log: false,
@@ -79,7 +79,7 @@ function HostModal({ host, onSave, onClose }: {
     try {
       const safeDomain = form.domain.replace(/[^a-z0-9.-]/gi, '-').toLowerCase()
       const r = await api.generateCert('proxy-' + safeDomain, form.domain, 365)
-      set('ssl_cert_path', r.cert_path); set('ssl_key_path', r.key_path); set('ssl_enabled', true)
+      set('ssl_pem_path', r.pem_path); set('ssl_enabled', true)
       setMsg('Self-signed cert generated'); setMsgErr(false)
     } catch (e) { setMsg(e instanceof Error ? e.message : 'Failed'); setMsgErr(true) }
     finally { setCertBusy(false) }
@@ -207,17 +207,11 @@ function HostModal({ host, onSave, onClose }: {
             </label>
             {form.ssl_enabled && (
               <>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs text-slate-500 mb-1.5">Certificate path</label>
-                    <input className="input w-full font-mono text-xs" placeholder="/var/offdock/nginx/certs/…"
-                      value={form.ssl_cert_path} onChange={e => set('ssl_cert_path', e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-500 mb-1.5">Key path</label>
-                    <input className="input w-full font-mono text-xs" placeholder="/var/offdock/nginx/certs/…"
-                      value={form.ssl_key_path} onChange={e => set('ssl_key_path', e.target.value)} />
-                  </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1.5">PEM path <span className="text-slate-700">(combined cert chain + private key)</span></label>
+                  <input className="input w-full font-mono text-xs" placeholder="/var/offdock/certs/wildcard.pem"
+                    value={form.ssl_pem_path} onChange={e => set('ssl_pem_path', e.target.value)} />
+                  <p className="text-xs text-slate-700 mt-1">Absolute path on server. A wildcard cert (*.ao.az) covers all subdomains.</p>
                 </div>
                 <button onClick={generateCert} disabled={certBusy} className="btn-ghost text-xs">
                   {certBusy ? 'Generating…' : '⊕ Generate self-signed cert'}
@@ -585,7 +579,7 @@ function HostsSection() {
                         {h.ssl_enabled
                           ? <span className="text-xs px-2 py-0.5 rounded-full border bg-green-950 text-green-300 border-green-900/50">HTTPS</span>
                           : <span className="text-xs text-slate-700">HTTP</span>}
-                        {h.ssl_enabled && h.ssl_cert_path.startsWith('/etc/nginx/certs/') && (
+                        {h.ssl_enabled && h.ssl_pem_path.startsWith('/var/offdock/certs/') && (
                           <span title="Self-signed certificate — browser will show a security warning. Click Advanced → Proceed to bypass."
                             className="text-xs text-yellow-500 cursor-help">⚠</span>
                         )}

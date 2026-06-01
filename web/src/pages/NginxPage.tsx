@@ -7,8 +7,7 @@ type Form = Omit<NginxConfig, 'id' | 'project_id' | 'generated_config' | 'active
 const defaultForm: Form = {
   domain: '',
   ssl_enabled: false,
-  ssl_cert_path: '',
-  ssl_key_path: '',
+  ssl_pem_path: '',
   upstream_host: 'localhost',
   upstream_port: 3000,
   client_max_body_size: '1m',
@@ -100,16 +99,11 @@ export default function NginxPage() {
             <span className="text-sm text-slate-300">Enable SSL</span>
           </label>
           {form.ssl_enabled && (
-            <>
-              <div>
-                <label className="block text-xs text-slate-400 mb-1.5">Certificate Path</label>
-                <input className="input font-mono text-xs" value={form.ssl_cert_path} onChange={e => set('ssl_cert_path', e.target.value)} placeholder="/var/offdock/certs/cert.pem" />
-              </div>
-              <div>
-                <label className="block text-xs text-slate-400 mb-1.5">Key Path</label>
-                <input className="input font-mono text-xs" value={form.ssl_key_path} onChange={e => set('ssl_key_path', e.target.value)} placeholder="/var/offdock/certs/key.pem" />
-              </div>
-            </>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1.5">PEM path <span className="text-slate-600">(combined cert chain + private key)</span></label>
+              <input className="input font-mono text-xs" value={form.ssl_pem_path} onChange={e => set('ssl_pem_path', e.target.value)} placeholder="/var/offdock/certs/wildcard.pem" />
+              <p className="text-xs text-slate-700 mt-1">Absolute path on the server. A wildcard cert (*.ao.az) works for all subdomains.</p>
+            </div>
           )}
           <div>
             <label className="block text-xs text-slate-400 mb-1.5">Custom Directives</label>

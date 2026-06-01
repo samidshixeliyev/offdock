@@ -70,9 +70,10 @@ func RemoveProxyHostSystem(domain string) error {
 }
 
 // GenerateSelfConfig returns an nginx server block that proxies the given domain
-// to OffDock on localhost:port. If certPath+keyPath are provided the block uses
-// HTTPS (port 443 with HTTP→HTTPS redirect). Otherwise plain HTTP port 80.
-func GenerateSelfConfig(domain string, port int, certPath, keyPath string) string {
+// to OffDock on localhost:port. If pemPath is provided the block uses HTTPS
+// (port 443 with HTTP→HTTPS redirect). Otherwise plain HTTP port 80.
+// pemPath is a combined PEM file containing the cert chain and private key.
+func GenerateSelfConfig(domain string, port int, pemPath string) string {
 	locationBlock := fmt.Sprintf(`    location / {
         proxy_pass http://127.0.0.1:%d;
         proxy_http_version 1.1;
@@ -85,7 +86,7 @@ func GenerateSelfConfig(domain string, port int, certPath, keyPath string) strin
         proxy_buffering off;
     }`, port)
 
-	if certPath != "" && keyPath != "" {
+	if pemPath != "" {
 		return fmt.Sprintf(`server {
     listen 80;
     server_name %s;
@@ -111,7 +112,7 @@ server {
 
 %s
 }
-`, domain, domain, certPath, keyPath, locationBlock)
+`, domain, domain, pemPath, pemPath, locationBlock)
 	}
 
 	return fmt.Sprintf(`server {
@@ -130,9 +131,9 @@ server {
 }
 
 // ApplySelfConfig writes the OffDock self-hosting nginx config to sites-available.
-// certPath and keyPath are optional — when set, HTTPS is configured.
-func ApplySelfConfig(domain string, port int, certPath, keyPath string) (*ApplyResult, error) {
-	content := GenerateSelfConfig(domain, port, certPath, keyPath)
+// pemPath is a combined PEM file (cert chain + private key) — optional, HTTP-only if empty.
+func ApplySelfConfig(domain string, port int, pemPath string) (*ApplyResult, error) {
+	content := GenerateSelfConfig(domain, port, pemPath)
 	return applySystemConfig("offdock-self", content)
 }
 

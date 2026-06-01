@@ -8,16 +8,15 @@
 # Options:
 #   --port PORT          OffDock listen port (default 7070)
 #   --domain DOMAIN      Domain for OffDock UI (e.g. deploy.ao.az)
-#   --cert PATH          Path to SSL certificate file (.crt / .pem)
-#   --cert-key PATH      Path to SSL private key file (.key / .pem)
+#   --pem PATH           Path to combined PEM file (cert chain + private key)
+#                        A wildcard cert (*.ao.az) covers OffDock + all deployed apps.
 #   --data-dir DIR       Data directory (default /var/offdock/data)
 #   --no-nginx           Skip nginx configuration
 #   --uninstall          Remove OffDock
 #
-# SSL example:
-#   sudo bash install.sh --domain deploy.ao.az \
-#     --cert /etc/ssl/ao.az/fullchain.pem \
-#     --cert-key /etc/ssl/ao.az/privkey.pem
+# Examples:
+#   sudo bash install.sh
+#   sudo bash install.sh --domain deploy.ao.az --pem /etc/ssl/ao.az/wildcard.pem
 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -34,8 +33,7 @@ PROJECTS_DIR="/var/offdock/projects"
 
 PORT=7070
 DOMAIN=""
-CERT_PATH=""
-CERT_KEY_PATH=""
+PEM_PATH=""
 SKIP_NGINX=false
 UNINSTALL=false
 
@@ -44,13 +42,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # --- argument parsing -------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --port)      PORT="$2";         shift 2 ;;
-    --domain)    DOMAIN="$2";       shift 2 ;;
-    --cert)      CERT_PATH="$2";    shift 2 ;;
-    --cert-key)  CERT_KEY_PATH="$2"; shift 2 ;;
-    --data-dir)  DATA_DIR="$2";     shift 2 ;;
-    --no-nginx)  SKIP_NGINX=true;   shift ;;
-    --uninstall) UNINSTALL=true;    shift ;;
+    --port)      PORT="$2";       shift 2 ;;
+    --domain)    DOMAIN="$2";     shift 2 ;;
+    --pem)       PEM_PATH="$2";   shift 2 ;;
+    --data-dir)  DATA_DIR="$2";   shift 2 ;;
+    --no-nginx)  SKIP_NGINX=true; shift ;;
+    --uninstall) UNINSTALL=true;  shift ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -153,10 +150,10 @@ log_level: info
 # KEEP THIS SECRET — changing it invalidates all sessions.
 jwt_secret: "${JWT_SECRET}"
 
-# SSL certificate for HTTPS (used by nginx for all virtual hosts).
+# Combined PEM file (cert chain + private key) for HTTPS.
+# A wildcard cert (e.g. *.ao.az) covers OffDock UI + all deployed apps.
 # Leave empty to use HTTP only.
-default_cert_path: "${CERT_PATH}"
-default_cert_key_path: "${CERT_KEY_PATH}"
+default_pem_path: "${PEM_PATH}"
 EOF
   chmod 600 "${CONFIG_FILE}"
   echo "  Config written to ${CONFIG_FILE}"
@@ -203,7 +200,7 @@ NGINXEOF
   ln -sf /etc/nginx/sites-available/00-offdock-default.conf \
          /etc/nginx/sites-enabled/00-offdock-default.conf
 
-  # Write OffDock UI server block
+  # Determine server name — use domain if given, otherwise server IP
   if [[ -n "${DOMAIN}" ]]; then
     NGINX_DOMAIN="${DOMAIN}"
   else
@@ -211,8 +208,8 @@ NGINXEOF
     NGINX_DOMAIN="${SERVER_IP}"
   fi
 
-  # Generate nginx config — HTTPS if certs provided, HTTP otherwise
-  if [[ -n "${CERT_PATH}" && -n "${CERT_KEY_PATH}" ]]; then
+  # Generate nginx config — HTTPS if PEM provided, HTTP otherwise
+  if [[ -n "${PEM_PATH}" ]]; then
     cat >/etc/nginx/sites-available/offdock-self.conf <<NGINXEOF
 server {
     listen 80;
@@ -228,8 +225,8 @@ server {
     server_tokens off;
     client_max_body_size 100m;
 
-    ssl_certificate     ${CERT_PATH};
-    ssl_certificate_key ${CERT_KEY_PATH};
+    ssl_certificate     ${PEM_PATH};
+    ssl_certificate_key ${PEM_PATH};
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers off;
 
@@ -250,7 +247,7 @@ server {
     }
 }
 NGINXEOF
-    echo "  SSL enabled: ${CERT_PATH}"
+    echo "  HTTPS enabled with PEM: ${PEM_PATH}"
   else
     cat >/etc/nginx/sites-available/offdock-self.conf <<NGINXEOF
 server {
@@ -276,7 +273,7 @@ server {
     }
 }
 NGINXEOF
-    echo "  HTTP only (no --cert/--cert-key provided)"
+    echo "  HTTP only (no --pem provided)"
   fi
   ln -sf /etc/nginx/sites-available/offdock-self.conf \
          /etc/nginx/sites-enabled/offdock-self.conf

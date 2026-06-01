@@ -109,8 +109,9 @@ type NginxConfig struct {
 	Domain            string     `json:"domain"`
 	Aliases           []string   `json:"aliases"`
 	SSLEnabled        bool       `json:"ssl_enabled"`
-	SSLCertPath       string     `json:"ssl_cert_path"`
-	SSLKeyPath        string     `json:"ssl_key_path"`
+	SSLPEMPath        string     `json:"ssl_pem_path"`  // combined cert+key PEM; takes priority over cert/key
+	SSLCertPath       string     `json:"ssl_cert_path"` // legacy — use SSLPEMPath instead
+	SSLKeyPath        string     `json:"ssl_key_path"`  // legacy — use SSLPEMPath instead
 	UpstreamHost      string     `json:"upstream_host"`
 	UpstreamPort      int        `json:"upstream_port"`
 	ClientMaxBodySize string     `json:"client_max_body_size"` // e.g. "10m", "1g"; empty = "1m"
@@ -190,8 +191,9 @@ type ProxyHost struct {
 	UpstreamHost      string          `json:"upstream_host" msgpack:"upstream_host"`
 	UpstreamPort      int             `json:"upstream_port" msgpack:"upstream_port"`
 	SSLEnabled        bool            `json:"ssl_enabled" msgpack:"ssl_enabled"`
-	SSLCertPath       string          `json:"ssl_cert_path" msgpack:"ssl_cert_path"`
-	SSLKeyPath        string          `json:"ssl_key_path" msgpack:"ssl_key_path"`
+	SSLPEMPath        string          `json:"ssl_pem_path" msgpack:"ssl_pem_path"`   // combined cert+key PEM
+	SSLCertPath       string          `json:"ssl_cert_path" msgpack:"ssl_cert_path"`  // legacy
+	SSLKeyPath        string          `json:"ssl_key_path" msgpack:"ssl_key_path"`    // legacy
 	ClientMaxBodySize string          `json:"client_max_body_size" msgpack:"client_max_body_size"`
 	ProxyReadTimeout  int             `json:"proxy_read_timeout" msgpack:"proxy_read_timeout"`
 	GzipEnabled       bool            `json:"gzip_enabled" msgpack:"gzip_enabled"`
