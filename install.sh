@@ -20,6 +20,7 @@
 #     --cert-key /etc/ssl/ao.az/privkey.pem
 
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
 BINARY_NAME="offdock"
 INSTALL_BIN="/usr/local/bin/${BINARY_NAME}"
@@ -89,7 +90,7 @@ if command -v docker &>/dev/null; then
   echo "  Docker already installed: $(docker --version)"
 elif [[ -d "${SCRIPT_DIR}/debs/docker" ]] && ls "${SCRIPT_DIR}/debs/docker"/*.deb &>/dev/null; then
   echo "  Installing Docker from bundled packages..."
-  dpkg -i "${SCRIPT_DIR}/debs/docker/"*.deb || apt-get install -f -y
+  dpkg --force-confold --skip-same-version -i "${SCRIPT_DIR}/debs/docker/"*.deb 2>&1 || apt-get install -f -y
   echo "  Docker installed."
 else
   echo "ERROR: Docker is not installed and no offline packages found in ./debs/docker/" >&2
@@ -102,6 +103,15 @@ fi
 systemctl enable docker 2>/dev/null || true
 systemctl start docker  2>/dev/null || true
 
+# Load bundled Docker images (nginx:alpine etc.)
+if [[ -d "${SCRIPT_DIR}/images" ]] && ls "${SCRIPT_DIR}/images"/*.tar &>/dev/null; then
+  echo "  Loading bundled Docker images..."
+  for img in "${SCRIPT_DIR}/images/"*.tar; do
+    echo "    Loading ${img}..."
+    docker load -i "${img}" && echo "    Loaded: ${img}" || echo "    WARNING: failed to load ${img}" >&2
+  done
+fi
+
 # --- install nginx (offline if debs present) --------------------------------
 if [[ "$SKIP_NGINX" == "false" ]]; then
   echo ""
@@ -110,7 +120,7 @@ if [[ "$SKIP_NGINX" == "false" ]]; then
     echo "  nginx already installed: $(nginx -v 2>&1)"
   elif [[ -d "${SCRIPT_DIR}/debs/nginx" ]] && ls "${SCRIPT_DIR}/debs/nginx"/*.deb &>/dev/null; then
     echo "  Installing nginx from bundled packages..."
-    dpkg -i "${SCRIPT_DIR}/debs/nginx/"*.deb || apt-get install -f -y
+    dpkg --force-confold --skip-same-version -i "${SCRIPT_DIR}/debs/nginx/"*.deb 2>&1 || apt-get install -f -y
     echo "  nginx installed."
   else
     echo "WARNING: nginx is not installed and no offline packages found in ./debs/nginx/" >&2
@@ -166,8 +176,8 @@ chmod 755 "${INSTALL_BIN}"
 
 cp "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}"
 chmod 644 "${SERVICE_FILE}"
-systemctl daemon-reload
-systemctl enable "${BINARY_NAME}"
+systemctl daemon-reload 2>/dev/null || systemctl --system daemon-reload 2>/dev/null || true
+systemctl enable "${BINARY_NAME}" 2>/dev/null || true
 
 # --- configure nginx for OffDock UI -----------------------------------------
 if [[ "$SKIP_NGINX" == "false" ]] && command -v nginx &>/dev/null; then
@@ -282,18 +292,20 @@ fi
 # --- start OffDock ----------------------------------------------------------
 echo ""
 echo "=== Starting OffDock ==="
-if systemctl is-active --quiet "${BINARY_NAME}"; then
+# Reload daemon again in case earlier reload failed (e.g. dbus wasn't ready yet)
+systemctl daemon-reload 2>/dev/null || true
+if systemctl is-active --quiet "${BINARY_NAME}" 2>/dev/null; then
   systemctl restart "${BINARY_NAME}"
   echo "  OffDock restarted."
 else
   systemctl start "${BINARY_NAME}"
   echo "  OffDock started."
 fi
-sleep 1
+sleep 2
 
 SERVER_IP=$(hostname -I | awk '{print $1}')
 
-if systemctl is-active --quiet "${BINARY_NAME}"; then
+if systemctl is-active --quiet "${BINARY_NAME}" 2>/dev/null; then
   echo ""
   echo "============================================================"
   echo "             OffDock installed successfully"
