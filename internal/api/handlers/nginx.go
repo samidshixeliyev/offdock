@@ -1,8 +1,17 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -155,14 +164,19 @@ func (h *H) ApplyNginx(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GenerateCert generates a self-signed SSL certificate for a project using openssl
-// and writes it as a combined PEM file (key + cert concatenated).
+// GenerateCert generates a self-signed SSL certificate using Go's crypto/x509
+// (no openssl dependency). Supports full DN fields and multiple SANs.
+// Writes a combined PEM file (EC private key + certificate).
 func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 
 	var req struct {
-		Domain string `json:"domain"`
-		Days   int    `json:"days"`
+		Domain       string   `json:"domain"`
+		DNSNames     []string `json:"dns_names"`    // additional SAN DNS entries
+		IPAddresses  []string `json:"ip_addresses"` // SAN IP entries
+		Organization string   `json:"organization"`
+		Country      string   `json:"country"` // 2-letter ISO code
+		Days         int      `json:"days"`
 	}
 	if err := decodeJSON(r, &req); err != nil || strings.TrimSpace(req.Domain) == "" {
 		writeError(w, http.StatusBadRequest, "domain is required")
@@ -178,55 +192,108 @@ func (h *H) GenerateCert(w http.ResponseWriter, r *http.Request) {
 		days = 365
 	}
 
+	// Build deduplicated SAN list: primary domain is always first.
+	seen := map[string]bool{domain: true}
+	dnsNames := []string{domain}
+	var ipAddrs []net.IP
+
+	addDNS := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			return
+		}
+		seen[s] = true
+		if ip := net.ParseIP(s); ip != nil {
+			ipAddrs = append(ipAddrs, ip)
+		} else {
+			dnsNames = append(dnsNames, s)
+		}
+	}
+	for _, d := range req.DNSNames {
+		addDNS(d)
+	}
+	for _, ipStr := range req.IPAddresses {
+		ipStr = strings.TrimSpace(ipStr)
+		if ipStr == "" {
+			continue
+		}
+		if ip := net.ParseIP(ipStr); ip != nil {
+			ipAddrs = append(ipAddrs, ip)
+		}
+	}
+
+	// Build subject Distinguished Name.
+	subject := pkix.Name{CommonName: domain}
+	if org := strings.TrimSpace(req.Organization); org != "" {
+		subject.Organization = []string{org}
+	}
+	if c := strings.ToUpper(strings.TrimSpace(req.Country)); len(c) == 2 {
+		subject.Country = []string{c}
+	}
+
+	// Generate ECDSA P-256 key (smaller, faster, and stronger than RSA-2048).
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "generate key: "+err.Error())
+		return
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "generate serial: "+err.Error())
+		return
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               subject,
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().AddDate(0, 0, days),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:              dnsNames,
+		IPAddresses:           ipAddrs,
+		BasicConstraintsValid: true,
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create certificate: "+err.Error())
+		return
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "marshal key: "+err.Error())
+		return
+	}
+
+	var pemBuf bytes.Buffer
+	pem.Encode(&pemBuf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})   //nolint:errcheck
+	pem.Encode(&pemBuf, &pem.Block{Type: "CERTIFICATE", Bytes: certDER})      //nolint:errcheck
+
 	certsDir := nginxpkg.NginxCertsDir
-	if err := os.MkdirAll(certsDir, 0o755); err != nil {
-		writeError(w, http.StatusInternalServerError, "could not create certs directory")
+	if err := os.MkdirAll(certsDir, 0o700); err != nil {
+		writeError(w, http.StatusInternalServerError, "create certs dir: "+err.Error())
 		return
 	}
-
 	pemPath := filepath.Join(certsDir, projectID+".pem")
-	tmpKey := pemPath + ".key.tmp"
-	tmpCert := pemPath + ".crt.tmp"
-
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	// Generate key + cert into temp files, then combine into a single PEM.
-	cmd := exec.CommandContext(ctx, "openssl", "req", "-x509", "-nodes",
-		"-days", strconv.Itoa(days),
-		"-newkey", "rsa:2048",
-		"-keyout", tmpKey,
-		"-out", tmpCert,
-		"-subj", "/CN="+domain,
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		writeError(w, http.StatusInternalServerError, "openssl failed: "+strings.TrimSpace(string(out)))
-		return
-	}
-	defer os.Remove(tmpKey)
-	defer os.Remove(tmpCert)
-
-	keyData, err := os.ReadFile(tmpKey)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "read key: "+err.Error())
-		return
-	}
-	certData, err := os.ReadFile(tmpCert)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "read cert: "+err.Error())
-		return
-	}
-
-	combined := append(keyData, certData...)
-	if err := os.WriteFile(pemPath, combined, 0o600); err != nil {
+	if err := os.WriteFile(pemPath, pemBuf.Bytes(), 0o600); err != nil {
 		writeError(w, http.StatusInternalServerError, "write pem: "+err.Error())
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
-		"pem_path": pemPath,
-		"domain":   domain,
-		"days":     strconv.Itoa(days),
+	ipStrs := make([]string, len(ipAddrs))
+	for i, ip := range ipAddrs {
+		ipStrs[i] = ip.String()
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pem_path":    pemPath,
+		"domain":      domain,
+		"dns_names":   dnsNames,
+		"ip_addresses": ipStrs,
+		"days":        strconv.Itoa(days),
+		"valid_until": time.Now().AddDate(0, 0, days).Format("2006-01-02"),
 	})
 }
 

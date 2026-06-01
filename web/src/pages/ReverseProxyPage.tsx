@@ -3,6 +3,7 @@ import {
   api,
   ProxyHost, ProxyHostInput, ProxyLocation,
 } from '../api/client'
+import CertGenerateModal from '../components/CertGenerateModal'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 function useNginxStatus() {
@@ -46,7 +47,7 @@ function HostModal({ host, onSave, onClose }: {
   const [preview, setPreview] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [certBusy, setCertBusy] = useState(false)
+  const [showCertModal, setShowCertModal] = useState(false)
   const [msg, setMsg] = useState('')
   const [msgErr, setMsgErr] = useState(false)
   const [advanced, setAdvanced] = useState(false)
@@ -73,16 +74,10 @@ function HostModal({ host, onSave, onClose }: {
     finally { setPreviewLoading(false) }
   }
 
-  const generateCert = async () => {
-    if (!form.domain) { setMsg('Enter a domain first'); setMsgErr(true); return }
-    setCertBusy(true); setMsg('')
-    try {
-      const safeDomain = form.domain.replace(/[^a-z0-9.-]/gi, '-').toLowerCase()
-      const r = await api.generateCert('proxy-' + safeDomain, form.domain, 365)
-      set('ssl_pem_path', r.pem_path); set('ssl_enabled', true)
-      setMsg('Self-signed cert generated'); setMsgErr(false)
-    } catch (e) { setMsg(e instanceof Error ? e.message : 'Failed'); setMsgErr(true) }
-    finally { setCertBusy(false) }
+  const onCertGenerated = (pemPath: string) => {
+    set('ssl_pem_path', pemPath)
+    set('ssl_enabled', true)
+    setMsg('Self-signed cert generated'); setMsgErr(false)
   }
 
   const save = async () => {
@@ -97,8 +92,19 @@ function HostModal({ host, onSave, onClose }: {
     } finally { setSaving(false) }
   }
 
+  const safeDomain = form.domain.replace(/[^a-z0-9.-]/gi, '-').toLowerCase()
+  const certProjectId = 'proxy-' + (safeDomain || 'host')
+
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+      {showCertModal && (
+        <CertGenerateModal
+          projectId={certProjectId}
+          defaultDomain={form.domain}
+          onSuccess={onCertGenerated}
+          onClose={() => setShowCertModal(false)}
+        />
+      )}
       <div className="bg-slate-900 border border-slate-700 rounded-xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl">
 
         {/* Header */}
@@ -213,8 +219,8 @@ function HostModal({ host, onSave, onClose }: {
                     value={form.ssl_pem_path} onChange={e => set('ssl_pem_path', e.target.value)} />
                   <p className="text-xs text-slate-700 mt-1">Absolute path on server. A wildcard cert (*.ao.az) covers all subdomains.</p>
                 </div>
-                <button onClick={generateCert} disabled={certBusy} className="btn-ghost text-xs">
-                  {certBusy ? 'Generating…' : '⊕ Generate self-signed cert'}
+                <button onClick={() => setShowCertModal(true)} className="btn-ghost text-xs">
+                  ⊕ Generate self-signed cert
                 </button>
               </>
             )}

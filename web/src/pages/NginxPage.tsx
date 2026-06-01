@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api, NginxConfig } from '../api/client'
+import CertGenerateModal from '../components/CertGenerateModal'
 
 type Form = Omit<NginxConfig, 'id' | 'project_id' | 'generated_config' | 'active' | 'applied' | 'applied_at' | 'created_at'>
 
@@ -23,6 +24,7 @@ export default function NginxPage() {
   const [msg, setMsg] = useState('')
   const [saving, setSaving] = useState(false)
   const [applying, setApplying] = useState(false)
+  const [showCertModal, setShowCertModal] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -65,6 +67,14 @@ export default function NginxPage() {
 
   return (
     <div className="p-6 max-w-5xl">
+      {showCertModal && id && (
+        <CertGenerateModal
+          projectId={id}
+          defaultDomain={form.domain}
+          onSuccess={pemPath => { set('ssl_pem_path', pemPath); set('ssl_enabled', true) }}
+          onClose={() => setShowCertModal(false)}
+        />
+      )}
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-white">Nginx Config</h1>
         <div className="flex items-center gap-2">
@@ -99,10 +109,13 @@ export default function NginxPage() {
             <span className="text-sm text-slate-300">Enable SSL</span>
           </label>
           {form.ssl_enabled && (
-            <div>
+            <div className="space-y-2">
               <label className="block text-xs text-slate-400 mb-1.5">PEM path <span className="text-slate-600">(combined cert chain + private key)</span></label>
               <input className="input font-mono text-xs" value={form.ssl_pem_path} onChange={e => set('ssl_pem_path', e.target.value)} placeholder="/var/offdock/certs/wildcard.pem" />
-              <p className="text-xs text-slate-700 mt-1">Absolute path on the server. A wildcard cert (*.ao.az) works for all subdomains.</p>
+              <p className="text-xs text-slate-700">Absolute path on the server. A wildcard cert (*.ao.az) works for all subdomains.</p>
+              <button onClick={() => setShowCertModal(true)} className="btn-ghost text-xs">
+                ⊕ Generate self-signed cert
+              </button>
             </div>
           )}
           <div>

@@ -374,10 +374,24 @@ export const api = {
     ),
   previewNginx: (projectId: string) =>
     request<{ config: string }>(`/api/v1/projects/${projectId}/nginx/preview`),
-  generateCert: (projectId: string, domain: string, days?: number) =>
-    request<{ pem_path: string; domain: string; days: string }>(
+  generateCert: (projectId: string, opts: {
+    domain: string
+    dns_names?: string[]
+    ip_addresses?: string[]
+    organization?: string
+    country?: string
+    days?: number
+  }) =>
+    request<{
+      pem_path: string
+      domain: string
+      dns_names: string[]
+      ip_addresses: string[]
+      days: string
+      valid_until: string
+    }>(
       `/api/v1/projects/${projectId}/nginx/cert`,
-      { method: 'POST', body: JSON.stringify({ domain, days: days ?? 365 }) }
+      { method: 'POST', body: JSON.stringify({ days: 365, ...opts }) }
     ),
 
   // Proxy hosts
