@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, Project, SystemStats, RecentDeployment, ContainerStats } from '../api/client'
+import { useAuth } from '../hooks/useAuth'
 import clsx from 'clsx'
 import {
   LayoutDashboard, Plus, Cpu, MemoryStick, HardDrive, Container as ContainerIcon,
   Play, ExternalLink, Rocket, Search, ChevronLeft, ChevronRight, X, Loader2,
-  CheckCircle2, XCircle, Boxes, Globe, TerminalSquare, FolderTree,
+  CheckCircle2, XCircle, Boxes, Globe, TerminalSquare, FolderTree, Trash2,
 } from 'lucide-react'
 import { Page, PageHeader, StatCard, Panel, EmptyState, ProjectBadge, DeploymentBadge } from '../components/ui'
 import { formatBytes, formatUptime, timeAgo, parsePercent } from '../lib/format'
@@ -40,28 +41,134 @@ function dur(a: string, b: string | null) {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
 }
 
-// ─── Project card ─────────────────────────────────────────────────────────────
-function ProjectCard({ project, onDeploy }: { project: Project; onDeploy: (id: string) => void }) {
+// ─── Project delete confirmation modal ────────────────────────────────────────
+function DeleteProjectModal({ project, onDeleted, onClose }: {
+  project: Project; onDeleted: () => void; onClose: () => void
+}) {
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 50) }, [])
+
+  const doDelete = async () => {
+    if (input !== project.name) return
+    setBusy(true)
+    try {
+      await api.deleteProject(project.id)
+      onDeleted()
+      onClose()
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Delete failed')
+      setBusy(false)
+    }
+  }
+
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:border-slate-700 transition-all flex flex-col gap-3">
-      <div className="flex items-start justify-between gap-2">
-        <Link to={`/projects/${project.id}`} className="min-w-0 group">
-          <p className="font-semibold text-slate-100 group-hover:text-white text-sm truncate transition-colors">{project.name}</p>
-          {project.description && <p className="text-xs text-slate-500 truncate mt-0.5">{project.description}</p>}
-        </Link>
-        <ProjectBadge status={project.status} />
-      </div>
-      <div className="flex items-center gap-1.5 pt-2 border-t border-slate-800">
-        <button onClick={() => onDeploy(project.id)}
-          className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-lg transition-colors">
-          <Play className="w-3.5 h-3.5" /> Deploy
-        </button>
-        <Link to={`/projects/${project.id}`}
-          className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors">
-          <ExternalLink className="w-3.5 h-3.5" /> Open
-        </Link>
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-slate-900 border border-red-900/40 rounded-2xl w-full max-w-md p-6 shadow-2xl animate-scaleIn">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center shrink-0">
+            <Trash2 className="w-5 h-5 text-red-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-slate-100">Delete Project</h2>
+            <p className="text-xs text-slate-500 mt-0.5">This will permanently delete all project data</p>
+          </div>
+        </div>
+
+        <div className="px-3 py-2.5 mb-4 rounded-lg bg-red-500/5 border border-red-500/20 text-xs text-red-300 space-y-1">
+          <p className="font-medium">The following will be permanently deleted:</p>
+          <ul className="list-disc list-inside space-y-0.5 text-red-300/80">
+            <li>Compose configurations and history</li>
+            <li>Environment variables and history</li>
+            <li>Deployment records and logs</li>
+            <li>Nginx configuration</li>
+            <li>Deploy tags and settings</li>
+          </ul>
+          <p className="text-amber-400 mt-1">Running containers are NOT stopped automatically.</p>
+        </div>
+
+        <div className="mb-4">
+          <label className="block text-xs text-slate-400 mb-1.5">
+            Type <span className="font-mono font-bold text-slate-200">{project.name}</span> to confirm
+          </label>
+          <input
+            ref={inputRef}
+            className="input w-full"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && input === project.name && doDelete()}
+            placeholder={project.name}
+          />
+        </div>
+
+        {err && <p className="text-xs text-red-400 mb-3">{err}</p>}
+
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose} className="btn-secondary text-sm">Cancel</button>
+          <button
+            onClick={doDelete}
+            disabled={input !== project.name || busy}
+            className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+          >
+            {busy ? 'Deleting…' : 'Delete project'}
+          </button>
+        </div>
       </div>
     </div>
+  )
+}
+
+// ─── Project card ─────────────────────────────────────────────────────────────
+function ProjectCard({ project, onDeploy, onDeleted }: {
+  project: Project; onDeploy: (id: string) => void; onDeleted: () => void
+}) {
+  const { user } = useAuth()
+  const canManage = user?.role === 'superadmin' || user?.role === 'admin' ||
+    user?.permissions?.includes('manage_projects')
+  const [showDelete, setShowDelete] = useState(false)
+
+  return (
+    <>
+      {showDelete && (
+        <DeleteProjectModal
+          project={project}
+          onDeleted={onDeleted}
+          onClose={() => setShowDelete(false)}
+        />
+      )}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:border-slate-700 transition-all flex flex-col gap-3 group/card">
+        <div className="flex items-start justify-between gap-2">
+          <Link to={`/projects/${project.id}`} className="min-w-0 group">
+            <p className="font-semibold text-slate-100 group-hover:text-white text-sm truncate transition-colors">{project.name}</p>
+            {project.description && <p className="text-xs text-slate-500 truncate mt-0.5">{project.description}</p>}
+          </Link>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <ProjectBadge status={project.status} />
+            {canManage && (
+              <button
+                onClick={() => setShowDelete(true)}
+                title="Delete project"
+                className="opacity-0 group-hover/card:opacity-100 p-1 rounded hover:bg-red-500/10 text-slate-600 hover:text-red-400 transition-all"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 pt-2 border-t border-slate-800">
+          <button onClick={() => onDeploy(project.id)}
+            className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-lg transition-colors">
+            <Play className="w-3.5 h-3.5" /> Deploy
+          </button>
+          <Link to={`/projects/${project.id}`}
+            className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors">
+            <ExternalLink className="w-3.5 h-3.5" /> Open
+          </Link>
+        </div>
+      </div>
+    </>
   )
 }
 
@@ -316,7 +423,14 @@ export default function DashboardPage() {
             ) : (
               <div className="p-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {pageProjects.map(p => <ProjectCard key={p.id} project={p} onDeploy={setDeployingProject} />)}
+                  {pageProjects.map(p => (
+                    <ProjectCard
+                      key={p.id}
+                      project={p}
+                      onDeploy={setDeployingProject}
+                      onDeleted={() => setProjects(prev => prev.filter(x => x.id !== p.id))}
+                    />
+                  ))}
                 </div>
                 {totalPages > 1 && (
                   <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-800">

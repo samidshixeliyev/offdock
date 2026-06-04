@@ -63,7 +63,7 @@ export default function USBPage() {
     notify('')
     try {
       const img = await api.loadImage({ tar_file_path: entry.path })
-      notify('Loaded: ' + img.image_name + ':' + img.image_tag)
+      notify('Loaded: ' + (img.images[0]?.image_name ?? '') + ':' + (img.images[0]?.image_tag ?? ''))
     } catch (e) {
       notify('Load failed: ' + (e instanceof Error ? e.message : String(e)), 'err')
     } finally {
@@ -110,7 +110,7 @@ export default function USBPage() {
       if (file.name.endsWith('.tar')) {
         notify('Upload complete — loading Docker image...')
         const img = await api.loadImage({ tar_file_path: result.path })
-        notify('Image loaded: ' + img.image_name + ':' + img.image_tag)
+        notify('Image loaded: ' + (img.images[0]?.image_name ?? '') + ':' + (img.images[0]?.image_tag ?? ''))
       } else {
         notify('Upload complete: ' + result.path + ' (' + humanBytes(result.size) + ')')
       }
@@ -271,7 +271,7 @@ export default function USBPage() {
                       notify('')
                       try {
                         const img = await api.loadImage({ tar_file_path: uploadedPath })
-                        notify('Loaded: ' + img.image_name + ':' + img.image_tag)
+                        notify('Loaded: ' + (img.images[0]?.image_name ?? '') + ':' + (img.images[0]?.image_tag ?? ''))
                       } catch (e) {
                         notify('Load failed: ' + (e instanceof Error ? e.message : String(e)), 'err')
                       } finally {

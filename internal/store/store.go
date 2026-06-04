@@ -23,6 +23,7 @@ type DB struct {
 	Sessions       *Collection[Session]
 	OTPChallenges  *Collection[OTPChallenge]
 	DNSTickets     *Collection[DNSTicket]
+	DeployTags     *Collection[DeployTag]
 }
 
 // Open initialises all collections, creating data files if they do not exist.
@@ -80,6 +81,9 @@ func Open(dataDir string) (*DB, error) {
 	if db.DNSTickets, err = NewCollection[DNSTicket](open("dns_tickets")); err != nil {
 		return nil, err
 	}
+	if db.DeployTags, err = NewCollection[DeployTag](open("deploy_tags")); err != nil {
+		return nil, err
+	}
 
 	return db, nil
 }
@@ -90,7 +94,7 @@ func (db *DB) Close() error {
 		db.Users, db.Projects, db.Images, db.Compose,
 		db.EnvVars, db.Nginx, db.Deployments, db.ProxyHosts, db.DeploySettings,
 		db.AuditEvents, db.CustomRoles, db.Sessions,
-		db.OTPChallenges, db.DNSTickets,
+		db.OTPChallenges, db.DNSTickets, db.DeployTags,
 	}
 	for _, c := range closers {
 		if err := c.Close(); err != nil {

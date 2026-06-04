@@ -25,6 +25,7 @@ import AuditPage from './pages/AuditPage'
 import TrafficPage from './pages/TrafficPage'
 import DNSPage from './pages/DNSPage'
 import SettingsPage from './pages/SettingsPage'
+import TracingPage from './pages/TracingPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -62,6 +63,7 @@ export default function App() {
             <Route path="/traffic" element={<TrafficPage />} />
             <Route path="/dns" element={<DNSPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/tracing" element={<TracingPage />} />
           </Route>
         </Routes>
       </AuthProvider>

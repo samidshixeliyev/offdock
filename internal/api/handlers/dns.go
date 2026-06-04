@@ -174,29 +174,33 @@ func (h *H) SendDNSTicket(w http.ResponseWriter, r *http.Request) {
 func (h *H) GetSMTPSettings(w http.ResponseWriter, r *http.Request) {
 	s := h.smtpSettings
 	writeJSON(w, http.StatusOK, map[string]any{
-		"host":                   s.Host,
-		"port":                   s.Port,
-		"username":               s.Username,
-		"password_set":           s.Password != "",
-		"from":                   s.From,
-		"starttls":               s.StartTLS,
-		"insecure_skip_verify":   s.SkipVerify,
-		"dns_admin_email":        s.AdminEmail,
-		"configured":             h.mailer.Configured(),
+		"host":                 s.Host,
+		"port":                 s.Port,
+		"username":             s.Username,
+		"password_set":         s.Password != "",
+		"from":                 s.From,
+		"mode":                 s.SMTPMode(),
+		"starttls":             s.StartTLS,
+		"insecure_skip_verify": s.SkipVerify,
+		"ca_cert_file":         s.CACertFile,
+		"dns_admin_email":      s.AdminEmail,
+		"configured":           h.mailer.Configured(),
 	})
 }
 
 // SaveSMTPSettings updates SMTP configuration at runtime and persists to config.yaml.
 func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Host           string `json:"host"`
-		Port           int    `json:"port"`
-		Username       string `json:"username"`
-		Password       string `json:"password"`
-		From           string `json:"from"`
-		StartTLS       bool   `json:"starttls"`
-		SkipVerify     bool   `json:"insecure_skip_verify"`
-		DNSAdminEmail  string `json:"dns_admin_email"`
+		Host          string `json:"host"`
+		Port          int    `json:"port"`
+		Username      string `json:"username"`
+		Password      string `json:"password"`
+		From          string `json:"from"`
+		Mode          string `json:"mode"`              // "starttls" | "implicit" | "plain"
+		StartTLS      bool   `json:"starttls"`          // legacy
+		SkipVerify    bool   `json:"insecure_skip_verify"`
+		CACertFile    string `json:"ca_cert_file"`
+		DNSAdminEmail string `json:"dns_admin_email"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -206,11 +210,20 @@ func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "host is required")
 		return
 	}
+	// Derive mode from legacy starttls flag if not set explicitly.
+	mode := req.Mode
+	if mode == "" && req.StartTLS {
+		mode = "starttls"
+	}
 	if req.Port == 0 {
-		req.Port = 587
+		switch mode {
+		case "implicit":
+			req.Port = 465
+		default:
+			req.Port = 587
+		}
 	}
 
-	// Keep existing password if not provided.
 	password := req.Password
 	if password == "" {
 		password = h.smtpSettings.Password
@@ -222,11 +235,13 @@ func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		Username:   req.Username,
 		Password:   password,
 		From:       req.From,
+		Mode:       mode,
 		StartTLS:   req.StartTLS,
 		SkipVerify: req.SkipVerify,
+		CACertFile: req.CACertFile,
 		AdminEmail: req.DNSAdminEmail,
 	}
-	h.mailer = mailer.New(req.Host, req.Port, req.Username, password, req.From, req.StartTLS, req.SkipVerify)
+	h.mailer = mailer.New(req.Host, req.Port, req.Username, password, req.From, mode, req.SkipVerify, req.CACertFile)
 
 	// Persist to config.yaml.
 	if err := updateConfigYAML(h.smtpSettings); err != nil {
@@ -333,13 +348,15 @@ func updateConfigYAML(s store.SMTPSettings) error {
 	}
 
 	updates := map[string]string{
-		"smtp_host":                    s.Host,
-		"smtp_port":                    fmt.Sprintf("%d", s.Port),
-		"smtp_username":                s.Username,
-		"smtp_from":                    s.From,
-		"smtp_starttls":                boolStr(s.StartTLS),
-		"smtp_insecure_skip_verify":    boolStr(s.SkipVerify),
-		"dns_admin_email":              s.AdminEmail,
+		"smtp_host":                 s.Host,
+		"smtp_port":                 fmt.Sprintf("%d", s.Port),
+		"smtp_username":             s.Username,
+		"smtp_from":                 s.From,
+		"smtp_mode":                 s.Mode,
+		"smtp_starttls":             boolStr(s.StartTLS),
+		"smtp_insecure_skip_verify": boolStr(s.SkipVerify),
+		"smtp_ca_cert_file":         s.CACertFile,
+		"dns_admin_email":           s.AdminEmail,
 	}
 	if s.Password != "" {
 		updates["smtp_password"] = s.Password

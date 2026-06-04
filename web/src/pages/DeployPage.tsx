@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { api, ComposeConfig, DeploymentRecord, DeploySettings, EnvVarSet } from '../api/client'
+import { api, ComposeConfig, DeploymentRecord, DeploySettings, EnvVarSet, DeployTag } from '../api/client'
+import clsx from 'clsx'
 
 function duration(d: DeploymentRecord) {
   if (!d.finished_at) return '—'
@@ -32,6 +33,13 @@ export default function DeployPage() {
   const [rollbackCompose, setRollbackCompose] = useState(0)
   const [rollbackEnv, setRollbackEnv] = useState(0)
   const [expandLog, setExpandLog] = useState<string | null>(null)
+  const [tags, setTags] = useState<DeployTag[]>([])
+  const [newTagName, setNewTagName] = useState('')
+  const [newTagDesc, setNewTagDesc] = useState('')
+  const [tagComposeVer, setTagComposeVer] = useState(0)
+  const [tagEnvVer, setTagEnvVer] = useState(0)
+  const [showTagForm, setShowTagForm] = useState(false)
+  const [tagSaving, setTagSaving] = useState(false)
 
   const logRef = useRef<HTMLDivElement>(null)
   const esRef = useRef<EventSource | null>(null)
@@ -63,6 +71,7 @@ export default function DeployPage() {
       setSettings(s)
       setSettingsDraft({ health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs, health_stable_secs: s.health_stable_secs })
     }).catch(() => {})
+    api.listDeployTags(id).then(t => setTags(t ?? [])).catch(() => {})
   }, [id])
 
   useEffect(() => {
@@ -80,10 +89,15 @@ export default function DeployPage() {
         const data = JSON.parse(e.data as string) as Record<string, string>
         if (data.log) setLog(prev => [...prev, data.log])
         if (data.status) {
-          setLog(prev => [...prev, `\n✓ Deployment ${data.status}`])
+          const tagMsg = data.tag ? `  📌 Auto-tagged as: ${data.tag}` : ''
+          setLog(prev => [...prev, `\n✓ Deployment ${data.status}${tagMsg}`])
           setDeploying(false)
           es.close()
           reload()
+          // Reload tags so the new auto-tag appears immediately.
+          if (data.status === 'success' && id) {
+            api.listDeployTags(id).then(t => setTags(t ?? [])).catch(() => {})
+          }
         }
         if (data.error) {
           setLog(prev => [...prev, `\n✗ Error: ${data.error}`])
@@ -215,75 +229,246 @@ export default function DeployPage() {
         </div>
       </div>
 
-      {/* ── Rollback ───────────────────────────────────────────────────────── */}
-      <div className="card">
-        <h2 className="text-sm font-semibold text-white mb-1">Rollback</h2>
-        <p className="text-xs text-slate-500 mb-4">
-          Pick a compose version and/or env version to deploy. Leave at "latest" to use the newest.
-        </p>
-
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          {/* Compose version picker */}
+      {/* ── Release Tags + Rollback ──────────────────────────────────────────── */}
+      <div className="card space-y-5">
+        {/* Header */}
+        <div className="flex items-center justify-between">
           <div>
-            <label className="block text-xs text-slate-400 mb-1.5">Compose version</label>
-            <select
-              value={rollbackCompose}
-              onChange={e => setRollbackCompose(Number(e.target.value))}
-              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-            >
-              <option value={0}>Latest (v{latestCompose?.version ?? '—'})</option>
-              {composeHistory.map(c => (
-                <option key={c.id} value={c.version}>
-                  v{c.version} — saved {new Date(c.created_at).toLocaleDateString()} by {c.created_by}
-                </option>
-              ))}
-            </select>
-            {rollbackCompose > 0 && composeHistory.find(c => c.version === rollbackCompose) && (
-              <details className="mt-2">
-                <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-300">Preview compose v{rollbackCompose}</summary>
-                <pre className="mt-1 text-xs text-slate-400 bg-slate-950 rounded p-3 overflow-x-auto max-h-40">
-                  {composeHistory.find(c => c.version === rollbackCompose)?.raw_yaml}
-                </pre>
-              </details>
-            )}
+            <h2 className="text-base font-semibold text-slate-100">Release Tags &amp; Rollback</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Tag a version, then deploy it any time with one click.</p>
           </div>
-
-          {/* Env version picker */}
-          <div>
-            <label className="block text-xs text-slate-400 mb-1.5">Env version</label>
-            <select
-              value={rollbackEnv}
-              onChange={e => setRollbackEnv(Number(e.target.value))}
-              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-            >
-              <option value={0}>Latest (v{latestEnv?.version ?? '—'}, {latestEnv?.vars.length ?? 0} vars)</option>
-              {envHistory.map(s => (
-                <option key={s.id} value={s.version}>
-                  v{s.version} — {s.vars.length} vars, saved {new Date(s.created_at).toLocaleDateString()} by {s.created_by}
-                </option>
-              ))}
-            </select>
-            {rollbackEnv > 0 && envHistory.find(s => s.version === rollbackEnv) && (
-              <div className="mt-2 text-xs text-slate-500 bg-slate-950 rounded p-3 max-h-32 overflow-y-auto">
-                {envHistory.find(s => s.version === rollbackEnv)?.vars.map(v => (
-                  <div key={v.key} className="font-mono">
-                    <span className="text-slate-300">{v.key}</span>
-                    <span className="text-slate-600">=</span>
-                    <span className="text-slate-500">{v.is_secret ? '••••••••' : v.value}</span>
-                  </div>
-                ))}
-              </div>
+          <button onClick={() => setShowTagForm(f => !f)} className="btn-secondary text-xs gap-1.5">
+            {showTagForm ? '✕ Cancel' : (
+              <><span className="text-base leading-none">＋</span> Tag current version</>
             )}
-          </div>
+          </button>
         </div>
 
-        <button
-          onClick={() => startDeploy(rollbackCompose, rollbackEnv)}
-          disabled={deploying || !latestCompose}
-          className="btn-secondary text-sm"
-        >
-          ↩ Roll back to compose {rollbackCompose > 0 ? `v${rollbackCompose}` : 'latest'} · env {rollbackEnv > 0 ? `v${rollbackEnv}` : 'latest'}
-        </button>
+        {/* Tag list */}
+        {tags.length === 0 && !showTagForm ? (
+          <div className="flex flex-col items-center justify-center py-8 border border-dashed border-slate-800 rounded-xl text-slate-600 gap-2">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-8 h-8 opacity-40">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9.568 3H5.25A2.25 2.25 0 003 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 005.223-5.223c.542-.827.369-1.908-.33-2.607L11.16 3.66A2.25 2.25 0 009.568 3z" />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 6h.008v.008H6V6z" />
+            </svg>
+            <p className="text-sm">No release tags yet</p>
+            <p className="text-xs">Click "Tag current version" to mark a stable release for quick rollback.</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {tags.map(t => {
+              const isSelected = rollbackCompose === t.compose_version && rollbackEnv === t.env_version
+              const isAuto = t.name.startsWith('deploy-')
+              return (
+                <div
+                  key={t.id}
+                  className={clsx(
+                    'flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer',
+                    isSelected
+                      ? 'bg-blue-600/10 border-blue-500/40'
+                      : 'bg-slate-900/60 border-slate-800 hover:border-slate-700',
+                  )}
+                  onClick={() => { setRollbackCompose(t.compose_version); setRollbackEnv(t.env_version) }}
+                >
+                  {/* Tag icon */}
+                  <div className={clsx(
+                    'w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold shrink-0',
+                    isAuto ? 'bg-slate-800 text-slate-500 border border-slate-700' : 'bg-blue-500/15 border border-blue-500/25 text-blue-300',
+                  )}>
+                    {isAuto ? (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9.568 3H5.25A2.25 2.25 0 003 5.25v4.318c0 .597.237 1.17.659 1.591l9.581 9.581c.699.699 1.78.872 2.607.33a18.095 18.095 0 005.223-5.223c.542-.827.369-1.908-.33-2.607L11.16 3.66A2.25 2.25 0 009.568 3z" />
+                      </svg>
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-semibold text-slate-100">{t.name}</span>
+                      {isSelected && <span className="px-1.5 py-0.5 rounded bg-blue-600/20 text-blue-300 text-[10px] font-medium">selected</span>}
+                      {isAuto && <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-600 text-[10px]">auto</span>}
+                    </div>
+                    <div className="flex items-center gap-3 mt-0.5 text-[11px] text-slate-500 font-mono">
+                      <span>compose v{t.compose_version || 'latest'}</span>
+                      <span className="text-slate-700">·</span>
+                      <span>env v{t.env_version || 'latest'}</span>
+                      {t.description && <><span className="text-slate-700">·</span><span className="font-sans text-slate-600 truncate max-w-[200px]">{t.description}</span></>}
+                    </div>
+                    <p className="text-[10px] text-slate-700 mt-0.5">by {t.created_by} · {new Date(t.created_at).toLocaleString()}</p>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      onClick={e => { e.stopPropagation(); startDeploy(t.compose_version, t.env_version) }}
+                      disabled={deploying}
+                      title="Deploy this tag now"
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium transition-all disabled:opacity-40"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
+                      </svg>
+                      Rollback
+                    </button>
+                    <button
+                      onClick={async e => {
+                        e.stopPropagation()
+                        if (!id) return
+                        await api.deleteDeployTag(id, t.id).catch(() => {})
+                        setTags(prev => prev.filter(x => x.id !== t.id))
+                        if (isSelected) { setRollbackCompose(0); setRollbackEnv(0) }
+                      }}
+                      title="Delete tag"
+                      className="p-1.5 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                    >
+                      <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                        <path fillRule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.808a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clipRule="evenodd" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* New tag form */}
+        {showTagForm && (
+          <div className="p-4 rounded-xl bg-slate-950/60 border border-blue-500/20 space-y-3">
+            <p className="text-xs font-semibold text-slate-300">Tag current version</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Tag name <span className="text-slate-600">(e.g. v1.0.0, stable)</span></label>
+                <input
+                  className="input w-full"
+                  value={newTagName}
+                  onChange={e => setNewTagName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && newTagName.trim() && !tagSaving && document.getElementById('createTagBtn')?.click()}
+                  placeholder="v1.0.0"
+                  autoFocus
+                />
+                {tags.some(t => t.name === newTagName.trim()) && (
+                  <p className="text-xs text-amber-400 mt-1">⚠ A tag with this name already exists</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Description <span className="text-slate-700">(optional)</span></label>
+                <input className="input w-full" value={newTagDesc} onChange={e => setNewTagDesc(e.target.value)} placeholder="Production release" />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Compose version</label>
+                <select className="select w-full" value={tagComposeVer} onChange={e => setTagComposeVer(Number(e.target.value))}>
+                  <option value={0}>Latest (v{latestCompose?.version ?? '—'}) ✓ current</option>
+                  {composeHistory.map(c => <option key={c.id} value={c.version}>v{c.version} — {new Date(c.created_at).toLocaleDateString()}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-500 mb-1">Env version</label>
+                <select className="select w-full" value={tagEnvVer} onChange={e => setTagEnvVer(Number(e.target.value))}>
+                  <option value={0}>Latest (v{latestEnv?.version ?? '—'}) ✓ current</option>
+                  {envHistory.map(s => <option key={s.id} value={s.version}>v{s.version} ({s.vars.length} vars)</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowTagForm(false)} className="btn-secondary text-xs">Cancel</button>
+              <button
+                id="createTagBtn"
+                disabled={!newTagName.trim() || tagSaving || tags.some(t => t.name === newTagName.trim())}
+                onClick={async () => {
+                  if (!id || !newTagName.trim()) return
+                  setTagSaving(true)
+                  try {
+                    const t = await api.createDeployTag(id, {
+                      name: newTagName.trim(), description: newTagDesc.trim(),
+                      compose_version: tagComposeVer || undefined,
+                      env_version: tagEnvVer || undefined,
+                    })
+                    setTags(prev => [...prev, t])
+                    setNewTagName(''); setNewTagDesc(''); setTagComposeVer(0); setTagEnvVer(0)
+                    setShowTagForm(false)
+                  } catch {}
+                  setTagSaving(false)
+                }}
+                className="btn-primary text-xs"
+              >
+                {tagSaving ? 'Creating…' : 'Create tag'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Manual version pickers */}
+        <div className="border-t border-slate-800 pt-4">
+          <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-3">Manual version selection</p>
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="block text-xs text-slate-400 mb-1.5">Compose version</label>
+              <select
+                value={rollbackCompose}
+                onChange={e => setRollbackCompose(Number(e.target.value))}
+                className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value={0}>Latest (v{latestCompose?.version ?? '—'})</option>
+                {composeHistory.map(c => (
+                  <option key={c.id} value={c.version}>
+                    v{c.version} — {new Date(c.created_at).toLocaleDateString()} by {c.created_by}
+                  </option>
+                ))}
+              </select>
+              {rollbackCompose > 0 && composeHistory.find(c => c.version === rollbackCompose) && (
+                <details className="mt-2">
+                  <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-300">Preview compose v{rollbackCompose}</summary>
+                  <pre className="mt-1 text-xs text-slate-400 bg-slate-950 rounded p-3 overflow-x-auto max-h-40">
+                    {composeHistory.find(c => c.version === rollbackCompose)?.raw_yaml}
+                  </pre>
+                </details>
+              )}
+            </div>
+            <div>
+              <label className="block text-xs text-slate-400 mb-1.5">Env version</label>
+              <select
+                value={rollbackEnv}
+                onChange={e => setRollbackEnv(Number(e.target.value))}
+                className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value={0}>Latest (v{latestEnv?.version ?? '—'}, {latestEnv?.vars.length ?? 0} vars)</option>
+                {envHistory.map(s => (
+                  <option key={s.id} value={s.version}>
+                    v{s.version} — {s.vars.length} vars, {new Date(s.created_at).toLocaleDateString()} by {s.created_by}
+                  </option>
+                ))}
+              </select>
+              {rollbackEnv > 0 && envHistory.find(s => s.version === rollbackEnv) && (
+                <div className="mt-2 text-xs text-slate-500 bg-slate-950 rounded p-3 max-h-32 overflow-y-auto">
+                  {envHistory.find(s => s.version === rollbackEnv)?.vars.map(v => (
+                    <div key={v.key} className="font-mono">
+                      <span className="text-slate-300">{v.key}</span>
+                      <span className="text-slate-600">=</span>
+                      <span className="text-slate-500">{v.is_secret ? '••••••••' : v.value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <button
+            onClick={() => startDeploy(rollbackCompose, rollbackEnv)}
+            disabled={deploying || !latestCompose}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 hover:bg-amber-500/20 text-sm font-medium transition-all disabled:opacity-40"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 shrink-0">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
+            </svg>
+            Roll back to compose {rollbackCompose > 0 ? `v${rollbackCompose}` : 'latest'} · env {rollbackEnv > 0 ? `v${rollbackEnv}` : 'latest'}
+          </button>
+        </div>
       </div>
 
       {/* ── Deploy settings ────────────────────────────────────────────────── */}
@@ -361,12 +546,13 @@ export default function DeployPage() {
                   <th className="text-left px-4 py-2.5">Started</th>
                   <th className="text-left px-4 py-2.5">Duration</th>
                   <th className="text-left px-4 py-2.5">Log</th>
+                  <th className="px-4 py-2.5" />
                 </tr>
               </thead>
               <tbody>
                 {deployments.map(d => (
                   <>
-                    <tr key={d.id} className="border-b border-slate-800/50 hover:bg-slate-800/20">
+                    <tr key={d.id} className="border-b border-slate-800/50 hover:bg-slate-800/20 group">
                       <td className="px-4 py-2.5"><span className={statusBadge(d.status)}>{d.status}</span></td>
                       <td className="px-4 py-2.5 text-slate-300 text-xs font-mono">v{d.new_compose_version}</td>
                       <td className="px-4 py-2.5 text-slate-300 text-xs font-mono">{d.env_version > 0 ? `v${d.env_version}` : <span className="text-slate-600">—</span>}</td>
@@ -383,10 +569,28 @@ export default function DeployPage() {
                           </button>
                         ) : <span className="text-slate-700 text-xs">—</span>}
                       </td>
+                      <td className="px-4 py-2.5">
+                        {d.status !== 'running' && d.status !== 'pending' && (
+                          <button
+                            title="Delete deployment record"
+                            onClick={async () => {
+                              if (!id) return
+                              await api.deleteDeployment(id, d.id).catch(() => {})
+                              setDeployments(prev => prev.filter(x => x.id !== d.id))
+                              if (expandLog === d.id) setExpandLog(null)
+                            }}
+                            className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all p-1 rounded hover:bg-red-500/10"
+                          >
+                            <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                              <path fillRule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.808a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clipRule="evenodd" />
+                            </svg>
+                          </button>
+                        )}
+                      </td>
                     </tr>
                     {expandLog === d.id && (
                       <tr key={`${d.id}-log`} className="border-b border-slate-800/50">
-                        <td colSpan={7} className="px-4 pb-3">
+                        <td colSpan={8} className="px-4 pb-3">
                           <pre className="font-mono text-xs text-green-400 bg-slate-950 rounded p-3 max-h-64 overflow-y-auto whitespace-pre-wrap">
                             {d.log_text}
                           </pre>

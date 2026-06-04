@@ -79,8 +79,18 @@ func (h *H) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 // Logout clears the JWT cookie and revokes the server-side session.
+// Works whether or not the Authenticate middleware ran — it reads the token
+// directly from the cookie so the session is revoked even on the public route.
 func (h *H) Logout(w http.ResponseWriter, r *http.Request) {
-	if claims := authmw.ClaimsFromContext(r.Context()); claims != nil && claims.SessionID != "" {
+	// First try claims already injected by the Authenticate middleware (authenticated path).
+	claims := authmw.ClaimsFromContext(r.Context())
+	// If not present (public path), parse the cookie token directly.
+	if claims == nil {
+		if cookie, err := r.Cookie(auth.TokenCookieName); err == nil && cookie.Value != "" {
+			claims, _ = h.auth.Verify(cookie.Value)
+		}
+	}
+	if claims != nil && claims.SessionID != "" {
 		if sess, err := h.db.Sessions.FindByID(claims.SessionID); err == nil {
 			sess.Revoked = true
 			h.db.Sessions.Save(sess) //nolint:errcheck

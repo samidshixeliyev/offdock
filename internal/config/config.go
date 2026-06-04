@@ -18,14 +18,17 @@ type Config struct {
 	DefaultPEMPath string `yaml:"default_pem_path"`
 
 	// SMTP — used for OTP emails and DNS ticket notifications.
-	// Supports Exchange/Outlook on-prem (STARTTLS on port 587 is typical).
+	// Supports Exchange/Outlook on-prem.
+	// Mode: "starttls" (default, port 587), "implicit" (TLS from start, port 465), "plain" (no TLS)
 	SMTPHost       string `yaml:"smtp_host"`
 	SMTPPort       int    `yaml:"smtp_port"`
 	SMTPUsername   string `yaml:"smtp_username"`
 	SMTPPassword   string `yaml:"smtp_password"`
 	SMTPFrom       string `yaml:"smtp_from"`
-	SMTPStartTLS   bool   `yaml:"smtp_starttls"`
+	SMTPMode       string `yaml:"smtp_mode"`              // "starttls" | "implicit" | "plain"
+	SMTPStartTLS   bool   `yaml:"smtp_starttls"`          // legacy — maps to mode=starttls
 	SMTPSkipVerify bool   `yaml:"smtp_insecure_skip_verify"`
+	SMTPCACertFile string `yaml:"smtp_ca_cert_file"`      // path to custom CA cert PEM (Exchange self-signed)
 	DNSAdminEmail  string `yaml:"dns_admin_email"`
 
 	// OAuth2 / OIDC — AO ID identity provider integration.
@@ -42,6 +45,10 @@ type Config struct {
 	OAuthClaimEmail    string `yaml:"oauth_claim_email"`    // default "email"
 	OAuthClaimUsername string `yaml:"oauth_claim_username"` // default "ldap_username"
 	OAuthClaimName     string `yaml:"oauth_claim_name"`     // default "display_name"
+
+	// OAuth2 TLS — for IdP servers with self-signed / internal CA certificates.
+	OAuthCACertFile    string `yaml:"oauth_ca_cert_file"`         // path to CA cert PEM
+	OAuthTLSSkipVerify bool   `yaml:"oauth_tls_skip_verify"`      // skip TLS verify (not recommended)
 }
 
 const defaultConfigPath = "/etc/offdock/config.yaml"

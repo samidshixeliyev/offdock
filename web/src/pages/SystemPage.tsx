@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, SystemStats } from '../api/client'
 import clsx from 'clsx'
 
@@ -509,6 +509,152 @@ sudo apt-get install nginx
           </div>
         </div>
       </section>
+
+      {/* Self-update section */}
+      <SystemUpdateSection />
     </div>
+  )
+}
+
+// ─── Self-update ──────────────────────────────────────────────────────────────
+
+function SystemUpdateSection() {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [log, setLog] = useState<{ status: string; message: string }[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const logEndRef = useRef<HTMLDivElement>(null)
+
+  const runUpdate = (file: File) => {
+    if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
+      setLog([{ status: 'error', message: 'File must be a .tar.gz archive' }])
+      return
+    }
+    setUploading(true)
+    setLog([{ status: 'info', message: `Uploading ${file.name} (${(file.size / 1e6).toFixed(1)} MB)…` }])
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', api.systemUpdateUrl())
+
+    xhr.onload = () => {
+      setUploading(false)
+      if (xhr.status >= 400) {
+        setLog(prev => [...prev, { status: 'error', message: `Server error: ${xhr.status}` }])
+      }
+    }
+    xhr.onerror = () => {
+      setUploading(false)
+      setLog(prev => [...prev, { status: 'info', message: 'Connection closed (service restarting…)' }])
+    }
+
+    // Parse SSE lines as they stream in.
+    let lastIdx = 0
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState >= 3 && xhr.responseText.length > lastIdx) {
+        const chunk = xhr.responseText.slice(lastIdx)
+        lastIdx = xhr.responseText.length
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data:')) continue
+          try {
+            const ev = JSON.parse(line.slice(5)) as { status: string; message: string }
+            setLog(prev => [...prev, ev])
+            if (ev.status === 'success') {
+              setUploading(false)
+              setTimeout(() => window.location.reload(), 5000)
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const form = new FormData()
+    form.append('file', file)
+    xhr.send(form)
+  }
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [log])
+
+  const statusColor = (s: string) => ({
+    info:    'text-slate-400',
+    success: 'text-emerald-400',
+    error:   'text-red-400',
+  } as Record<string, string>)[s] ?? 'text-slate-400'
+
+  const statusIcon = (s: string) => ({
+    info:    '›',
+    success: '✓',
+    error:   '✕',
+  } as Record<string, string>)[s] ?? '›'
+
+  return (
+    <section className="mt-6">
+      <p className="section-heading mb-3">System Update</p>
+      <div className="card space-y-4">
+        <div>
+          <p className="text-sm font-medium text-slate-200 mb-1">Update OffDock</p>
+          <p className="text-xs text-slate-500">
+            Upload an OffDock <code className="font-mono text-slate-400">.tar.gz</code> bundle to update the binary.
+            The service will restart automatically — reconnect in a few seconds after the update completes.
+          </p>
+        </div>
+
+        {/* Drop zone */}
+        <div
+          onDragOver={e => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => {
+            e.preventDefault(); setDragOver(false)
+            const f = e.dataTransfer.files[0]
+            if (f) runUpdate(f)
+          }}
+          onClick={() => !uploading && fileRef.current?.click()}
+          className={clsx(
+            'relative flex flex-col items-center justify-center gap-2 p-8 rounded-xl border-2 border-dashed cursor-pointer transition-all',
+            dragOver ? 'border-blue-500 bg-blue-500/5' : 'border-slate-700 hover:border-slate-600 hover:bg-slate-800/30',
+            uploading && 'pointer-events-none opacity-60',
+          )}
+        >
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".tar.gz,.tgz"
+            className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) { runUpdate(f); e.target.value = '' } }}
+          />
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-8 h-8 text-slate-600">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.338-2.323 3.75 3.75 0 013.543 4.098A3.75 3.75 0 0118.75 19.5H6.75z" />
+          </svg>
+          {uploading ? (
+            <p className="text-sm text-blue-400 font-medium">Updating…</p>
+          ) : (
+            <>
+              <p className="text-sm text-slate-300 font-medium">Drop <code className="font-mono">offdock-offline-*.tar.gz</code> here</p>
+              <p className="text-xs text-slate-600">or click to browse — safe atomic update, no data loss</p>
+            </>
+          )}
+        </div>
+
+        {/* Update log */}
+        {log.length > 0 && (
+          <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 max-h-48 overflow-y-auto">
+            {log.map((l, i) => (
+              <div key={i} className={clsx('font-mono text-xs flex gap-2', statusColor(l.status))}>
+                <span className="shrink-0">{statusIcon(l.status)}</span>
+                <span>{l.message}</span>
+              </div>
+            ))}
+            {uploading && <div className="font-mono text-xs text-blue-400 animate-pulse">▌</div>}
+            <div ref={logEndRef} />
+          </div>
+        )}
+
+        <p className="text-xs text-slate-700">
+          The update replaces only the binary and restarts the service. All data, configuration, and settings are preserved.
+          Use <code className="font-mono">sudo bash install.sh --update</code> on the server for the same effect.
+        </p>
+      </div>
+    </section>
   )
 }

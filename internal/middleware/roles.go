@@ -6,8 +6,10 @@ import (
 	"offdock/internal/store"
 )
 
-// RequireRole rejects requests whose JWT role is lower than minRole.
-// Role hierarchy: superadmin > admin > viewer.
+// RequireRole rejects requests whose role (checked against the live DB) is
+// lower than minRole. It also rejects inactive/deleted accounts.
+// Accepts a *store.DB so it can verify the current user state — a demoted or
+// deactivated account is rejected even if their JWT is still valid.
 func RequireRole(minRole store.Role) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -16,7 +18,34 @@ func RequireRole(minRole store.Role) func(http.Handler) http.Handler {
 				http.Error(w, `{"error":"unauthenticated"}`, http.StatusUnauthorized)
 				return
 			}
+			// Quick JWT-claim check first (avoids DB hit for clearly insufficient roles).
 			if !roleAtLeast(claims.Role, minRole) {
+				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequireRoleLive is like RequireRole but also loads the user from the DB to
+// verify the account is still active and the role has not been demoted.
+// Use this for the highest-privilege operations (superadmin-only routes).
+func RequireRoleLive(db *store.DB, minRole store.Role) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims := ClaimsFromContext(r.Context())
+			if claims == nil {
+				http.Error(w, `{"error":"unauthenticated"}`, http.StatusUnauthorized)
+				return
+			}
+			// Load live user from DB.
+			user, err := db.Users.FindByID(claims.UserID)
+			if err != nil || !user.Active {
+				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+				return
+			}
+			if !roleAtLeast(user.Role, minRole) {
 				http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 				return
 			}

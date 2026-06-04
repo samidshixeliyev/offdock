@@ -52,6 +52,9 @@ func NewRouter(deps Deps) http.Handler {
 
 	// --- Public routes ---
 	r.Post("/api/v1/auth/login", h.Login)
+	// Logout is best-effort — also works without a valid token (clears cookie).
+	// But we register it in *both* groups: authenticated (revokes session) and
+	// public (fallback if token already expired/missing so the cookie is still cleared).
 	r.Post("/api/v1/auth/logout", h.Logout)
 	// OAuth2 / OIDC — public; callback uses redirects, not JSON.
 	r.Get("/api/v1/auth/oauth/start", h.OAuthStart)
@@ -68,21 +71,22 @@ func NewRouter(deps Deps) http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(authmw.Authenticate(deps.Auth, deps.DB))
 
+		r.Post("/api/v1/auth/logout", h.Logout) // also authenticated so context claims revoke session
 		r.Get("/api/v1/auth/me", h.Me)
 
 		// Users — superadmin only for write operations
 		r.Get("/api/v1/users", h.ListUsers)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Post("/api/v1/users", h.CreateUser)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Patch("/api/v1/users/{id}", h.UpdateUser)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Delete("/api/v1/users/{id}", h.DeleteUser)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Get("/api/v1/users/{id}/audit", h.UserAudit)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/users", h.CreateUser)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Patch("/api/v1/users/{id}", h.UpdateUser)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Delete("/api/v1/users/{id}", h.DeleteUser)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Get("/api/v1/users/{id}/audit", h.UserAudit)
 
 		// Permission catalog + custom roles (superadmin manages roles)
 		r.Get("/api/v1/permissions", h.ListPermissions)
 		r.Get("/api/v1/roles", h.ListCustomRoles)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Post("/api/v1/roles", h.CreateCustomRole)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Patch("/api/v1/roles/{id}", h.UpdateCustomRole)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Delete("/api/v1/roles/{id}", h.DeleteCustomRole)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/roles", h.CreateCustomRole)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Patch("/api/v1/roles/{id}", h.UpdateCustomRole)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Delete("/api/v1/roles/{id}", h.DeleteCustomRole)
 
 		// Sessions (own; superadmin sees all)
 		r.Get("/api/v1/sessions", h.ListSessions)
@@ -177,6 +181,11 @@ func NewRouter(deps Deps) http.Handler {
 			r.Get("/api/v1/projects/{id}/deploy-settings", h.GetDeploySettings)
 			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Put("/api/v1/projects/{id}/deploy-settings", h.SaveDeploySettings)
 
+			// Deploy tags — named labels for specific compose+env version pairs
+			r.Get("/api/v1/projects/{id}/deploy-tags", h.ListDeployTags)
+			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Post("/api/v1/projects/{id}/deploy-tags", h.CreateDeployTag)
+			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Delete("/api/v1/projects/{id}/deploy-tags/{tag_id}", h.DeleteDeployTag)
+
 		// Containers & logs
 		r.Get("/api/v1/projects/{id}/containers", h.ListContainers)
 		r.With(authmw.RequirePermission(deps.DB, store.PermContainerOps)).Post("/api/v1/projects/{id}/sync", h.SyncProjectStatus)
@@ -192,12 +201,22 @@ func NewRouter(deps Deps) http.Handler {
 		// System stats (SSE)
 		r.Get("/api/v1/system/stats", h.SystemStats)
 
-		// Audit log — admin+ read
-		r.Get("/api/v1/audit", h.ListAuditEvents)
+		// Audit log — admin+ only (contains usernames, IPs, resource names)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/audit", h.ListAuditEvents)
 
 		// Traffic analytics (nginx access-log metrics + live network connections)
 		r.Get("/api/v1/traffic", h.Traffic)
 		r.Get("/api/v1/traffic/connections", h.TrafficConnections)
+
+		// Container deep tracing (HTTP + SQL + Redis) via nsenter + tcpdump — SSE stream.
+		// Enable/disable toggle persisted in-memory per container.
+		r.Get("/api/v1/trace/status", h.GetTraceStatus)
+		r.With(authmw.RequirePermission(deps.DB, store.PermTerminal)).
+			Post("/api/v1/containers/{name}/trace/enable", h.EnableContainerTrace)
+		r.With(authmw.RequirePermission(deps.DB, store.PermTerminal)).
+			Delete("/api/v1/containers/{name}/trace/enable", h.DisableContainerTrace)
+		r.With(authmw.RequirePermission(deps.DB, store.PermTerminal)).
+			Get("/api/v1/containers/{name}/trace", h.ContainerTrace)
 
 		// DNS ticket management
 		r.Get("/api/v1/dns/tickets", h.ListDNSTickets)
@@ -206,15 +225,19 @@ func NewRouter(deps Deps) http.Handler {
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageDNS)).Delete("/api/v1/dns/tickets/{id}", h.DeleteDNSTicket)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageDNS)).Post("/api/v1/dns/tickets/{id}/send", h.SendDNSTicket)
 		r.Get("/api/v1/dns/settings", h.GetSMTPSettings)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Post("/api/v1/dns/settings", h.SaveSMTPSettings)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Post("/api/v1/dns/settings/test", h.TestSMTPSettings)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/dns/settings", h.SaveSMTPSettings)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/dns/settings/test", h.TestSMTPSettings)
 
 		// OAuth2 / SSO settings — any authenticated user can read (needed for login page); superadmin writes.
 		r.Get("/api/v1/settings/oauth", h.GetOAuthSettings)
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Post("/api/v1/settings/oauth", h.SaveOAuthSettings)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/settings/oauth", h.SaveOAuthSettings)
 
 		// Backup — superadmin only
-		r.With(authmw.RequireRole(store.RoleSuperAdmin)).Get("/api/v1/system/backup", h.DownloadBackup)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Get("/api/v1/system/backup", h.DownloadBackup)
+
+		// Self-update — superadmin only: upload tar.gz bundle, atomic binary replace + restart
+		r.Get("/api/v1/system/update/status", h.GetSystemUpdateStatus)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/update", h.SystemUpdate)
 
 		// Reverse proxy status probe (server-side to avoid CORS)
 		r.Get("/api/v1/proxy/status", h.ProxyStatus)
@@ -235,11 +258,12 @@ func NewRouter(deps Deps) http.Handler {
 		// List files in the uploads staging area
 		r.Get("/api/v1/uploads", h.ListUploads)
 
-		// File system explorer — admin-only writes, read for authenticated users
+		// File system explorer — all operations require PermManageFiles.
+		// Read operations also enforce isSensitivePath() to block credential files.
 		r.Route("/api/v1/files", func(r chi.Router) {
-			r.Get("/browse", h.FileBrowse)
-			r.Get("/read", h.FileRead)
-			r.Get("/search", h.FileSearch)
+			r.With(authmw.RequirePermission(deps.DB, store.PermManageFiles)).Get("/browse", h.FileBrowse)
+			r.With(authmw.RequirePermission(deps.DB, store.PermManageFiles)).Get("/read", h.FileRead)
+			r.With(authmw.RequirePermission(deps.DB, store.PermManageFiles)).Get("/search", h.FileSearch)
 			r.With(authmw.RequirePermission(deps.DB, store.PermManageFiles)).Post("/write", h.FileWrite)
 			r.With(authmw.RequirePermission(deps.DB, store.PermManageFiles)).Post("/mkdir", h.FileMkdir)
 			r.With(authmw.RequirePermission(deps.DB, store.PermManageFiles)).Post("/rename", h.FileRename)

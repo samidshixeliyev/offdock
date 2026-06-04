@@ -1,7 +1,7 @@
 import { useState, FormEvent, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
-import { api, OAuthSettings } from '../api/client'
+import { api } from '../api/client'
 
 function LockIcon() {
   return (
@@ -25,8 +25,9 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [oauth, setOauth] = useState<OAuthSettings | null>(null)
+  const [oauthReady, setOauthReady] = useState(false)
 
+  // Redirect if already logged in or first-run setup needed
   useEffect(() => {
     api.setupStatus().then(({ setup_required }) => {
       if (setup_required) navigate('/setup')
@@ -34,10 +35,14 @@ export default function LoginPage() {
     if (user) navigate('/')
   }, [user, navigate])
 
+  // Check if OAuth SSO is configured and enabled (public endpoint, no auth needed)
   useEffect(() => {
-    api.oauthStatus().then(s => { if (s.enabled) setOauth(s as OAuthSettings) }).catch(() => {})
+    api.oauthStatus()
+      .then(s => setOauthReady(s.enabled))
+      .catch(() => setOauthReady(false))
   }, [])
 
+  // Surface IdP error messages redirected back from the callback
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const err = params.get('error')
@@ -56,10 +61,6 @@ export default function LoginPage() {
     } finally {
       setLoading(false)
     }
-  }
-
-  const handleOAuthLogin = () => {
-    window.location.href = api.oauthLoginUrl()
   }
 
   return (
@@ -132,27 +133,33 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {oauth && (
-            <>
-              <div className="relative my-5">
+          {/* AO ID SSO — shown below password form when configured */}
+          {oauthReady && (
+            <div className="mt-5">
+              <div className="relative mb-4">
                 <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-slate-700" />
+                  <div className="w-full border-t border-slate-800" />
                 </div>
                 <div className="relative flex justify-center text-xs">
-                  <span className="px-2 bg-slate-900/80 text-slate-500">or continue with</span>
+                  <span className="px-2 bg-slate-900/80 text-slate-500">or</span>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={handleOAuthLogin}
-                className="w-full flex items-center justify-center gap-2.5 px-4 py-2.5 rounded-lg border border-slate-700 bg-slate-800/60 hover:bg-slate-800 text-slate-200 text-sm font-medium transition-colors"
+                onClick={() => { window.location.href = api.oauthLoginUrl() }}
+                className="w-full flex items-center justify-center gap-3 px-4 py-3 rounded-xl border border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-200 text-sm font-medium transition-all group"
               >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4 text-blue-400">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                <span className="w-5 h-5 rounded bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shrink-0">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3 h-3 text-white">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+                  </svg>
+                </span>
+                Continue with AO ID
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4 text-slate-500 group-hover:text-slate-300 ml-auto transition-colors">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                 </svg>
-                Sign in with AO ID
               </button>
-            </>
+            </div>
           )}
         </div>
 

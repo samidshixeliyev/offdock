@@ -38,7 +38,7 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
 const emptyForm: ProxyHostInput = {
   domain: '', aliases: [], upstream_host: '', upstream_port: 80,
   ssl_enabled: false, ssl_pem_path: '', client_max_body_size: '10m',
-  proxy_read_timeout: 60, gzip_enabled: true, custom_directives: '', locations: [], access_log: false,
+  proxy_read_timeout: 60, gzip_enabled: true, custom_directives: '', locations: [], access_log: true,
 }
 const emptyLocation: ProxyLocation = { path: '', upstream_host: '', upstream_port: 80, strip_prefix: false, ws_enabled: false }
 

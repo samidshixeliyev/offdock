@@ -214,10 +214,10 @@ const OffDockLogFormat = "offdock_main"
 
 // logFormatConf is the content written to /etc/nginx/conf.d/offdock-logformat.conf.
 const logFormatConf = `# OffDock extended log format — DO NOT EDIT (managed by OffDock)
-# Same as nginx "combined" but with $host appended for per-vhost traffic analytics.
+# Extends combined with: $host, $request_time, $upstream_response_time, $upstream_addr
 log_format offdock_main '$remote_addr - $remote_user [$time_local] "$request" '
                         '$status $body_bytes_sent "$http_referer" '
-                        '"$http_user_agent" "$host"';
+                        '"$http_user_agent" "$host" $request_time $upstream_response_time $upstream_addr';
 `
 
 // EnsureLogFormat writes the OffDock log_format definition to conf.d if it is
@@ -270,6 +270,10 @@ func applySystemConfig(name, content string) (*ApplyResult, error) {
 	}
 
 	if err := reloadSystem(); err != nil {
+		// nginx -t passed but reload failed — roll back so the next reload
+		// doesn't pick up a potentially problematic config.
+		os.Remove(enabled)  //nolint:errcheck
+		os.Remove(confPath) //nolint:errcheck
 		return nil, fmt.Errorf("nginx reload: %w", err)
 	}
 

@@ -22,6 +22,7 @@ import (
 	"offdock/internal/deploy"
 	"offdock/internal/docker"
 	"offdock/internal/mailer"
+	"offdock/internal/nginx"
 	"offdock/internal/store"
 	"offdock/internal/system"
 )
@@ -58,6 +59,26 @@ func main() {
 	authSvc := auth.New(cfg.JWTSecret)
 	dockerClient := docker.New()
 
+	// Ensure the OffDock nginx log format definition is installed on every startup.
+	nginx.EnsureLogFormat()
+
+	// Migration: enable access_log on all proxy hosts that have it disabled.
+	// This ensures traffic analytics works for all hosts without manual intervention.
+	if hosts, err := db.ProxyHosts.FindAll(); err == nil {
+		for _, h := range hosts {
+			if !h.AccessLog {
+				h.AccessLog = true
+				if saveErr := db.ProxyHosts.Save(h); saveErr == nil {
+					if _, applyErr := nginx.ApplyProxyHost(h); applyErr != nil {
+						slog.Warn("access_log migration: could not apply nginx config", "host", h.Domain, "err", applyErr)
+					} else {
+						slog.Info("access_log enabled for proxy host", "host", h.Domain)
+					}
+				}
+			}
+		}
+	}
+
 	projectsDir := filepath.Join(filepath.Dir(cfg.DataDir), "projects")
 	if err := os.MkdirAll(projectsDir, 0o700); err != nil {
 		slog.Error("create projects dir", "err", err)
@@ -68,8 +89,12 @@ func main() {
 	stats := system.New(dockerClient, cfg.DataDir)
 	hub := sse.New()
 
+	smtpMode := cfg.SMTPMode
+	if smtpMode == "" && cfg.SMTPStartTLS {
+		smtpMode = "starttls"
+	}
 	m := mailer.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword,
-		cfg.SMTPFrom, cfg.SMTPStartTLS, cfg.SMTPSkipVerify)
+		cfg.SMTPFrom, smtpMode, cfg.SMTPSkipVerify, cfg.SMTPCACertFile)
 
 	smtpSettings := store.SMTPSettings{
 		Host:       cfg.SMTPHost,
@@ -77,8 +102,10 @@ func main() {
 		Username:   cfg.SMTPUsername,
 		Password:   cfg.SMTPPassword,
 		From:       cfg.SMTPFrom,
+		Mode:       smtpMode,
 		StartTLS:   cfg.SMTPStartTLS,
 		SkipVerify: cfg.SMTPSkipVerify,
+		CACertFile: cfg.SMTPCACertFile,
 		AdminEmail: cfg.DNSAdminEmail,
 	}
 
@@ -93,6 +120,8 @@ func main() {
 		ClaimEmail:    cfg.OAuthClaimEmail,
 		ClaimUsername: cfg.OAuthClaimUsername,
 		ClaimName:     cfg.OAuthClaimName,
+		CACertFile:    cfg.OAuthCACertFile,
+		TLSSkipVerify: cfg.OAuthTLSSkipVerify,
 	}
 	if oauthSettings.Scope == "" {
 		oauthSettings.Scope = "openid profile email"

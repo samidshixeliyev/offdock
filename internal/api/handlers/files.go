@@ -31,6 +31,10 @@ func (h *H) FileBrowse(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "/"
 	}
+	if isSensitivePath(path) {
+		writeError(w, http.StatusForbidden, "access to this path is restricted")
+		return
+	}
 
 	entries, err := os.ReadDir(path)
 	if err != nil {
@@ -74,6 +78,10 @@ func (h *H) FileRead(w http.ResponseWriter, r *http.Request) {
 	path := cleanPath(r.URL.Query().Get("path"))
 	if path == "" {
 		writeError(w, http.StatusBadRequest, "path required")
+		return
+	}
+	if isSensitivePath(path) {
+		writeError(w, http.StatusForbidden, "access to this path is restricted")
 		return
 	}
 
@@ -216,6 +224,10 @@ func (h *H) FileSearch(w http.ResponseWriter, r *http.Request) {
 	query := strings.ToLower(r.URL.Query().Get("q"))
 	if base == "" || query == "" {
 		writeError(w, http.StatusBadRequest, "path and q required")
+		return
+	}
+	if isSensitivePath(base) {
+		writeError(w, http.StatusForbidden, "access to this path is restricted")
 		return
 	}
 
@@ -423,6 +435,18 @@ var blockedExact = []string{
 	"/usr/local/bin/offdock",
 }
 
+// sensitivePaths are files that must never be returned in read/browse responses
+// because they contain credentials (jwt_secret, smtp_password, oauth_client_secret, etc.).
+var sensitivePaths = []string{
+	"/etc/offdock/config.yaml",
+	"/etc/offdock",
+	"/etc/shadow",
+	"/etc/gshadow",
+	"/etc/sudoers",
+	"/root/.ssh",
+	"/home",
+}
+
 func isBlockedPath(p string) bool {
 	for _, b := range blockedPrefixes {
 		if p == b || strings.HasPrefix(p, b+"/") {
@@ -431,6 +455,17 @@ func isBlockedPath(p string) bool {
 	}
 	for _, b := range blockedExact {
 		if p == b || strings.HasPrefix(p, b+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// isSensitivePath returns true for files that contain secrets and must never
+// be served through the file explorer read/browse endpoints.
+func isSensitivePath(p string) bool {
+	for _, s := range sensitivePaths {
+		if p == s || strings.HasPrefix(p, s+"/") {
 			return true
 		}
 	}

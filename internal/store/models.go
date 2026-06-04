@@ -340,10 +340,38 @@ type SMTPSettings struct {
 	Username   string
 	Password   string
 	From       string
-	StartTLS   bool
+	Mode       string // "starttls" | "implicit" | "plain"
+	StartTLS   bool   // legacy
 	SkipVerify bool
+	CACertFile string // path to custom CA cert PEM
 	AdminEmail string
 }
+
+// SMTPMode returns the effective connection mode.
+func (s SMTPSettings) SMTPMode() string {
+	if s.Mode != "" {
+		return s.Mode
+	}
+	if s.StartTLS {
+		return "starttls"
+	}
+	return "plain"
+}
+
+// DeployTag is a named label attached to a specific compose+env version combination
+// for easy identification and rollback targeting.
+type DeployTag struct {
+	ID             string    `json:"id" msgpack:"id"`
+	ProjectID      string    `json:"project_id" msgpack:"project_id"`
+	Name           string    `json:"name" msgpack:"name"`               // e.g. "v1.0.0", "stable"
+	Description    string    `json:"description" msgpack:"description"` // optional notes
+	ComposeVersion int       `json:"compose_version" msgpack:"compose_version"`
+	EnvVersion     int       `json:"env_version" msgpack:"env_version"`
+	CreatedBy      string    `json:"created_by" msgpack:"created_by"`
+	CreatedAt      time.Time `json:"created_at" msgpack:"created_at"`
+}
+
+func (d DeployTag) GetID() string { return d.ID }
 
 // OAuthSettings mirrors the OAuth2 fields from Config for passing to handlers.
 type OAuthSettings struct {
@@ -358,6 +386,9 @@ type OAuthSettings struct {
 	ClaimEmail    string // default "email"
 	ClaimUsername string // default "ldap_username"
 	ClaimName     string // default "display_name"
+	// TLS
+	CACertFile    string // path to custom CA cert for IdP (self-signed Exchange/internal)
+	TLSSkipVerify bool   // skip TLS verification
 }
 
 // EffectiveClaimNames returns the resolved claim names, applying defaults

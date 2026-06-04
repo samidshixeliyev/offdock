@@ -4,7 +4,7 @@ import clsx from 'clsx'
 import {
   LayoutDashboard, Boxes, Container, Globe, Network, HardDrive, FolderTree,
   Cpu, TerminalSquare, Activity, ScrollText, Users, LogOut, ChevronRight,
-  MapPin, Settings,
+  MapPin, Settings, Radio,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -26,6 +26,7 @@ const navSystem: NavItem[] = [
   { to: '/dns',      label: 'DNS',       icon: MapPin },
   { to: '/audit',    label: 'Audit Log', icon: ScrollText },
   { to: '/users',    label: 'Users',     icon: Users },
+  { to: '/tracing',  label: 'Tracing',   icon: Radio },
   { to: '/settings', label: 'Settings',  icon: Settings },
 ]
 

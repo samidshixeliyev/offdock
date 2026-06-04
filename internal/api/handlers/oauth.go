@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -15,18 +16,22 @@ import (
 	"strings"
 	"time"
 
+	"offdock/internal/crypto"
 	authmw "offdock/internal/middleware"
 	"offdock/internal/store"
 )
 
 // ─── Public status (no auth required) ────────────────────────────────────────
 
-// OAuthStatus returns whether OAuth2 login is enabled. Called by the login page
-// before the user is authenticated so it knows whether to show the SSO button.
+// OAuthStatus returns whether OAuth2 login is ready to use. Called by the login
+// page (unauthenticated) to decide whether to show the SSO button.
+// Returns ready=true only when enabled=true AND issuer+clientID are configured.
 func (h *H) OAuthStatus(w http.ResponseWriter, r *http.Request) {
+	s := h.oauthSettings
+	ready := s.Enabled && strings.TrimSpace(s.Issuer) != "" && strings.TrimSpace(s.ClientID) != ""
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled": h.oauthSettings.Enabled && h.oauthSettings.Issuer != "" && h.oauthSettings.ClientID != "",
-		"issuer":  h.oauthSettings.Issuer,
+		"enabled": ready,
+		"issuer":  s.Issuer,
 	})
 }
 
@@ -87,16 +92,18 @@ func (h *H) GetOAuthSettings(w http.ResponseWriter, r *http.Request) {
 	s := h.oauthSettings
 	claimSub, claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":        s.Enabled,
-		"issuer":         s.Issuer,
-		"client_id":      s.ClientID,
-		"secret_set":     s.ClientSecret != "",
-		"redirect_uri":   s.RedirectURI,
-		"scope":          s.Scope,
-		"claim_sub":      claimSub,
-		"claim_email":    claimEmail,
-		"claim_username": claimUsername,
-		"claim_name":     claimName,
+		"enabled":          s.Enabled,
+		"issuer":           s.Issuer,
+		"client_id":        s.ClientID,
+		"secret_set":       s.ClientSecret != "",
+		"redirect_uri":     s.RedirectURI,
+		"scope":            s.Scope,
+		"claim_sub":        claimSub,
+		"claim_email":      claimEmail,
+		"claim_username":   claimUsername,
+		"claim_name":       claimName,
+		"ca_cert_file":     s.CACertFile,
+		"tls_skip_verify":  s.TLSSkipVerify,
 	})
 }
 
@@ -113,15 +120,16 @@ func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 		ClaimEmail    string `json:"claim_email"`
 		ClaimUsername string `json:"claim_username"`
 		ClaimName     string `json:"claim_name"`
+		CACertFile    string `json:"ca_cert_file"`
+		TLSSkipVerify bool   `json:"tls_skip_verify"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Enabled && (req.Issuer == "" || req.ClientID == "" || req.RedirectURI == "") {
-		writeError(w, http.StatusBadRequest, "issuer, client_id, and redirect_uri are required when enabled")
-		return
-	}
+	// Allow saving incomplete config — OAuthStatus will only advertise enabled=true
+	// once all required fields are present, so the login button won't appear until
+	// the user has fully configured the IdP.
 
 	// Keep existing secret if not provided.
 	secret := req.ClientSecret
@@ -143,6 +151,8 @@ func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 		ClaimEmail:    req.ClaimEmail,
 		ClaimUsername: req.ClaimUsername,
 		ClaimName:     req.ClaimName,
+		CACertFile:    req.CACertFile,
+		TLSSkipVerify: req.TLSSkipVerify,
 	}
 
 	if err := updateOAuthConfigYAML(h.oauthSettings); err != nil {
@@ -155,6 +165,26 @@ func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 
 	h.logAudit(r, "update_oauth_settings", "system", "", req.Issuer, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
+}
+
+// ─── TLS-aware HTTP client ────────────────────────────────────────────────────
+
+// oauthHTTPClient builds an *http.Client that trusts the configured CA cert and
+// optionally skips TLS verification for OAuth2/OIDC requests to the IdP.
+func (h *H) oauthHTTPClient() *http.Client {
+	s := h.oauthSettings
+	tlsCfg := &tls.Config{
+		InsecureSkipVerify: s.TLSSkipVerify, //nolint:gosec
+	}
+	if s.CACertFile != "" && !s.TLSSkipVerify {
+		if pool := crypto.LoadCACertPool(s.CACertFile); pool != nil {
+			tlsCfg.RootCAs = pool
+		}
+	}
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+		Timeout:   20 * time.Second,
+	}
 }
 
 // ─── OAuth2 Flow ─────────────────────────────────────────────────────────────
@@ -359,7 +389,7 @@ func (h *H) exchangeCodeForClaims(code, codeVerifier string) (*oauthClaims, erro
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.oauthHTTPClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token endpoint: %w", err)
 	}
@@ -381,15 +411,11 @@ func (h *H) exchangeCodeForClaims(code, codeVerifier string) (*oauthClaims, erro
 		return nil, fmt.Errorf("no access token in response")
 	}
 
-	// Use userinfo endpoint to get claims (avoids needing to verify RS256 JWT locally
-	// when the IdP might rotate keys).
+	// Use the userinfo endpoint exclusively — never parse JWT without signature verification.
+	// If userinfo fails, we reject the login rather than accept unverified identity claims.
 	claims, err := h.fetchUserInfo(tokenResp.AccessToken)
 	if err != nil {
-		// Fall back to parsing JWT claims without signature verification if userinfo fails.
-		claims, err = h.parseJWTClaimsUnsafe(tokenResp.AccessToken)
-		if err != nil {
-			return nil, fmt.Errorf("could not get claims: %w", err)
-		}
+		return nil, fmt.Errorf("userinfo request failed: %w — check issuer URL and TLS settings", err)
 	}
 	return claims, nil
 }
@@ -407,7 +433,7 @@ func (h *H) fetchUserInfo(accessToken string) (*oauthClaims, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := h.oauthHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -420,24 +446,6 @@ func (h *H) fetchUserInfo(accessToken string) (*oauthClaims, error) {
 	var raw map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
-	}
-	return h.mapClaims(raw)
-}
-
-// parseJWTClaimsUnsafe extracts claims from a JWT without verifying the signature.
-// Used only as a fallback when userinfo is unavailable.
-func (h *H) parseJWTClaimsUnsafe(token string) (*oauthClaims, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT structure")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("decode JWT payload: %w", err)
-	}
-	var raw map[string]interface{}
-	if err := json.Unmarshal(payload, &raw); err != nil {
-		return nil, fmt.Errorf("unmarshal JWT payload: %w", err)
 	}
 	return h.mapClaims(raw)
 }
@@ -539,15 +547,17 @@ func updateOAuthConfigYAML(s store.OAuthSettings) error {
 
 	claimSub, claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
 	updates := map[string]string{
-		"oauth_enabled":        boolStr(s.Enabled),
-		"oauth_issuer":         s.Issuer,
-		"oauth_client_id":      s.ClientID,
-		"oauth_redirect_uri":   s.RedirectURI,
-		"oauth_scope":          s.Scope,
-		"oauth_claim_sub":      claimSub,
-		"oauth_claim_email":    claimEmail,
-		"oauth_claim_username": claimUsername,
-		"oauth_claim_name":     claimName,
+		"oauth_enabled":          boolStr(s.Enabled),
+		"oauth_issuer":           s.Issuer,
+		"oauth_client_id":        s.ClientID,
+		"oauth_redirect_uri":     s.RedirectURI,
+		"oauth_scope":            s.Scope,
+		"oauth_claim_sub":        claimSub,
+		"oauth_claim_email":      claimEmail,
+		"oauth_claim_username":   claimUsername,
+		"oauth_claim_name":       claimName,
+		"oauth_ca_cert_file":     s.CACertFile,
+		"oauth_tls_skip_verify":  boolStr(s.TLSSkipVerify),
 	}
 	if s.ClientSecret != "" {
 		updates["oauth_client_secret"] = s.ClientSecret

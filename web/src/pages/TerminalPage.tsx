@@ -52,7 +52,17 @@ export default function TerminalPage() {
     api.listAllContainers().then(cs => setContainers(cs.filter(c => c.State?.toLowerCase() === 'running'))).catch(() => {})
   useEffect(() => { loadContainers() }, [])
 
-  const reconnect = () => setKey(k => k + 1)
+  const reconnect = () => {
+    if (isHost) {
+      // OTP terminal token is single-use — must get a fresh one for every new WS session.
+      setTerminalToken('')
+      setOtpState('idle')
+      setKey(k => k + 1)
+      requestOTP()
+    } else {
+      setKey(k => k + 1)
+    }
+  }
 
   const selectTarget = (t: Target) => {
     setPickerOpen(false)

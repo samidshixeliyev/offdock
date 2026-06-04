@@ -279,15 +279,21 @@ export interface AuditEvent {
 }
 
 export interface TrafficCount { key: string; count: number }
-export interface TrafficBucket { t: string; count: number; bytes: number; err: number }
+export interface TrafficBucket { t: string; count: number; bytes: number; err: number; avg_ms: number }
 export interface TrafficEntry {
   time: string; ip: string; method: string; path: string
   status: number; bytes: number; referer: string; user_agent: string; host: string
+  response_ms: number; upstream_ms: number; upstream_addr: string
 }
 export interface TrafficSummary {
   total: number; bytes: number
   status_2xx: number; status_3xx: number; status_4xx: number; status_5xx: number
   unique_ips: number; rps: number; window_hours: number
+  avg_response_ms: number; p95_response_ms: number; p99_response_ms: number
+}
+export interface HostStat {
+  host: string; total: number; bytes: number; errors: number
+  error_rate: number; avg_ms: number; p95_ms: number
 }
 export interface TrafficReport {
   summary: TrafficSummary
@@ -299,6 +305,18 @@ export interface TrafficReport {
   methods: TrafficCount[]
   recent: TrafficEntry[]
   hosts: string[]
+  slow_requests: TrafficEntry[]
+  by_upstream: TrafficCount[]
+  host_stats: HostStat[]
+}
+export interface TraceEvent {
+  time: string
+  type: 'http_req' | 'http_resp' | 'sql' | 'redis' | 'info' | 'error'
+  method?: string; path?: string; host?: string; status?: number
+  duration_ms?: number
+  query?: string; db_type?: string
+  src?: string; dst?: string; dst_port?: number
+  message?: string
 }
 
 export interface NetworkConnection {
@@ -319,6 +337,17 @@ export interface ConnectionsReport {
   snapshot: string
 }
 
+export interface DeployTag {
+  id: string
+  project_id: string
+  name: string
+  description: string
+  compose_version: number
+  env_version: number
+  created_by: string
+  created_at: string
+}
+
 export type DNSTicketStatus = 'pending' | 'sent' | 'approved' | 'rejected'
 export interface DNSTicket {
   id: string; record_type: string; hostname: string; value: string
@@ -328,8 +357,15 @@ export interface DNSTicket {
 }
 export interface SMTPSettings {
   host: string; port: number; username: string; password_set: boolean
-  from: string; starttls: boolean; insecure_skip_verify: boolean
-  dns_admin_email: string; configured: boolean
+  from: string; mode: string; starttls: boolean; insecure_skip_verify: boolean
+  ca_cert_file: string; dns_admin_email: string; configured: boolean
+}
+
+export interface UsbDrive {
+  mount_point: string
+  label: string
+  free_bytes: number
+  total_bytes: number
 }
 
 export interface OAuthSettings {
@@ -343,6 +379,8 @@ export interface OAuthSettings {
   claim_email: string
   claim_username: string
   claim_name: string
+  ca_cert_file: string
+  tls_skip_verify: boolean
 }
 
 class ApiError extends Error {
@@ -566,6 +604,13 @@ export const api = {
     request<void>(`/api/v1/projects/${projectId}/deployments/${depId}`, { method: 'DELETE' }),
   getDeploySettings: (projectId: string) =>
     request<DeploySettings>(`/api/v1/projects/${projectId}/deploy-settings`),
+  // Deploy tags
+  listDeployTags: (projectId: string) => request<DeployTag[]>(`/api/v1/projects/${projectId}/deploy-tags`),
+  createDeployTag: (projectId: string, data: { name: string; description?: string; compose_version?: number; env_version?: number }) =>
+    request<DeployTag>(`/api/v1/projects/${projectId}/deploy-tags`, { method: 'POST', body: JSON.stringify(data) }),
+  deleteDeployTag: (projectId: string, tagId: string) =>
+    request<void>(`/api/v1/projects/${projectId}/deploy-tags/${tagId}`, { method: 'DELETE' }),
+
   saveDeploySettings: (projectId: string, data: Omit<DeploySettings, 'id' | 'project_id'>) =>
     request<DeploySettings>(`/api/v1/projects/${projectId}/deploy-settings`, {
       method: 'PUT', body: JSON.stringify(data),
@@ -698,16 +743,35 @@ export const api = {
   // OAuth2 / SSO settings
   oauthStatus: () => request<{ enabled: boolean; issuer: string }>('/api/v1/auth/oauth/status'),
   getOAuthSettings: () => request<OAuthSettings>('/api/v1/settings/oauth'),
-  saveOAuthSettings: (data: Partial<OAuthSettings> & { client_secret?: string }) =>
+  saveOAuthSettings: (data: Partial<OAuthSettings> & { client_secret?: string; tls_skip_verify?: boolean }) =>
     request<{ status: string }>('/api/v1/settings/oauth', { method: 'POST', body: JSON.stringify(data) }),
+  // Container deep tracing
+  getTraceStatus: () => request<{ traced: string[] }>('/api/v1/trace/status'),
+  enableTrace: (name: string) =>
+    request<{ status: string }>(`/api/v1/containers/${encodeURIComponent(name)}/trace/enable`, { method: 'POST', body: '{}' }),
+  disableTrace: (name: string) =>
+    request<void>(`/api/v1/containers/${encodeURIComponent(name)}/trace/enable`, { method: 'DELETE' }),
+  traceUrl: (name: string) => `/api/v1/containers/${encodeURIComponent(name)}/trace`,
+
   oauthLoginUrl: (force?: boolean) =>
     `/api/v1/auth/oauth/start${force ? '?force=true' : ''}`,
   oauthLogoutUrl: () => `/api/v1/auth/oauth/logout`,
+
+  // USB drive browser
+  listDrives: () => request<UsbDrive[]>('/api/v1/usb/drives'),
+  browseDrive: (mountPoint: string, path: string) =>
+    request<FileEntry[]>(`/api/v1/usb/browse?mount=${encodeURIComponent(mountPoint)}&path=${encodeURIComponent(path)}`),
+  readUsbFile: (mountPoint: string, path: string) =>
+    request<{ content: string; path: string }>(`/api/v1/usb/read?mount=${encodeURIComponent(mountPoint)}&path=${encodeURIComponent(path)}`),
 
   // System backup — triggers a file download
   downloadBackup: (): void => {
     window.open('/api/v1/system/backup')
   },
+
+  // Self-update
+  getUpdateStatus: () => request<{ can_update: boolean; install_path: string }>('/api/v1/system/update/status'),
+  systemUpdateUrl: () => '/api/v1/system/update',
 
   // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
   uploadFile: (

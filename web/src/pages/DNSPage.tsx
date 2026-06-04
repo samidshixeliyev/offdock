@@ -50,8 +50,9 @@ export default function DNSPage() {
       setSMTP(s)
       setSmtpForm({
         host: s.host, port: s.port, username: s.username,
-        from: s.from, starttls: s.starttls,
+        from: s.from, mode: s.mode || 'starttls', starttls: s.starttls,
         insecure_skip_verify: s.insecure_skip_verify,
+        ca_cert_file: s.ca_cert_file,
         dns_admin_email: s.dns_admin_email,
       })
     } catch { }
@@ -299,6 +300,25 @@ export default function DNSPage() {
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
             </div>
             <div>
+              <label className="block text-xs text-slate-500 mb-1">
+                Connection Mode
+                <span className="ml-1 text-slate-600">(Exchange: starttls/implicit)</span>
+              </label>
+              <select value={smtpForm.mode ?? 'starttls'}
+                onChange={e => {
+                  const m = e.target.value
+                  setSmtpForm(f => ({
+                    ...f, mode: m,
+                    port: m === 'implicit' ? 465 : m === 'plain' ? 25 : 587,
+                  }))
+                }}
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500">
+                <option value="starttls">STARTTLS (port 587) — recommended</option>
+                <option value="implicit">Implicit TLS (port 465) — Exchange SMTPS</option>
+                <option value="plain">Plain / No TLS (port 25)</option>
+              </select>
+            </div>
+            <div>
               <label className="block text-xs text-slate-500 mb-1">Port</label>
               <input type="number" value={smtpForm.port ?? 587} onChange={e => setSmtpForm(f => ({ ...f, port: parseInt(e.target.value) || 587 }))}
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
@@ -334,20 +354,20 @@ export default function DNSPage() {
                 placeholder="dns-admin@corp.local"
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
             </div>
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-                <input type="checkbox" checked={smtpForm.starttls ?? true}
-                  onChange={e => setSmtpForm(f => ({ ...f, starttls: e.target.checked }))}
-                  className="rounded border-slate-600 bg-slate-800" />
-                Use STARTTLS
+            <div className="col-span-2">
+              <label className="block text-xs text-slate-500 mb-1">
+                CA Certificate File <span className="text-slate-600">(path on server — for Exchange self-signed certificates)</span>
               </label>
+              <input value={smtpForm.ca_cert_file ?? ''} onChange={e => setSmtpForm(f => ({ ...f, ca_cert_file: e.target.value }))}
+                placeholder="/etc/offdock/certs/exchange-ca.pem  (leave blank to use system CAs)"
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
             </div>
             <div className="flex items-center gap-3">
               <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
                 <input type="checkbox" checked={smtpForm.insecure_skip_verify ?? false}
                   onChange={e => setSmtpForm(f => ({ ...f, insecure_skip_verify: e.target.checked }))}
                   className="rounded border-slate-600 bg-slate-800" />
-                Skip TLS verification (self-signed cert)
+                Skip TLS verification <span className="text-xs text-slate-600">(not recommended — use CA cert instead)</span>
               </label>
             </div>
           </div>
