@@ -405,8 +405,15 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 	}
 
 	if dstPort == 5432 || srcPort == 5432 {
-		if q := extractSQL(payload, []string{"SELECT", "INSERT", "UPDATE", "DELETE",
-			"CREATE", "DROP", "ALTER", "BEGIN", "COMMIT", "ROLLBACK", "WITH", "CALL"}); q != "" {
+		pgKeywords := []string{"SELECT", "INSERT", "UPDATE", "DELETE",
+			"CREATE", "DROP", "ALTER", "BEGIN", "COMMIT", "ROLLBACK", "WITH", "CALL", "EXECUTE"}
+		// Try asyncpg Extended Query Protocol first: "P...<stmt_name>.<SQL>"
+		// The 'P' byte (0x50) is the Parse message type in the PG wire protocol.
+		if q := extractPostgresExtended(payload, pgKeywords); q != "" {
+			return &TraceSpan{Type: TraceSQL, DBType: "postgresql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
+		}
+		// Fall back to Simple Query Protocol: "Q...<SQL>\0"
+		if q := extractSQL(payload, pgKeywords); q != "" {
 			return &TraceSpan{Type: TraceSQL, DBType: "postgresql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
@@ -422,6 +429,57 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 		}
 	}
 	return nil
+}
+
+// extractPostgresExtended handles the PostgreSQL Extended Query Protocol
+// used by asyncpg, psycopg3, JDBC, and most modern drivers.
+// Format: P<len4><stmt_name>\0<sql_text>\0
+// In ASCII tcpdump output this appears as: P...__stmt_name__.<SQL text>
+// We strip the statement name prefix to return clean SQL.
+func extractPostgresExtended(payload string, keywords []string) string {
+	// Look for the pattern: after "P" and some binary bytes, find an asyncpg/JDBC
+	// statement name like "__asyncpg_stmt_N__." or "S1." or just a null-byte boundary.
+	// Strategy: find the keyword in the payload, then walk backwards to confirm
+	// we're past a statement-name boundary (null byte or known prefix).
+	upper := strings.ToUpper(payload)
+	for _, kw := range keywords {
+		idx := strings.Index(upper, kw)
+		if idx < 0 {
+			continue
+		}
+		if idx > 0 {
+			prev := payload[idx-1]
+			// Check prev char is not alphanumeric (avoid false positives mid-word)
+			if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+				continue
+			}
+			// Must be preceded by a dot, null, or whitespace (statement name boundary)
+			if prev != '.' && prev != 0 && prev != ' ' && prev != '\n' && prev != '\r' {
+				// Relax: also allow if within 32 bytes of a 'P' byte (Parse message start)
+				start := idx - 32
+				if start < 0 {
+					start = 0
+				}
+				hasPMsg := strings.ContainsRune(payload[start:idx], 'P')
+				if !hasPMsg {
+					continue
+				}
+			}
+		}
+		q := extractPrintableFrom(payload[idx:], 4096)
+		// Clean up: remove trailing asyncpg metadata that follows the null-terminated SQL
+		if q = strings.TrimSpace(q); len(q) > 3 {
+			// Remove any trailing "...D....S__asyncpg_stmt_..." noise
+			if cut := strings.Index(q, "...D"); cut > 10 {
+				q = strings.TrimSpace(q[:cut])
+			}
+			if cut := strings.Index(q, "\x00"); cut > 3 {
+				q = strings.TrimSpace(q[:cut])
+			}
+			return q
+		}
+	}
+	return ""
 }
 
 func extractSQL(payload string, keywords []string) string {
