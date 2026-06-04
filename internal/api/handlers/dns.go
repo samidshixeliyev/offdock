@@ -183,6 +183,8 @@ func (h *H) GetSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		"starttls":             s.StartTLS,
 		"insecure_skip_verify": s.SkipVerify,
 		"ca_cert_file":         s.CACertFile,
+		"client_cert_file":     s.ClientCertFile,
+		"client_key_file":      s.ClientKeyFile,
 		"dns_admin_email":      s.AdminEmail,
 		"configured":           h.mailer.Configured(),
 	})
@@ -198,9 +200,11 @@ func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		From          string `json:"from"`
 		Mode          string `json:"mode"`              // "starttls" | "implicit" | "plain"
 		StartTLS      bool   `json:"starttls"`          // legacy
-		SkipVerify    bool   `json:"insecure_skip_verify"`
-		CACertFile    string `json:"ca_cert_file"`
-		DNSAdminEmail string `json:"dns_admin_email"`
+		SkipVerify     bool   `json:"insecure_skip_verify"`
+		CACertFile     string `json:"ca_cert_file"`
+		ClientCertFile string `json:"client_cert_file"`
+		ClientKeyFile  string `json:"client_key_file"`
+		DNSAdminEmail  string `json:"dns_admin_email"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -230,18 +234,20 @@ func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.smtpSettings = store.SMTPSettings{
-		Host:       req.Host,
-		Port:       req.Port,
-		Username:   req.Username,
-		Password:   password,
-		From:       req.From,
-		Mode:       mode,
-		StartTLS:   req.StartTLS,
-		SkipVerify: req.SkipVerify,
-		CACertFile: req.CACertFile,
-		AdminEmail: req.DNSAdminEmail,
+		Host:           req.Host,
+		Port:           req.Port,
+		Username:       req.Username,
+		Password:       password,
+		From:           req.From,
+		Mode:           mode,
+		StartTLS:       req.StartTLS,
+		SkipVerify:     req.SkipVerify,
+		CACertFile:     req.CACertFile,
+		ClientCertFile: req.ClientCertFile,
+		ClientKeyFile:  req.ClientKeyFile,
+		AdminEmail:     req.DNSAdminEmail,
 	}
-	h.mailer = mailer.New(req.Host, req.Port, req.Username, password, req.From, mode, req.SkipVerify, req.CACertFile)
+	h.mailer = mailer.NewWithClientCert(req.Host, req.Port, req.Username, password, req.From, mode, req.SkipVerify, req.CACertFile, req.ClientCertFile, req.ClientKeyFile)
 
 	// Persist to config.yaml.
 	if err := updateConfigYAML(h.smtpSettings); err != nil {
@@ -356,6 +362,8 @@ func updateConfigYAML(s store.SMTPSettings) error {
 		"smtp_starttls":             boolStr(s.StartTLS),
 		"smtp_insecure_skip_verify": boolStr(s.SkipVerify),
 		"smtp_ca_cert_file":         s.CACertFile,
+		"smtp_client_cert_file":     s.ClientCertFile,
+		"smtp_client_key_file":      s.ClientKeyFile,
 		"dns_admin_email":           s.AdminEmail,
 	}
 	if s.Password != "" {

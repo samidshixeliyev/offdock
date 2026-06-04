@@ -53,6 +53,8 @@ export default function DNSPage() {
         from: s.from, mode: s.mode || 'starttls', starttls: s.starttls,
         insecure_skip_verify: s.insecure_skip_verify,
         ca_cert_file: s.ca_cert_file,
+        client_cert_file: s.client_cert_file,
+        client_key_file: s.client_key_file,
         dns_admin_email: s.dns_admin_email,
       })
     } catch { }
@@ -361,6 +363,24 @@ export default function DNSPage() {
               <input value={smtpForm.ca_cert_file ?? ''} onChange={e => setSmtpForm(f => ({ ...f, ca_cert_file: e.target.value }))}
                 placeholder="/etc/offdock/certs/exchange-ca.pem  (leave blank to use system CAs)"
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">
+                Client Certificate File <span className="text-slate-600">(path on server)</span>
+              </label>
+              <input value={smtpForm.client_cert_file ?? ''} onChange={e => setSmtpForm(f => ({ ...f, client_cert_file: e.target.value }))}
+                placeholder="/etc/offdock/certs/smtp-client.pem"
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+              <p className="text-[11px] text-slate-600 mt-1">For mutual TLS (some Exchange servers require this)</p>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">
+                Client Key File <span className="text-slate-600">(path on server)</span>
+              </label>
+              <input value={smtpForm.client_key_file ?? ''} onChange={e => setSmtpForm(f => ({ ...f, client_key_file: e.target.value }))}
+                placeholder="/etc/offdock/certs/smtp-client.key"
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+              <p className="text-[11px] text-slate-600 mt-1">For mutual TLS (some Exchange servers require this)</p>
             </div>
             <div className="flex items-center gap-3">
               <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">

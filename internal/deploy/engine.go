@@ -172,9 +172,13 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		now := time.Now().UTC()
 		if errors.Is(reason, context.Canceled) {
 			rec.Status = store.DeployStatusCancelled
+			log("[STAGE:ERROR] Cancelled")
+			rec.LogText += "\n[STAGE:ERROR] Cancelled"
 			rec.LogText += "\nCANCELLED"
 		} else {
 			rec.Status = store.DeployStatusFailed
+			log("[STAGE:ERROR] " + reason.Error())
+			rec.LogText += "\n[STAGE:ERROR] " + reason.Error()
 			rec.LogText += "\nFAILED: " + reason.Error()
 		}
 		rec.FinishedAt = &now
@@ -197,12 +201,14 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		return fail(fmt.Errorf("create project dir: %w", err))
 	}
 
+	appendLog("[STAGE] Resolving versions")
 	appendLog("Deploy started — compose v%d, env v%d, project %q", selectedCompose.Version, envVerUsed, project.Name)
 	appendLog("Settings — health timeout %ds, deploy timeout %ds, stable %ds",
 		settings.HealthTimeoutSecs, settings.DeployTimeoutSecs, settings.HealthStableSecs)
 
 	// ── Step 1: Write docker-compose.yml ─────────────────────────────────────
 	composePath := filepath.Join(projectDir, "docker-compose.yml")
+	appendLog("[STAGE] Writing compose + env")
 	appendLog("[1/4] Writing docker-compose.yml (compose v%d)", selectedCompose.Version)
 	if err := atomicWrite(composePath, []byte(selectedCompose.RawYAML)); err != nil {
 		return fail(fmt.Errorf("write compose: %w", err))
@@ -227,6 +233,7 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	// ── Step 3: Force-recreate all containers ────────────────────────────────
 	// --force-recreate rebuilds every container even when the image digest
 	// hasn't changed, ensuring env vars, ports, volumes, and config are applied.
+	appendLog("[STAGE] Running docker compose")
 	appendLog("[3/4] Applying compose v%d (force-recreate, remove-orphans)…", selectedCompose.Version)
 	upOut, err := e.docker.ComposeUp(ctx, safeProject, composePath, true)
 	if t := strings.TrimSpace(upOut); t != "" {
@@ -239,6 +246,7 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	// ── Step 4: Health check ─────────────────────────────────────────────────
 	healthTimeout := time.Duration(settings.HealthTimeoutSecs) * time.Second
 	stableFor := time.Duration(settings.HealthStableSecs) * time.Second
+	appendLog("[STAGE] Health check")
 	appendLog("[4/4] Waiting for containers to become healthy (timeout %s, stable %s)…", healthTimeout, stableFor)
 	if err := e.waitHealthy(ctx, safeProject, composePath, healthTimeout, stableFor, appendLog); err != nil {
 		return fail(fmt.Errorf("health check failed: %w", err))
@@ -249,6 +257,7 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		return n.ProjectID == projectID && n.Active
 	})
 	if len(nginxCfgs) > 0 {
+		appendLog("[STAGE] Nginx reload")
 		appendLog("Reloading nginx config…")
 		if _, err := nginxpkg.Apply(nginxCfgs[0], project.Name); err != nil {
 			appendLog("  WARNING: nginx reload failed: %v", err)
@@ -265,6 +274,7 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	project.UpdatedAt = time.Now().UTC()
 	_ = e.db.Projects.Save(project)
 
+	appendLog("[STAGE] Complete")
 	appendLog("Deployment complete in %s", time.Since(rec.StartedAt).Round(time.Millisecond))
 	return &rec, nil
 }

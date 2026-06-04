@@ -93,20 +93,23 @@ func main() {
 	if smtpMode == "" && cfg.SMTPStartTLS {
 		smtpMode = "starttls"
 	}
-	m := mailer.New(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword,
-		cfg.SMTPFrom, smtpMode, cfg.SMTPSkipVerify, cfg.SMTPCACertFile)
+	m := mailer.NewWithClientCert(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword,
+		cfg.SMTPFrom, smtpMode, cfg.SMTPSkipVerify, cfg.SMTPCACertFile,
+		cfg.SMTPClientCertFile, cfg.SMTPClientKeyFile)
 
 	smtpSettings := store.SMTPSettings{
-		Host:       cfg.SMTPHost,
-		Port:       cfg.SMTPPort,
-		Username:   cfg.SMTPUsername,
-		Password:   cfg.SMTPPassword,
-		From:       cfg.SMTPFrom,
-		Mode:       smtpMode,
-		StartTLS:   cfg.SMTPStartTLS,
-		SkipVerify: cfg.SMTPSkipVerify,
-		CACertFile: cfg.SMTPCACertFile,
-		AdminEmail: cfg.DNSAdminEmail,
+		Host:           cfg.SMTPHost,
+		Port:           cfg.SMTPPort,
+		Username:       cfg.SMTPUsername,
+		Password:       cfg.SMTPPassword,
+		From:           cfg.SMTPFrom,
+		Mode:           smtpMode,
+		StartTLS:       cfg.SMTPStartTLS,
+		SkipVerify:     cfg.SMTPSkipVerify,
+		CACertFile:     cfg.SMTPCACertFile,
+		ClientCertFile: cfg.SMTPClientCertFile,
+		ClientKeyFile:  cfg.SMTPClientKeyFile,
+		AdminEmail:     cfg.DNSAdminEmail,
 	}
 
 	oauthSettings := store.OAuthSettings{

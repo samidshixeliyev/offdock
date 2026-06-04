@@ -218,6 +218,12 @@ func NewRouter(deps Deps) http.Handler {
 		r.With(authmw.RequirePermission(deps.DB, store.PermTerminal)).
 			Get("/api/v1/containers/{name}/trace", h.ContainerTrace)
 
+		// Persisted trace sessions — list, replay, delete.
+		r.Get("/api/v1/trace/sessions", h.ListTraceSessions)
+		r.Get("/api/v1/trace/sessions/{id}", h.GetTraceSession)
+		r.With(authmw.RequirePermission(deps.DB, store.PermTerminal)).
+			Delete("/api/v1/trace/sessions/{id}", h.DeleteTraceSession)
+
 		// DNS ticket management
 		r.Get("/api/v1/dns/tickets", h.ListDNSTickets)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageDNS)).Post("/api/v1/dns/tickets", h.CreateDNSTicket)

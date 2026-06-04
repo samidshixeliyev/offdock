@@ -107,6 +107,7 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 					CreatedAt:      timeNow(),
 				}
 				h.db.DeployTags.Save(tag) //nolint:errcheck
+				h.trimAutoTags(projectID, 20)
 			}
 			statusPayload := map[string]any{
 				"status":        rec.Status,

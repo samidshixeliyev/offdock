@@ -290,6 +290,7 @@ export interface TrafficSummary {
   status_2xx: number; status_3xx: number; status_4xx: number; status_5xx: number
   unique_ips: number; rps: number; window_hours: number
   avg_response_ms: number; p95_response_ms: number; p99_response_ms: number
+  avg_bytes_per_req: number
 }
 export interface HostStat {
   host: string; total: number; bytes: number; errors: number
@@ -308,6 +309,7 @@ export interface TrafficReport {
   slow_requests: TrafficEntry[]
   by_upstream: TrafficCount[]
   host_stats: HostStat[]
+  top_user_agents: TrafficCount[]
 }
 export interface TraceEvent {
   time: string
@@ -317,6 +319,26 @@ export interface TraceEvent {
   query?: string; db_type?: string
   src?: string; dst?: string; dst_port?: number
   message?: string
+}
+
+export interface TraceSessionSummary {
+  id: string
+  container_name: string
+  started_at: string
+  ended_at: string | null
+  event_count: number
+  http_count: number
+  sql_count: number
+  redis_count: number
+}
+
+export interface TraceSession {
+  id: string
+  container_name: string
+  started_at: string
+  ended_at: string | null
+  event_count: number
+  events: TraceEvent[]
 }
 
 export interface NetworkConnection {
@@ -358,7 +380,8 @@ export interface DNSTicket {
 export interface SMTPSettings {
   host: string; port: number; username: string; password_set: boolean
   from: string; mode: string; starttls: boolean; insecure_skip_verify: boolean
-  ca_cert_file: string; dns_admin_email: string; configured: boolean
+  ca_cert_file: string; client_cert_file: string; client_key_file: string
+  dns_admin_email: string; configured: boolean
 }
 
 export interface UsbDrive {
@@ -752,6 +775,11 @@ export const api = {
   disableTrace: (name: string) =>
     request<void>(`/api/v1/containers/${encodeURIComponent(name)}/trace/enable`, { method: 'DELETE' }),
   traceUrl: (name: string) => `/api/v1/containers/${encodeURIComponent(name)}/trace`,
+  // Persisted trace sessions
+  listTraceSessions: () => request<TraceSessionSummary[]>('/api/v1/trace/sessions'),
+  getTraceSession: (id: string) => request<TraceSession>(`/api/v1/trace/sessions/${id}`),
+  deleteTraceSession: (id: string) =>
+    request<void>(`/api/v1/trace/sessions/${id}`, { method: 'DELETE' }),
 
   oauthLoginUrl: (force?: boolean) =>
     `/api/v1/auth/oauth/start${force ? '?force=true' : ''}`,

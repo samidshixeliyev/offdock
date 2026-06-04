@@ -331,20 +331,55 @@ type DNSTicket struct {
 
 func (d DNSTicket) GetID() string { return d.ID }
 
+// --- TraceSession -----------------------------------------------------------
+
+// TraceEvent mirrors a single TraceSpan captured during a container trace.
+// It is persisted as part of a TraceSession so traces survive browser close.
+type TraceEvent struct {
+	Time       string  `json:"time" msgpack:"time"`
+	Type       string  `json:"type" msgpack:"type"`
+	Method     string  `json:"method,omitempty" msgpack:"method,omitempty"`
+	Path       string  `json:"path,omitempty" msgpack:"path,omitempty"`
+	Host       string  `json:"host,omitempty" msgpack:"host,omitempty"`
+	Status     int     `json:"status,omitempty" msgpack:"status,omitempty"`
+	DurationMs float64 `json:"duration_ms,omitempty" msgpack:"duration_ms,omitempty"`
+	Query      string  `json:"query,omitempty" msgpack:"query,omitempty"`
+	DBType     string  `json:"db_type,omitempty" msgpack:"db_type,omitempty"`
+	Src        string  `json:"src,omitempty" msgpack:"src,omitempty"`
+	Dst        string  `json:"dst,omitempty" msgpack:"dst,omitempty"`
+	DstPort    int     `json:"dst_port,omitempty" msgpack:"dst_port,omitempty"`
+	Message    string  `json:"message,omitempty" msgpack:"message,omitempty"`
+}
+
+// TraceSession is a persisted record of a container trace session, including
+// every captured event. Created when a trace stream opens, finalised on close.
+type TraceSession struct {
+	ID            string       `json:"id" msgpack:"id"`
+	ContainerName string       `json:"container_name" msgpack:"container_name"`
+	StartedAt     time.Time    `json:"started_at" msgpack:"started_at"`
+	EndedAt       *time.Time   `json:"ended_at" msgpack:"ended_at"`
+	EventCount    int          `json:"event_count" msgpack:"event_count"`
+	Events        []TraceEvent `json:"events" msgpack:"events"`
+}
+
+func (t TraceSession) GetID() string { return t.ID }
+
 // --- SMTPConfig (runtime, from config.yaml via handlers) --------------------
 
 // SMTPSettings mirrors the SMTP fields from Config for passing to handlers.
 type SMTPSettings struct {
-	Host       string
-	Port       int
-	Username   string
-	Password   string
-	From       string
-	Mode       string // "starttls" | "implicit" | "plain"
-	StartTLS   bool   // legacy
-	SkipVerify bool
-	CACertFile string // path to custom CA cert PEM
-	AdminEmail string
+	Host           string
+	Port           int
+	Username       string
+	Password       string
+	From           string
+	Mode           string // "starttls" | "implicit" | "plain"
+	StartTLS       bool   // legacy
+	SkipVerify     bool
+	CACertFile     string // path to custom CA cert PEM
+	ClientCertFile string // path to client cert PEM (mutual TLS)
+	ClientKeyFile  string // path to client key PEM (mutual TLS)
+	AdminEmail     string
 }
 
 // SMTPMode returns the effective connection mode.

@@ -3,11 +3,29 @@ package handlers
 import (
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	authmw "offdock/internal/middleware"
 	"offdock/internal/store"
 )
+
+// trimAutoTags keeps only the most recent `keep` auto-generated tags (name
+// prefixed "deploy-") for a project, deleting the oldest beyond that to avoid
+// list clutter. Errors are best-effort — trimming never blocks a deploy.
+func (h *H) trimAutoTags(projectID string, keep int) {
+	tags, err := h.db.DeployTags.FindWhere(func(t store.DeployTag) bool {
+		return t.ProjectID == projectID && strings.HasPrefix(t.Name, "deploy-")
+	})
+	if err != nil || len(tags) <= keep {
+		return
+	}
+	sort.Slice(tags, func(i, j int) bool { return tags[i].CreatedAt.After(tags[j].CreatedAt) })
+	for _, t := range tags[keep:] {
+		h.db.DeployTags.Delete(t.ID) //nolint:errcheck
+	}
+}
 
 // ListDeployTags returns all tags for a project.
 func (h *H) ListDeployTags(w http.ResponseWriter, r *http.Request) {

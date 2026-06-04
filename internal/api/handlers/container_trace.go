@@ -15,7 +15,27 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	authmw "offdock/internal/middleware"
+	"offdock/internal/store"
 )
+
+// toTraceEvent converts an ephemeral TraceSpan into a persistable store.TraceEvent.
+func toTraceEvent(ev TraceSpan) store.TraceEvent {
+	return store.TraceEvent{
+		Time:       ev.Time,
+		Type:       string(ev.Type),
+		Method:     ev.Method,
+		Path:       ev.Path,
+		Host:       ev.Host,
+		Status:     ev.Status,
+		DurationMs: ev.DurationMs,
+		Query:      ev.Query,
+		DBType:     ev.DBType,
+		Src:        ev.Src,
+		Dst:        ev.Dst,
+		DstPort:    ev.DstPort,
+		Message:    ev.Message,
+	}
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -189,9 +209,43 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build a persistent trace session that captures every event. It is saved
+	// to the DB when the stream closes (client disconnect, stop, or error).
+	session := store.TraceSession{
+		ID:            store.NewULID(),
+		ContainerName: name,
+		StartedAt:     time.Now().UTC(),
+	}
+	var sessionMu sync.Mutex
+	saved := false
+	saveSession := func() {
+		sessionMu.Lock()
+		defer sessionMu.Unlock()
+		if saved {
+			return
+		}
+		saved = true
+		now := time.Now().UTC()
+		session.EndedAt = &now
+		session.EventCount = len(session.Events)
+		// Only persist sessions that captured real protocol events (skip
+		// sessions that only ever saw the info banner).
+		if session.EventCount == 0 {
+			return
+		}
+		_ = h.db.TraceSessions.Save(session)
+	}
+	defer saveSession()
+
 	send := func(ev TraceSpan) {
 		if ev.Time == "" {
 			ev.Time = time.Now().UTC().Format("15:04:05.000")
+		}
+		// Persist every captured protocol event (skip the info banner / heartbeats).
+		if ev.Type != TraceInfo {
+			sessionMu.Lock()
+			session.Events = append(session.Events, toTraceEvent(ev))
+			sessionMu.Unlock()
 		}
 		b, _ := json.Marshal(ev)
 		fmt.Fprintf(w, "data: %s\n\n", b)

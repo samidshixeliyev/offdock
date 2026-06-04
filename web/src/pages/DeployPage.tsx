@@ -1,7 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api, ComposeConfig, DeploymentRecord, DeploySettings, EnvVarSet, DeployTag } from '../api/client'
 import clsx from 'clsx'
+import {
+  Search, FileText, Container as ContainerIcon, HeartPulse, Server, CheckCircle2,
+  Loader2, AlertCircle, RotateCcw, Rocket,
+} from 'lucide-react'
 
 function duration(d: DeploymentRecord) {
   if (!d.finished_at) return '—'
@@ -10,8 +14,126 @@ function duration(d: DeploymentRecord) {
   return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`
 }
 
+function relativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  if (ms < 60000) return 'just now'
+  if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`
+  if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`
+  return `${Math.floor(ms / 86400000)}d ago`
+}
+
 const statusBadge = (s: string) =>
   ({ pending: 'badge-pending', running: 'badge-pending', success: 'badge-running', failed: 'badge-error', cancelled: 'badge-stopped' } as Record<string, string>)[s] ?? 'badge-stopped'
+
+// ─── Deploy pipeline ──────────────────────────────────────────────────────────
+
+type StageStatus = 'pending' | 'running' | 'done' | 'error'
+
+interface StageDef { id: string; label: string; icon: typeof Search; marker: string }
+
+// Maps the [STAGE] markers emitted by the deploy engine to visual stages.
+const PIPELINE_STAGES: StageDef[] = [
+  { id: 'resolve', label: 'Resolve', icon: Search, marker: 'Resolving versions' },
+  { id: 'write', label: 'Write Files', icon: FileText, marker: 'Writing compose + env' },
+  { id: 'deploy', label: 'Deploy', icon: ContainerIcon, marker: 'Running docker compose' },
+  { id: 'health', label: 'Health Check', icon: HeartPulse, marker: 'Health check' },
+  { id: 'nginx', label: 'Nginx', icon: Server, marker: 'Nginx reload' },
+  { id: 'done', label: 'Done', icon: CheckCircle2, marker: 'Complete' },
+]
+
+interface StageState { status: StageStatus; elapsedMs?: number }
+
+// Derives per-stage status + elapsed time from the ordered log lines.
+function computePipeline(log: string[], deploying: boolean): { stages: Record<string, StageState>; errorStageIdx: number } {
+  const stages: Record<string, StageState> = {}
+  for (const s of PIPELINE_STAGES) stages[s.id] = { status: 'pending' }
+
+  // Find the index in PIPELINE_STAGES each marker corresponds to, and the
+  // wall-clock-free ordering (line index) for elapsed estimation is not
+  // available; we instead mark progression: a stage is "done" once a later
+  // stage marker appears, "running" if it is the latest seen.
+  let latestIdx = -1
+  let errorStageIdx = -1
+
+  for (const line of log) {
+    const errMatch = line.match(/\[STAGE:ERROR\]/)
+    if (errMatch) {
+      // The error belongs to the most recently started stage (or resolve).
+      errorStageIdx = latestIdx >= 0 ? latestIdx : 0
+      continue
+    }
+    const m = line.match(/\[STAGE\]\s*(.+)$/)
+    if (!m) continue
+    const markerText = m[1].trim()
+    const idx = PIPELINE_STAGES.findIndex(s => s.marker === markerText)
+    if (idx === -1) continue
+    // Everything before this is done.
+    for (let i = 0; i < idx; i++) {
+      if (stages[PIPELINE_STAGES[i].id].status !== 'error') stages[PIPELINE_STAGES[i].id].status = 'done'
+    }
+    latestIdx = idx
+  }
+
+  if (errorStageIdx >= 0) {
+    stages[PIPELINE_STAGES[errorStageIdx].id].status = 'error'
+    // Stages before the error are done; stages after stay pending.
+    for (let i = 0; i < errorStageIdx; i++) {
+      if (stages[PIPELINE_STAGES[i].id].status !== 'error') stages[PIPELINE_STAGES[i].id].status = 'done'
+    }
+  } else if (latestIdx >= 0) {
+    const latestStage = PIPELINE_STAGES[latestIdx]
+    if (latestStage.id === 'done') {
+      stages[latestStage.id].status = 'done'
+    } else {
+      stages[latestStage.id].status = deploying ? 'running' : 'done'
+    }
+  }
+
+  return { stages, errorStageIdx }
+}
+
+function PipelineBar({ log, deploying }: { log: string[]; deploying: boolean }) {
+  const { stages } = useMemo(() => computePipeline(log, deploying), [log, deploying])
+  const started = log.length > 0
+
+  const stageIcon = (st: StageStatus, Icon: typeof Search) => {
+    switch (st) {
+      case 'running': return <Loader2 className="w-4 h-4 animate-spin" />
+      case 'done': return <CheckCircle2 className="w-4 h-4" />
+      case 'error': return <AlertCircle className="w-4 h-4" />
+      default: return <Icon className="w-4 h-4" />
+    }
+  }
+  const stageClasses = (st: StageStatus) => {
+    switch (st) {
+      case 'running': return 'bg-blue-500/15 border-blue-500/40 text-blue-300 animate-pulse'
+      case 'done': return 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+      case 'error': return 'bg-red-500/15 border-red-500/40 text-red-300'
+      default: return 'bg-slate-900 border-slate-800 text-slate-600'
+    }
+  }
+  const connectorClass = (st: StageStatus) =>
+    st === 'done' ? 'bg-emerald-500/40' : st === 'error' ? 'bg-red-500/40' : st === 'running' ? 'bg-blue-500/40' : 'bg-slate-800'
+
+  return (
+    <div className="flex items-center gap-1 mb-4 overflow-x-auto pb-1">
+      {PIPELINE_STAGES.map((s, i) => {
+        const st = stages[s.id].status
+        return (
+          <div key={s.id} className="flex items-center shrink-0">
+            <div className={clsx('flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors', stageClasses(started ? st : 'pending'))}>
+              {stageIcon(started ? st : 'pending', s.icon)}
+              <span className="text-xs font-medium whitespace-nowrap">{s.label}</span>
+            </div>
+            {i < PIPELINE_STAGES.length - 1 && (
+              <div className={clsx('h-0.5 w-5 shrink-0 transition-colors', connectorClass(started ? st : 'pending'))} />
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 export default function DeployPage() {
   const { id } = useParams<{ id: string }>()
@@ -75,7 +197,11 @@ export default function DeployPage() {
   }, [id])
 
   useEffect(() => {
-    if (logRef.current && isAtBottomRef.current) {
+    if (!logRef.current) return
+    const last = log[log.length - 1] ?? ''
+    const isError = /\[STAGE:ERROR\]|✗ Error|FAILED/.test(last)
+    // Always scroll to surface errors; otherwise respect the user's scroll position.
+    if (isError || isAtBottomRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
   }, [log])
@@ -143,6 +269,15 @@ export default function DeployPage() {
   const latestCompose = composeHistory[0]
   const latestEnv = envHistory[0]
 
+  // Most recent successful deployment — drives the "currently running" banner
+  // and the quick-rollback target.
+  const lastSuccessful = useMemo(
+    () => deployments
+      .filter(d => d.status === 'success')
+      .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0],
+    [deployments],
+  )
+
   return (
     <div className="p-6 max-w-5xl space-y-6 animate-fadeIn">
 
@@ -181,6 +316,9 @@ export default function DeployPage() {
             )}
           </button>
         </div>
+
+        {/* Visual pipeline */}
+        {log.length > 0 && <PipelineBar log={log} deploying={deploying} />}
 
         {/* Terminal-style log panel */}
         <div className="rounded-xl border border-slate-800 overflow-hidden bg-slate-950">
@@ -242,6 +380,35 @@ export default function DeployPage() {
               <><span className="text-base leading-none">＋</span> Tag current version</>
             )}
           </button>
+        </div>
+
+        {/* Currently running + quick rollback */}
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Rocket className="w-4 h-4 text-emerald-400 shrink-0" />
+            {lastSuccessful ? (
+              <p className="text-xs text-slate-400">
+                Currently running:&nbsp;
+                <span className="text-slate-200 font-semibold font-mono">compose v{lastSuccessful.new_compose_version}</span>
+                <span className="text-slate-600"> · </span>
+                <span className="text-slate-200 font-semibold font-mono">{lastSuccessful.env_version > 0 ? `env v${lastSuccessful.env_version}` : 'no env'}</span>
+                <span className="text-slate-600"> (deployed {relativeTime(lastSuccessful.started_at)})</span>
+              </p>
+            ) : (
+              <p className="text-xs text-slate-500">No successful deployment yet</p>
+            )}
+          </div>
+          {lastSuccessful && (
+            <button
+              onClick={() => startDeploy(lastSuccessful.new_compose_version, lastSuccessful.env_version)}
+              disabled={deploying}
+              title="Re-deploy the last successful compose + env version"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium transition-all disabled:opacity-40 shrink-0"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              Quick rollback to last successful deploy
+            </button>
+          )}
         </div>
 
         {/* Tag list */}
@@ -571,20 +738,33 @@ export default function DeployPage() {
                       </td>
                       <td className="px-4 py-2.5">
                         {d.status !== 'running' && d.status !== 'pending' && (
-                          <button
-                            title="Delete deployment record"
-                            onClick={async () => {
-                              if (!id) return
-                              await api.deleteDeployment(id, d.id).catch(() => {})
-                              setDeployments(prev => prev.filter(x => x.id !== d.id))
-                              if (expandLog === d.id) setExpandLog(null)
-                            }}
-                            className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all p-1 rounded hover:bg-red-500/10"
-                          >
-                            <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
-                              <path fillRule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.808a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clipRule="evenodd" />
-                            </svg>
-                          </button>
+                          <div className="flex items-center justify-end gap-1">
+                            {d.status === 'success' && (
+                              <button
+                                title="Re-deploy this compose + env version"
+                                disabled={deploying}
+                                onClick={() => startDeploy(d.new_compose_version, d.env_version)}
+                                className="opacity-0 group-hover:opacity-100 flex items-center gap-1 text-xs text-slate-500 hover:text-emerald-400 transition-all px-1.5 py-1 rounded hover:bg-emerald-500/10 disabled:opacity-40"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5" />
+                                <span className="hidden sm:inline">Rollback to this</span>
+                              </button>
+                            )}
+                            <button
+                              title="Delete deployment record"
+                              onClick={async () => {
+                                if (!id) return
+                                await api.deleteDeployment(id, d.id).catch(() => {})
+                                setDeployments(prev => prev.filter(x => x.id !== d.id))
+                                if (expandLog === d.id) setExpandLog(null)
+                              }}
+                              className="opacity-0 group-hover:opacity-100 text-slate-600 hover:text-red-400 transition-all p-1 rounded hover:bg-red-500/10"
+                            >
+                              <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5">
+                                <path fillRule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.808a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clipRule="evenodd" />
+                              </svg>
+                            </button>
+                          </div>
                         )}
                       </td>
                     </tr>

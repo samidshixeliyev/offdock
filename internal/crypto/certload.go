@@ -1,8 +1,10 @@
 package crypto
 
 import (
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"os"
 )
 
@@ -51,4 +53,18 @@ func LoadCACertPool(path string) *x509.CertPool {
 		return nil
 	}
 	return pool
+}
+
+// LoadClientCertificate loads a client certificate + private key pair (PEM)
+// for use in mutual TLS. Both paths must be non-empty. Returns an error if the
+// pair cannot be loaded so callers can surface configuration mistakes.
+func LoadClientCertificate(certFile, keyFile string) (tls.Certificate, error) {
+	if certFile == "" || keyFile == "" {
+		return tls.Certificate{}, fmt.Errorf("both client cert and key files are required")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("load client cert/key: %w", err)
+	}
+	return cert, nil
 }

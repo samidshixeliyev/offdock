@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, ContainerInfo, TraceEvent } from '../api/client'
+import { api, ContainerInfo, TraceEvent, TraceSessionSummary } from '../api/client'
 import { useToast } from '../components/Toast'
 import { useAuth } from '../hooks/useAuth'
 import {
   Radio, Globe, Database, Zap, Activity, RefreshCw,
   Trash2, ChevronDown, ChevronRight, Filter, X,
-  Container as ContainerIcon, Play, Square,
+  Container as ContainerIcon, Play, Square, History, ArrowLeft,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -352,6 +352,285 @@ function TransactionRow({ tx, maxDuration }: { tx: Transaction; maxDuration: num
   )
 }
 
+// ─── Reusable waterfall view (used by live + replay) ──────────────────────────
+
+function buildTransactions(events: TraceEvent[]): Transaction[] {
+  let txs: Transaction[] = []
+  let id = 0
+  const nextId = () => ++id
+  // Replay events in order using the same grouping logic as the live stream.
+  // Use a monotonically increasing virtual clock so the GROUP_WINDOW_MS logic
+  // attaches children to their request without relying on wall-clock arrival.
+  let clock = 0
+  for (const ev of events) {
+    clock += 1
+    txs = ingestEvent(txs, ev, clock, nextId)
+  }
+  return txs
+}
+
+function statsFor(transactions: Transaction[]): Stats {
+  let errors = 0, sql = 0, redis = 0, respCount = 0, respTotal = 0
+  for (const tx of transactions) {
+    if (tx.status !== undefined && tx.status >= 400) errors += 1
+    if (tx.duration_ms !== undefined && tx.duration_ms > 0) { respCount += 1; respTotal += tx.duration_ms }
+    for (const c of tx.children) {
+      if (c.kind === 'sql') sql += 1
+      else if (c.kind === 'redis') redis += 1
+    }
+  }
+  return { total: transactions.length, errors, avgMs: respCount > 0 ? respTotal / respCount : 0, sql, redis }
+}
+
+function WaterfallBody({ transactions, filter }: { transactions: Transaction[]; filter: FilterMode }) {
+  const filtered = useMemo(() => {
+    switch (filter) {
+      case 'errors': return transactions.filter(t => t.status !== undefined && t.status >= 400)
+      case 'sql': return transactions.filter(t => t.children.some(c => c.kind === 'sql'))
+      case 'redis': return transactions.filter(t => t.children.some(c => c.kind === 'redis'))
+      default: return transactions
+    }
+  }, [transactions, filter])
+
+  const maxDuration = useMemo(() => {
+    let max = 0
+    for (const tx of filtered) if (tx.duration_ms !== undefined && tx.duration_ms > max) max = tx.duration_ms
+    return max
+  }, [filtered])
+
+  return (
+    <>
+      <div className="flex items-center gap-3 px-4 py-1.5 border-b border-slate-800 shrink-0 bg-slate-900/20 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
+        <span className="w-3.5 shrink-0" />
+        <span className="w-20 shrink-0">Time</span>
+        <span className="w-2 shrink-0" />
+        <span className="w-16 shrink-0 text-center">Method</span>
+        <span className="flex-1 min-w-0">Path</span>
+        <span className="shrink-0">Spans</span>
+        <span className="w-12 shrink-0 text-right">Status</span>
+        <span className="w-28 shrink-0">Timeline</span>
+        <span className="w-14 shrink-0 text-right">Duration</span>
+      </div>
+      <div className="flex-1 overflow-y-auto min-h-0 bg-slate-950/50">
+        {filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-40 text-slate-600 gap-2">
+            <Radio className="w-6 h-6" />
+            <p className="text-sm">{transactions.length === 0 ? 'No transactions captured' : 'No requests match this filter'}</p>
+          </div>
+        ) : (
+          filtered.map(tx => <TransactionRow key={tx.id} tx={tx} maxDuration={maxDuration} />)
+        )}
+      </div>
+    </>
+  )
+}
+
+const FILTER_TABS: { id: FilterMode; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'http', label: 'HTTP' },
+  { id: 'sql', label: 'SQL' },
+  { id: 'redis', label: 'Redis' },
+  { id: 'errors', label: 'Errors' },
+]
+
+function FilterTabs({ filter, onChange }: { filter: FilterMode; onChange: (f: FilterMode) => void }) {
+  return (
+    <div className="flex items-center gap-0.5 p-0.5 bg-slate-950 border border-slate-800 rounded-lg">
+      {FILTER_TABS.map(f => (
+        <button key={f.id} onClick={() => onChange(f.id)}
+          className={clsx('px-2.5 py-1 rounded text-[11px] font-medium transition-all',
+            filter === f.id
+              ? f.id === 'errors' ? 'bg-red-500/15 text-red-300' : 'bg-slate-800 text-slate-100'
+              : 'text-slate-500 hover:text-slate-300')}>
+          {f.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function StatsRow({ stats }: { stats: Stats }) {
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+      <StatCard icon={Activity} label="Requests" value={String(stats.total)} color="text-blue-400" />
+      <StatCard icon={X} label="Errors" value={String(stats.errors)} color={stats.errors > 0 ? 'text-red-400' : 'text-slate-500'} />
+      <StatCard icon={Radio} label="Avg time" value={stats.avgMs > 0 ? fmtDuration(stats.avgMs) : '—'} color="text-indigo-400" />
+      <StatCard icon={Database} label="SQL" value={String(stats.sql)} color="text-amber-400" />
+      <StatCard icon={Zap} label="Redis" value={String(stats.redis)} color="text-red-400" />
+    </div>
+  )
+}
+
+// ─── Session replay panel (read-only waterfall from stored data) ──────────────
+
+function SessionReplayPanel({ sessionId, onBack }: { sessionId: string; onBack: () => void }) {
+  const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [meta, setMeta] = useState<{ container: string; started: string; ended: string | null; count: number } | null>(null)
+  const [filter, setFilter] = useState<FilterMode>('all')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    api.getTraceSession(sessionId)
+      .then(s => {
+        if (cancelled) return
+        setTransactions(buildTransactions(s.events ?? []))
+        setMeta({ container: s.container_name, started: s.started_at, ended: s.ended_at, count: s.event_count })
+      })
+      .catch(() => { if (!cancelled) setError('Could not load session') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [sessionId])
+
+  const stats = useMemo(() => statsFor(transactions), [transactions])
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="px-4 py-3 border-b border-slate-800 shrink-0 bg-slate-900/40">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <button onClick={onBack} className="p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-slate-200 shrink-0">
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <History className="w-4 h-4 text-indigo-400 shrink-0" />
+            <span className="text-sm font-mono text-slate-200 truncate">{meta?.container ?? '…'}</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-indigo-400 shrink-0">replay</span>
+          </div>
+          {meta && (
+            <span className="text-[11px] text-slate-500 shrink-0">
+              {new Date(meta.started).toLocaleString()}
+            </span>
+          )}
+        </div>
+        <StatsRow stats={stats} />
+      </div>
+
+      <div className="flex items-center gap-3 px-4 py-2 border-b border-slate-800 shrink-0 bg-slate-950/30">
+        <div className="flex items-center gap-1.5 text-slate-600"><Filter className="w-3.5 h-3.5" /></div>
+        <FilterTabs filter={filter} onChange={setFilter} />
+      </div>
+
+      {loading ? (
+        <div className="flex-1 flex items-center justify-center text-slate-600 text-sm">Loading session…</div>
+      ) : error ? (
+        <div className="flex-1 flex items-center justify-center text-red-400 text-sm">{error}</div>
+      ) : (
+        <WaterfallBody transactions={transactions} filter={filter} />
+      )}
+    </div>
+  )
+}
+
+// ─── Sessions list panel ──────────────────────────────────────────────────────
+
+function SessionsListPanel({ onOpen }: { onOpen: (id: string) => void }) {
+  const toast = useToast()
+  const [sessions, setSessions] = useState<TraceSessionSummary[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const load = async () => {
+    setLoading(true)
+    try { setSessions(await api.listTraceSessions()) } catch { /* ignore */ }
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [])
+
+  const fmtDur = (started: string, ended: string | null): string => {
+    if (!ended) return '—'
+    const ms = new Date(ended).getTime() - new Date(started).getTime()
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`
+  }
+
+  const handleDelete = async (id: string) => {
+    try {
+      await api.deleteTraceSession(id)
+      setSessions(prev => prev.filter(s => s.id !== id))
+      toast.success('Session deleted')
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Delete failed')
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full min-h-0">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 shrink-0">
+        <div className="flex items-center gap-2">
+          <History className="w-4 h-4 text-indigo-400" />
+          <span className="text-sm font-semibold text-slate-200">Saved trace sessions</span>
+        </div>
+        <button onClick={load} className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300">
+          <RefreshCw className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {loading ? (
+          <div className="py-12 text-center text-slate-600 text-sm">Loading…</div>
+        ) : sessions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-slate-600 gap-2 py-12">
+            <History className="w-8 h-8 opacity-40" />
+            <p className="text-sm">No saved sessions yet</p>
+            <p className="text-xs">Run a live trace — it is saved automatically when you stop.</p>
+          </div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-slate-900 z-10">
+              <tr className="border-b border-slate-800 text-[10px] uppercase tracking-wider text-slate-600">
+                <th className="text-left px-4 py-2.5 font-medium">Container</th>
+                <th className="text-left px-4 py-2.5 font-medium">Started</th>
+                <th className="text-right px-4 py-2.5 font-medium">Duration</th>
+                <th className="text-right px-4 py-2.5 font-medium">Events</th>
+                <th className="text-left px-4 py-2.5 font-medium">Breakdown</th>
+                <th className="px-4 py-2.5" />
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.map(s => (
+                <tr key={s.id} onClick={() => onOpen(s.id)}
+                  className="border-b border-slate-800/50 hover:bg-slate-800/30 cursor-pointer group">
+                  <td className="px-4 py-2.5 font-mono text-xs text-slate-200">
+                    <span className="flex items-center gap-2">
+                      <ContainerIcon className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span className="truncate max-w-[180px]">{s.container_name}</span>
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-slate-500">{new Date(s.started_at).toLocaleString()}</td>
+                  <td className="px-4 py-2.5 text-xs text-slate-500 text-right tabular-nums">{fmtDur(s.started_at, s.ended_at)}</td>
+                  <td className="px-4 py-2.5 text-xs text-slate-300 text-right tabular-nums">{s.event_count}</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-blue-500/10 text-blue-300 border border-blue-500/20">
+                        <Globe className="w-2.5 h-2.5" />{s.http_count}
+                      </span>
+                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                        <Database className="w-2.5 h-2.5" />{s.sql_count}
+                      </span>
+                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-red-500/10 text-red-300 border border-red-500/20">
+                        <Zap className="w-2.5 h-2.5" />{s.redis_count}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <button onClick={e => { e.stopPropagation(); handleDelete(s.id) }}
+                      title="Delete session"
+                      className="opacity-0 group-hover:opacity-100 p-1.5 rounded text-slate-600 hover:text-red-400 hover:bg-red-500/10 transition-all">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Live trace panel (waterfall + stats) ─────────────────────────────────────
 
 function LiveTracePanel({ container, onStop }: { container: string; onStop: () => void }) {
@@ -556,6 +835,8 @@ export default function TracingPage() {
   const [tracedNames, setTracedNames] = useState<Set<string>>(new Set())
   const [activeTrace, setActiveTrace] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [view, setView] = useState<'live' | 'sessions'>('live')
+  const [replaySessionId, setReplaySessionId] = useState<string | null>(null)
 
   const load = async () => {
     try {
@@ -595,14 +876,28 @@ export default function TracingPage() {
     <div className="flex h-full overflow-hidden">
       {/* Sidebar — container list */}
       <aside className="w-72 border-r border-slate-800 flex flex-col shrink-0 bg-slate-900/30">
-        <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-semibold text-slate-200">Request Tracing</p>
-            <p className="text-xs text-slate-500 mt-0.5">HTTP · SQL · Redis · live</p>
+        <div className="px-4 py-3 border-b border-slate-800">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-sm font-semibold text-slate-200">Request Tracing</p>
+              <p className="text-xs text-slate-500 mt-0.5">HTTP · SQL · Redis</p>
+            </div>
+            <button onClick={load} className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300">
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
           </div>
-          <button onClick={load} className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300">
-            <RefreshCw className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-0.5 p-0.5 bg-slate-950 border border-slate-800 rounded-lg">
+            <button onClick={() => { setView('live') }}
+              className={clsx('flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all',
+                view === 'live' ? 'bg-slate-800 text-slate-100' : 'text-slate-500 hover:text-slate-300')}>
+              <Radio className="w-3 h-3" /> Live
+            </button>
+            <button onClick={() => { setView('sessions'); setReplaySessionId(null) }}
+              className={clsx('flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all',
+                view === 'sessions' ? 'bg-slate-800 text-slate-100' : 'text-slate-500 hover:text-slate-300')}>
+              <History className="w-3 h-3" /> Sessions
+            </button>
+          </div>
         </div>
 
         {!canTrace && (
@@ -611,7 +906,7 @@ export default function TracingPage() {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto py-2">
+        {view === 'live' && <div className="flex-1 overflow-y-auto py-2">
           {loading ? (
             <div className="px-4 py-8 text-center text-slate-600 text-sm">Loading…</div>
           ) : containers.length === 0 ? (
@@ -662,10 +957,17 @@ export default function TracingPage() {
               )
             })
           )}
-        </div>
+        </div>}
+
+        {/* Sessions sidebar hint */}
+        {view === 'sessions' && (
+          <div className="flex-1 overflow-y-auto px-4 py-4 text-[11px] text-slate-500 leading-relaxed">
+            Saved trace sessions are listed in the main panel. Click any row to replay its request waterfall — including nested SQL and Redis spans — exactly as captured.
+          </div>
+        )}
 
         {/* Legend */}
-        <div className="px-4 py-3 border-t border-slate-800 space-y-1.5">
+        {view === 'live' && <div className="px-4 py-3 border-t border-slate-800 space-y-1.5">
           <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Captured protocols</p>
           {[
             { icon: Globe, color: 'text-blue-400', label: 'HTTP/HTTPS requests & responses' },
@@ -682,12 +984,22 @@ export default function TracingPage() {
               Requests are grouped into transactions; nested SQL & Redis spans within 500ms are correlated automatically. Encrypted (TLS) traffic is not visible.
             </p>
           </div>
-        </div>
+        </div>}
       </aside>
 
       {/* Main panel */}
       <div className="flex-1 overflow-hidden flex flex-col min-h-0">
-        {activeTrace ? (
+        {view === 'sessions' ? (
+          replaySessionId ? (
+            <SessionReplayPanel
+              key={replaySessionId}
+              sessionId={replaySessionId}
+              onBack={() => setReplaySessionId(null)}
+            />
+          ) : (
+            <SessionsListPanel onOpen={id => setReplaySessionId(id)} />
+          )
+        ) : activeTrace ? (
           <LiveTracePanel
             key={activeTrace}
             container={activeTrace}

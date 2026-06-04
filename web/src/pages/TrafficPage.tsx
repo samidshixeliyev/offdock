@@ -5,7 +5,7 @@ import { formatBytes } from '../lib/format'
 import clsx from 'clsx'
 import {
   Activity, RefreshCw, Globe, AlertTriangle, Network, Gauge, ArrowDownToLine,
-  ChevronDown, Users, Search, X, Clock, Zap, Server, Wifi,
+  ChevronDown, Users, Search, X, Clock, Zap, Server, Wifi, Monitor,
 } from 'lucide-react'
 
 type TabId = 'overview' | 'hosts' | 'response' | 'requests' | 'connections'
@@ -205,6 +205,7 @@ function RequestRow({ e }: { e: TrafficEntry }) {
       </td>
       <td className="px-3 py-2 text-xs text-slate-500 font-mono">{e.host || '—'}</td>
       <td className="px-3 py-2 text-xs text-slate-600 font-mono">{e.ip}</td>
+      <td className="px-3 py-2 text-xs text-slate-600 max-w-[160px] truncate" title={e.user_agent || ''}>{e.user_agent || '—'}</td>
       <td className="px-3 py-2 text-xs text-slate-600 tabular-nums text-right">{formatBytes(e.bytes)}</td>
       {e.response_ms > 0 && (
         <td className={clsx('px-3 py-2 text-xs tabular-nums text-right', e.response_ms > 1000 ? 'text-red-400' : e.response_ms > 500 ? 'text-amber-400' : 'text-slate-500')}>
@@ -401,7 +402,8 @@ export default function TrafficPage() {
                   <StatCard label="Req / sec" value={s.rps.toFixed(s.rps < 1 ? 2 : 1)} icon={Gauge} tone="violet" />
                   <StatCard label="Error rate" value={`${errRate.toFixed(1)}%`} icon={AlertTriangle}
                     tone={errRate > 5 ? 'red' : 'emerald'} sublabel={`${(s.status_4xx + s.status_5xx).toLocaleString()} errors`} />
-                  <StatCard label="Bandwidth" value={formatBytes(s.bytes)} icon={ArrowDownToLine} tone="amber" />
+                  <StatCard label="Bandwidth" value={formatBytes(s.bytes)} icon={ArrowDownToLine} tone="amber"
+                    sublabel={s.avg_bytes_per_req > 0 ? `${formatBytes(s.avg_bytes_per_req)}/req avg` : undefined} />
                   <StatCard label="Unique IPs" value={s.unique_ips.toLocaleString()} icon={Users} tone="slate" />
                   <StatCard label="Avg Response" value={hasTimingData ? fmtMs(s.avg_response_ms) : '—'} icon={Clock}
                     tone={s.avg_response_ms > 1000 ? 'red' : s.avg_response_ms > 0 ? 'violet' : 'slate'} sublabel={hasTimingData ? `p95 ${fmtMs(s.p95_response_ms)}` : 'needs timing logs'} />
@@ -440,6 +442,13 @@ export default function TrafficPage() {
                     }
                   </Panel>
                 </div>
+
+                <Panel title="Top user agents" icon={Monitor}>
+                  {report.top_user_agents.length > 0
+                    ? <BarList items={report.top_user_agents} color="bg-indigo-500" />
+                    : <EmptyState icon={Monitor} title="No user agent data" description="No requests with a User-Agent header in this window." />
+                  }
+                </Panel>
               </div>
             )}
 
@@ -577,6 +586,7 @@ export default function TrafficPage() {
                           <th className="px-3 py-2 text-left font-medium">Status</th>
                           <th className="px-3 py-2 text-left font-medium">Host</th>
                           <th className="px-3 py-2 text-left font-medium">Client</th>
+                          <th className="px-3 py-2 text-left font-medium">User Agent</th>
                           <th className="px-3 py-2 text-right font-medium">Size</th>
                           {(report.recent[0]?.response_ms ?? 0) > 0 && (
                             <th className="px-3 py-2 text-right font-medium">Time</th>

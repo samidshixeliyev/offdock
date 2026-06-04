@@ -25,19 +25,27 @@ const (
 
 // Mailer holds SMTP configuration.
 type Mailer struct {
-	host       string
-	port       int
-	username   string
-	password   string
-	from       string
-	mode       Mode
-	skipVerify bool
-	caCertFile string
+	host           string
+	port           int
+	username       string
+	password       string
+	from           string
+	mode           Mode
+	skipVerify     bool
+	caCertFile     string
+	clientCertFile string
+	clientKeyFile  string
 }
 
 // New creates a Mailer.
 // mode: "starttls" | "implicit" | "plain" — defaults to "starttls" if empty.
 func New(host string, port int, username, password, from string, mode string, skipVerify bool, caCertFile string) *Mailer {
+	return NewWithClientCert(host, port, username, password, from, mode, skipVerify, caCertFile, "", "")
+}
+
+// NewWithClientCert is like New but also accepts a client certificate + key for
+// mutual TLS (required by some Exchange servers).
+func NewWithClientCert(host string, port int, username, password, from string, mode string, skipVerify bool, caCertFile, clientCertFile, clientKeyFile string) *Mailer {
 	m := mode
 	if m == "" {
 		m = string(ModeSTARTTLS)
@@ -51,14 +59,16 @@ func New(host string, port int, username, password, from string, mode string, sk
 		}
 	}
 	return &Mailer{
-		host:       host,
-		port:       port,
-		username:   username,
-		password:   password,
-		from:       from,
-		mode:       Mode(m),
-		skipVerify: skipVerify,
-		caCertFile: caCertFile,
+		host:           host,
+		port:           port,
+		username:       username,
+		password:       password,
+		from:           from,
+		mode:           Mode(m),
+		skipVerify:     skipVerify,
+		caCertFile:     caCertFile,
+		clientCertFile: clientCertFile,
+		clientKeyFile:  clientKeyFile,
 	}
 }
 
@@ -93,6 +103,12 @@ func (m *Mailer) tlsConfig() *tls.Config {
 	if m.caCertFile != "" && !m.skipVerify {
 		if pool := crypto.LoadCACertPool(m.caCertFile); pool != nil {
 			cfg.RootCAs = pool
+		}
+	}
+	// Mutual TLS — present a client certificate if configured.
+	if m.clientCertFile != "" && m.clientKeyFile != "" {
+		if cert, err := crypto.LoadClientCertificate(m.clientCertFile, m.clientKeyFile); err == nil {
+			cfg.Certificates = []tls.Certificate{cert}
 		}
 	}
 	return cfg

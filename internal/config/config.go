@@ -29,7 +29,10 @@ type Config struct {
 	SMTPStartTLS   bool   `yaml:"smtp_starttls"`          // legacy — maps to mode=starttls
 	SMTPSkipVerify bool   `yaml:"smtp_insecure_skip_verify"`
 	SMTPCACertFile string `yaml:"smtp_ca_cert_file"`      // path to custom CA cert PEM (Exchange self-signed)
-	DNSAdminEmail  string `yaml:"dns_admin_email"`
+	// Mutual TLS — some Exchange servers require a client certificate.
+	SMTPClientCertFile string `yaml:"smtp_client_cert_file"`
+	SMTPClientKeyFile  string `yaml:"smtp_client_key_file"`
+	DNSAdminEmail      string `yaml:"dns_admin_email"`
 
 	// OAuth2 / OIDC — AO ID identity provider integration.
 	OAuthEnabled      bool   `yaml:"oauth_enabled"`

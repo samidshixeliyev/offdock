@@ -81,9 +81,10 @@ type Summary struct {
 	UniqueIPs     int     `json:"unique_ips"`
 	RPS           float64 `json:"rps"`
 	WindowHrs     int     `json:"window_hours"`
-	AvgResponseMs float64 `json:"avg_response_ms"`
-	P95ResponseMs float64 `json:"p95_response_ms"`
-	P99ResponseMs float64 `json:"p99_response_ms"`
+	AvgResponseMs  float64 `json:"avg_response_ms"`
+	P95ResponseMs  float64 `json:"p95_response_ms"`
+	P99ResponseMs  float64 `json:"p99_response_ms"`
+	AvgBytesPerReq float64 `json:"avg_bytes_per_req"`
 }
 
 // Report is the full aggregated response.
@@ -98,8 +99,9 @@ type Report struct {
 	Recent       []Entry    `json:"recent"`
 	Hosts        []string   `json:"hosts"`
 	SlowRequests []Entry    `json:"slow_requests"` // top 15 slowest (requires timing fields)
-	ByUpstream   []Count    `json:"by_upstream"`   // per upstream container
-	HostStats    []HostStat `json:"host_stats"`    // per-host detailed breakdown
+	ByUpstream    []Count    `json:"by_upstream"`     // per upstream container
+	HostStats     []HostStat `json:"host_stats"`      // per-host detailed breakdown
+	TopUserAgents []Count    `json:"top_user_agents"` // top 10 user agents
 }
 
 // hostFromFilename derives a vhost label from a log filename.
@@ -230,6 +232,7 @@ func aggregate(entries []Entry, hours int, hostSet map[string]bool) *Report {
 	methods := map[string]int{}
 	hostCounts := map[string]int{}
 	upstreamCounts := map[string]int{}
+	userAgents := map[string]int{}
 
 	bucketDur := time.Hour
 	if hours <= 2 {
@@ -270,6 +273,9 @@ func aggregate(entries []Entry, hours int, hostSet map[string]bool) *Report {
 		if e.UpstreamAddr != "" {
 			upstreamCounts[e.UpstreamAddr]++
 		}
+		if ua := e.UA; ua != "" && ua != "-" {
+			userAgents[ua]++
+		}
 
 		key := e.Time.Truncate(bucketDur).Unix()
 		b := bucketMap[key]
@@ -306,6 +312,9 @@ func aggregate(entries []Entry, hours int, hostSet map[string]bool) *Report {
 	if hours > 0 {
 		r.Summary.RPS = float64(r.Summary.Total) / (float64(hours) * 3600.0)
 	}
+	if r.Summary.Total > 0 {
+		r.Summary.AvgBytesPerReq = round1(float64(r.Summary.Bytes) / float64(r.Summary.Total))
+	}
 
 	// Response time percentiles (global).
 	if len(responseMsAll) > 0 {
@@ -332,6 +341,7 @@ func aggregate(entries []Entry, hours int, hostSet map[string]bool) *Report {
 	r.Methods = topN(methods, 10)
 	r.ByHost = topN(hostCounts, 30)
 	r.ByUpstream = topN(upstreamCounts, 20)
+	r.TopUserAgents = topN(userAgents, 10)
 
 	// Recent — last 200, newest first.
 	n := len(entries)
@@ -396,6 +406,9 @@ func aggregate(entries []Entry, hours int, hostSet map[string]bool) *Report {
 	}
 	if r.HostStats == nil {
 		r.HostStats = []HostStat{}
+	}
+	if r.TopUserAgents == nil {
+		r.TopUserAgents = []Count{}
 	}
 	return r
 }
