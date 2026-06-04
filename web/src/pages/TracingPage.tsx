@@ -6,6 +6,7 @@ import {
   Radio, Globe, Database, Zap, Activity, RefreshCw,
   Trash2, ChevronDown, ChevronRight, Filter, X,
   Container as ContainerIcon, Play, Square, History, ArrowLeft,
+  Network, BarChart2, ArrowRight,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -23,6 +24,31 @@ interface ChildSpan {
   duration_ms?: number
   src?: string
   dst?: string
+  table_name?: string
+  rows_affected?: number
+  span_id?: string
+  parent_span_id?: string
+}
+
+// Service topology edge: traffic between two services
+interface ServiceEdge {
+  srcLabel: string
+  dstLabel: string
+  reqCount: number
+  errCount: number
+  totalMs: number
+}
+
+// Aggregated SQL query for analysis
+interface AggQuery {
+  normalized: string
+  count: number
+  totalMs: number
+  avgMs: number
+  maxMs: number
+  table: string
+  dbType: string
+  opType: 'SELECT'|'INSERT'|'UPDATE'|'DELETE'|'OTHER'
 }
 
 interface Transaction {
@@ -159,6 +185,10 @@ function ingestEvent(
       duration_ms: ev.duration_ms,
       src: ev.src,
       dst: ev.dst,
+      table_name: ev.table_name,
+      rows_affected: ev.rows_affected,
+      span_id: ev.span_id,
+      parent_span_id: ev.parent_span_id,
     }
 
     return prev.map((tx, i) => {
@@ -235,9 +265,18 @@ function ChildSpanRow({ span, last }: { span: ChildSpan; last: boolean }) {
 
       {span.kind === 'sql' && (
         <>
-          <span className="text-amber-300/90 font-bold text-[10px] uppercase w-10 shrink-0">SQL</span>
+          <SqlOpBadge query={span.query} />
+          <DbBadge dbType={span.db_type} />
           <pre className="flex-1 min-w-0 text-amber-200/80 whitespace-pre-wrap break-all leading-relaxed">{span.query}</pre>
-          {span.db_type && <span className="text-[10px] text-amber-500/60 uppercase shrink-0">{span.db_type}</span>}
+          {span.table_name && <span className="text-[10px] text-slate-600 font-mono shrink-0">{span.table_name}</span>}
+          {span.rows_affected !== undefined && span.rows_affected > 0 && (
+            <span className="text-[10px] text-slate-500 shrink-0">{span.rows_affected} rows</span>
+          )}
+          {span.duration_ms !== undefined && span.duration_ms > 0 && (
+            <span className={clsx('shrink-0 text-[10px] font-semibold tabular-nums', durationColor(span.duration_ms))}>
+              {fmtDuration(span.duration_ms)}
+            </span>
+          )}
         </>
       )}
 
@@ -633,10 +672,13 @@ function SessionsListPanel({ onOpen }: { onOpen: (id: string) => void }) {
 
 // ─── Live trace panel (waterfall + stats) ─────────────────────────────────────
 
+type PanelTab = 'waterfall' | 'graph' | 'sql'
+
 function LiveTracePanel({ container, onStop }: { container: string; onStop: () => void }) {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [status, setStatus] = useState<'connecting' | 'live' | 'error'>('connecting')
   const [filter, setFilter] = useState<FilterMode>('all')
+  const [panelTab, setPanelTab] = useState<PanelTab>('waterfall')
   const [autoScroll, setAutoScroll] = useState(true)
 
   const esRef = useRef<EventSource | null>(null)
@@ -761,64 +803,376 @@ function LiveTracePanel({ container, onStop }: { container: string; onStop: () =
         </div>
       </div>
 
-      {/* Controls bar */}
-      <div className="flex items-center gap-3 px-4 py-2 border-b border-slate-800 shrink-0 flex-wrap gap-y-2 bg-slate-950/30">
-        <div className="flex items-center gap-1.5 text-slate-600">
-          <Filter className="w-3.5 h-3.5" />
-        </div>
-        <div className="flex items-center gap-0.5 p-0.5 bg-slate-950 border border-slate-800 rounded-lg">
-          {filterTabs.map(f => (
-            <button key={f.id} onClick={() => setFilter(f.id)}
-              className={clsx('px-2.5 py-1 rounded text-[11px] font-medium transition-all',
-                filter === f.id
-                  ? f.id === 'errors' ? 'bg-red-500/15 text-red-300' : 'bg-slate-800 text-slate-100'
-                  : 'text-slate-500 hover:text-slate-300')}>
-              {f.label}
+      {/* Tab bar + controls */}
+      <div className="flex items-center gap-0.5 px-4 py-2 border-b border-slate-800 shrink-0 bg-slate-950/30">
+        {/* View tabs */}
+        <div className="flex items-center gap-0.5 p-0.5 bg-slate-950 border border-slate-800 rounded-lg mr-3">
+          {([
+            { id: 'waterfall', label: 'Waterfall', icon: Activity },
+            { id: 'graph',     label: 'Service Map', icon: Network },
+            { id: 'sql',       label: 'SQL Analysis', icon: BarChart2 },
+          ] as const).map(({ id, label, icon: Icon }) => (
+            <button key={id} onClick={() => setPanelTab(id)}
+              className={clsx('flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-all',
+                panelTab === id ? 'bg-slate-800 text-slate-100' : 'text-slate-500 hover:text-slate-300')}>
+              <Icon className="w-3 h-3" />{label}
             </button>
           ))}
         </div>
 
+        {panelTab === 'waterfall' && <>
+          <div className="flex items-center gap-1.5 text-slate-600">
+            <Filter className="w-3.5 h-3.5" />
+          </div>
+          <div className="flex items-center gap-0.5 p-0.5 bg-slate-950 border border-slate-800 rounded-lg">
+            {filterTabs.map(f => (
+              <button key={f.id} onClick={() => setFilter(f.id)}
+                className={clsx('px-2.5 py-1 rounded text-[11px] font-medium transition-all',
+                  filter === f.id
+                    ? f.id === 'errors' ? 'bg-red-500/15 text-red-300' : 'bg-slate-800 text-slate-100'
+                    : 'text-slate-500 hover:text-slate-300')}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </>}
+
         <div className="flex items-center gap-2 ml-auto">
-          <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
-            <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)}
-              className="rounded border-slate-700 bg-slate-800" />
-            Auto-scroll
-          </label>
-          <button onClick={handleClear} className="flex items-center gap-1 p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300" title="Clear">
+          {panelTab === 'waterfall' && (
+            <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
+              <input type="checkbox" checked={autoScroll} onChange={e => setAutoScroll(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-800" />
+              Auto-scroll
+            </label>
+          )}
+          <button onClick={handleClear} className="flex items-center gap-1 p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300" title="Clear all data">
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* Waterfall column header */}
-      <div className="flex items-center gap-3 px-4 py-1.5 border-b border-slate-800 shrink-0 bg-slate-900/20 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
-        <span className="w-3.5 shrink-0" />
-        <span className="w-20 shrink-0">Time</span>
-        <span className="w-2 shrink-0" />
-        <span className="w-16 shrink-0 text-center">Method</span>
-        <span className="flex-1 min-w-0">Path</span>
-        <span className="shrink-0">Spans</span>
-        <span className="w-12 shrink-0 text-right">Status</span>
-        <span className="w-28 shrink-0">Timeline</span>
-        <span className="w-14 shrink-0 text-right">Duration</span>
+      {/* Panel content */}
+      {panelTab === 'waterfall' && <>
+        {/* Waterfall column header */}
+        <div className="flex items-center gap-3 px-4 py-1.5 border-b border-slate-800 shrink-0 bg-slate-900/20 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
+          <span className="w-3.5 shrink-0" />
+          <span className="w-20 shrink-0">Time</span>
+          <span className="w-2 shrink-0" />
+          <span className="w-16 shrink-0 text-center">Method</span>
+          <span className="flex-1 min-w-0">Path</span>
+          <span className="shrink-0">Spans</span>
+          <span className="w-12 shrink-0 text-right">Status</span>
+          <span className="w-28 shrink-0">Timeline</span>
+          <span className="w-14 shrink-0 text-right">Duration</span>
+        </div>
+
+        {/* Waterfall body */}
+        <div className="flex-1 overflow-y-auto min-h-0 bg-slate-950/50">
+          {filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-40 text-slate-600 gap-2">
+              <Radio className="w-6 h-6 animate-pulse" />
+              <p className="text-sm">
+                {transactions.length === 0 ? 'Waiting for traffic…' : 'No requests match this filter'}
+              </p>
+              {transactions.length === 0 && (
+                <p className="text-xs">Send HTTP requests to this container to capture transactions</p>
+              )}
+            </div>
+          ) : (
+            filtered.map(tx => <TransactionRow key={tx.id} tx={tx} maxDuration={maxDuration} />)
+          )}
+          <div ref={bottomRef} />
+        </div>
+      </>}
+
+      {panelTab === 'graph' && (
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <ServiceGraphPanel transactions={transactions} />
+        </div>
+      )}
+
+      {panelTab === 'sql' && (
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <SqlAnalysisPanel transactions={transactions} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── DB type badge ────────────────────────────────────────────────────────────
+
+function DbBadge({ dbType }: { dbType?: string }) {
+  if (!dbType) return null
+  const cfg: Record<string, { label: string; cls: string }> = {
+    postgresql: { label: 'PG',    cls: 'bg-blue-500/15 text-blue-300 border-blue-500/20' },
+    mysql:      { label: 'MY',    cls: 'bg-orange-500/15 text-orange-300 border-orange-500/20' },
+    mssql:      { label: 'MS',    cls: 'bg-red-500/15 text-red-300 border-red-500/20' },
+    redis:      { label: 'RE',    cls: 'bg-red-500/15 text-red-400 border-red-500/25' },
+    mongodb:    { label: 'MO',    cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/20' },
+  }
+  const c = cfg[dbType.toLowerCase()] ?? { label: dbType.toUpperCase().slice(0, 2), cls: 'bg-slate-700 text-slate-400 border-slate-600' }
+  return (
+    <span className={clsx('inline-flex items-center px-1 py-0.5 rounded text-[9px] font-bold border shrink-0', c.cls)}>
+      {c.label}
+    </span>
+  )
+}
+
+// ─── SQL op badge ────────────────────────────────────────────────────────────
+
+function SqlOpBadge({ query }: { query?: string }) {
+  if (!query) return null
+  const op = query.trim().split(/\s+/)[0]?.toUpperCase() ?? ''
+  const cfg: Record<string, string> = {
+    SELECT: 'text-blue-300 bg-blue-500/10',
+    INSERT: 'text-emerald-300 bg-emerald-500/10',
+    UPDATE: 'text-amber-300 bg-amber-500/10',
+    DELETE: 'text-red-300 bg-red-500/10',
+    BEGIN:  'text-slate-400 bg-slate-700/40',
+    COMMIT: 'text-slate-400 bg-slate-700/40',
+    ROLLBACK: 'text-orange-300 bg-orange-500/10',
+  }
+  return (
+    <span className={clsx('px-1 py-0.5 rounded text-[9px] font-bold shrink-0', cfg[op] ?? 'text-slate-500 bg-slate-800')}>
+      {op}
+    </span>
+  )
+}
+
+// ─── Service Graph ────────────────────────────────────────────────────────────
+
+function buildServiceEdges(transactions: Transaction[]): ServiceEdge[] {
+  const edges = new Map<string, ServiceEdge>()
+  for (const tx of transactions) {
+    const srcLabel = tx.src ? tx.src.split(':')[0] : 'client'
+    const dstLabel = tx.host || (tx.dst ? tx.dst.split(':')[0] : 'server')
+    const key = `${srcLabel}→${dstLabel}`
+    const existing = edges.get(key) ?? { srcLabel, dstLabel, reqCount: 0, errCount: 0, totalMs: 0 }
+    existing.reqCount++
+    if (tx.status !== undefined && tx.status >= 400) existing.errCount++
+    if (tx.duration_ms) existing.totalMs += tx.duration_ms
+    edges.set(key, existing)
+
+    // DB / Redis edges from child spans
+    for (const c of tx.children) {
+      if ((c.kind === 'sql' || c.kind === 'redis') && c.dst) {
+        const dbSrc = dstLabel
+        const dbDst = c.db_type ?? (c.kind === 'redis' ? 'redis' : 'db')
+        const dbKey = `${dbSrc}→${dbDst}`
+        const dbEdge = edges.get(dbKey) ?? { srcLabel: dbSrc, dstLabel: dbDst, reqCount: 0, errCount: 0, totalMs: 0 }
+        dbEdge.reqCount++
+        if (c.duration_ms) dbEdge.totalMs += c.duration_ms
+        edges.set(dbKey, dbEdge)
+      }
+    }
+  }
+  return Array.from(edges.values())
+}
+
+function ServiceGraphPanel({ transactions }: { transactions: Transaction[] }) {
+  const edges = useMemo(() => buildServiceEdges(transactions), [transactions])
+  const nodes = useMemo(() => {
+    const set = new Set<string>()
+    for (const e of edges) { set.add(e.srcLabel); set.add(e.dstLabel) }
+    return Array.from(set)
+  }, [edges])
+
+  if (edges.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-slate-600 gap-2">
+        <Network className="w-8 h-8" />
+        <p className="text-sm">No service topology data yet — send requests to see the graph</p>
+      </div>
+    )
+  }
+
+  // Lay out nodes in a simple left-to-right topology:
+  // clients → app servers → databases/caches
+  const nodeTypeOrder = (n: string): number => {
+    if (n === 'client') return 0
+    const lower = n.toLowerCase()
+    if (['redis', 'postgresql', 'mysql', 'mssql', 'mongodb', 'db'].some(d => lower.includes(d))) return 2
+    return 1
+  }
+  const sortedNodes = [...nodes].sort((a, b) => nodeTypeOrder(a) - nodeTypeOrder(b))
+  const nodeColor = (n: string): string => {
+    const lower = n.toLowerCase()
+    if (lower === 'client') return 'bg-slate-700 border-slate-600 text-slate-300'
+    if (lower.includes('redis')) return 'bg-red-900/30 border-red-500/30 text-red-300'
+    if (lower.includes('postgresql') || lower.includes('pg')) return 'bg-blue-900/30 border-blue-500/30 text-blue-300'
+    if (lower.includes('mysql')) return 'bg-orange-900/30 border-orange-500/30 text-orange-300'
+    if (lower.includes('mssql') || lower.includes('sql')) return 'bg-red-900/20 border-red-400/30 text-red-300'
+    if (lower.includes('mongo')) return 'bg-emerald-900/30 border-emerald-500/30 text-emerald-300'
+    return 'bg-blue-900/20 border-blue-500/20 text-blue-200'
+  }
+
+  return (
+    <div className="p-4 space-y-4">
+      {/* Edge list — clean topology table */}
+      <div className="space-y-2">
+        <p className="text-[10px] text-slate-600 font-semibold uppercase tracking-wider">Service Connections ({edges.length})</p>
+        {edges.map(e => {
+          const avgMs = e.reqCount > 0 ? e.totalMs / e.reqCount : 0
+          const errRate = e.reqCount > 0 ? (e.errCount / e.reqCount) * 100 : 0
+          return (
+            <div key={`${e.srcLabel}-${e.dstLabel}`}
+              className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-slate-900/60 border border-slate-800 hover:border-slate-700 transition-colors">
+              <span className={clsx('px-2.5 py-1 rounded-lg border text-xs font-mono font-medium', nodeColor(e.srcLabel))}>
+                {e.srcLabel}
+              </span>
+              <ArrowRight className="w-4 h-4 text-slate-600 shrink-0" />
+              <span className={clsx('px-2.5 py-1 rounded-lg border text-xs font-mono font-medium', nodeColor(e.dstLabel))}>
+                {e.dstLabel}
+              </span>
+              <div className="ml-auto flex items-center gap-4 text-xs">
+                <span className="text-slate-500 tabular-nums">{e.reqCount} req</span>
+                {avgMs > 0 && <span className={clsx('tabular-nums', avgMs > 500 ? 'text-amber-400' : 'text-slate-500')}>{fmtDuration(avgMs)} avg</span>}
+                {errRate > 0 && <span className="text-red-400 tabular-nums">{errRate.toFixed(0)}% err</span>}
+              </div>
+            </div>
+          )
+        })}
       </div>
 
-      {/* Waterfall body */}
-      <div className="flex-1 overflow-y-auto min-h-0 bg-slate-950/50">
-        {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-40 text-slate-600 gap-2">
-            <Radio className="w-6 h-6 animate-pulse" />
-            <p className="text-sm">
-              {transactions.length === 0 ? 'Waiting for traffic…' : 'No requests match this filter'}
-            </p>
-            {transactions.length === 0 && (
-              <p className="text-xs">Send HTTP requests to this container to capture transactions</p>
-            )}
+      {/* Node summary */}
+      <div className="space-y-1">
+        <p className="text-[10px] text-slate-600 font-semibold uppercase tracking-wider">Discovered Services ({sortedNodes.length})</p>
+        <div className="flex flex-wrap gap-2">
+          {sortedNodes.map(n => (
+            <span key={n} className={clsx('px-2.5 py-1 rounded-lg border text-xs font-mono', nodeColor(n))}>{n}</span>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── SQL Analysis Panel ───────────────────────────────────────────────────────
+
+function normalizeSql(q: string): string {
+  if (!q) return ''
+  return q
+    .replace(/\s+/g, ' ')
+    .replace(/'[^']*'/g, '?')                  // string literals
+    .replace(/\b\d+\b/g, '?')                  // numeric literals
+    .replace(/\(\s*\?(?:\s*,\s*\?)*\s*\)/g, '(?)') // IN (?, ?, ?) → (?)
+    .trim()
+    .slice(0, 120)
+}
+
+function getOpType(q: string): AggQuery['opType'] {
+  const op = q.trim().split(/\s+/)[0]?.toUpperCase()
+  if (op === 'SELECT') return 'SELECT'
+  if (op === 'INSERT') return 'INSERT'
+  if (op === 'UPDATE') return 'UPDATE'
+  if (op === 'DELETE') return 'DELETE'
+  return 'OTHER'
+}
+
+function buildAggQueries(transactions: Transaction[]): AggQuery[] {
+  const map = new Map<string, AggQuery>()
+  for (const tx of transactions) {
+    for (const c of tx.children) {
+      if (c.kind !== 'sql' || !c.query) continue
+      const key = normalizeSql(c.query)
+      const existing = map.get(key) ?? {
+        normalized: key,
+        count: 0,
+        totalMs: 0,
+        avgMs: 0,
+        maxMs: 0,
+        table: c.table_name ?? '',
+        dbType: c.db_type ?? '',
+        opType: getOpType(c.query),
+      }
+      existing.count++
+      const ms = c.duration_ms ?? 0
+      existing.totalMs += ms
+      if (ms > existing.maxMs) existing.maxMs = ms
+      existing.avgMs = existing.totalMs / existing.count
+      if (!existing.table && c.table_name) existing.table = c.table_name
+      map.set(key, existing)
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => b.count - a.count)
+}
+
+function SqlAnalysisPanel({ transactions }: { transactions: Transaction[] }) {
+  const queries = useMemo(() => buildAggQueries(transactions), [transactions])
+  const [sort, setSort] = useState<'count' | 'avgMs' | 'maxMs'>('count')
+
+  const sorted = useMemo(() => {
+    return [...queries].sort((a, b) => b[sort] - a[sort])
+  }, [queries, sort])
+
+  const totals = useMemo(() => ({
+    total: queries.reduce((s, q) => s + q.count, 0),
+    tables: new Set(queries.map(q => q.table).filter(Boolean)).size,
+    select: queries.filter(q => q.opType === 'SELECT').reduce((s, q) => s + q.count, 0),
+    writes: queries.filter(q => ['INSERT','UPDATE','DELETE'].includes(q.opType)).reduce((s, q) => s + q.count, 0),
+  }), [queries])
+
+  if (queries.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-slate-600 gap-2">
+        <Database className="w-8 h-8" />
+        <p className="text-sm">No SQL queries captured yet</p>
+      </div>
+    )
+  }
+
+  const opColor = (op: AggQuery['opType']) => ({
+    SELECT: 'text-blue-300', INSERT: 'text-emerald-300', UPDATE: 'text-amber-300',
+    DELETE: 'text-red-300', OTHER: 'text-slate-400',
+  }[op])
+
+  return (
+    <div className="p-4 space-y-4">
+      {/* Summary stats */}
+      <div className="grid grid-cols-4 gap-2">
+        {[
+          { label: 'Unique queries', value: queries.length },
+          { label: 'Total executions', value: totals.total },
+          { label: 'Tables touched', value: totals.tables },
+          { label: 'Read / Write', value: `${totals.select} / ${totals.writes}` },
+        ].map(s => (
+          <div key={s.label} className="px-3 py-2 rounded-lg bg-slate-900/60 border border-slate-800">
+            <p className="text-[10px] uppercase tracking-wider text-slate-600">{s.label}</p>
+            <p className="text-base font-semibold text-slate-200 tabular-nums">{s.value}</p>
           </div>
-        ) : (
-          filtered.map(tx => <TransactionRow key={tx.id} tx={tx} maxDuration={maxDuration} />)
-        )}
-        <div ref={bottomRef} />
+        ))}
+      </div>
+
+      {/* Sort controls */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-slate-600">Sort by:</span>
+        {([['count','Frequency'],['avgMs','Avg time'],['maxMs','Max time']] as const).map(([id, label]) => (
+          <button key={id} onClick={() => setSort(id)}
+            className={clsx('px-2.5 py-1 rounded text-xs font-medium transition-all',
+              sort === id ? 'bg-slate-700 text-slate-100' : 'text-slate-500 hover:text-slate-300')}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* Query table */}
+      <div className="space-y-2 max-h-96 overflow-y-auto">
+        {sorted.map((q, i) => (
+          <div key={i} className="rounded-xl border border-slate-800 bg-slate-900/40 p-3 space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={clsx('font-bold text-xs', opColor(q.opType))}>{q.opType}</span>
+              <DbBadge dbType={q.dbType} />
+              {q.table && <span className="text-[10px] text-slate-500 font-mono">table: {q.table}</span>}
+              <div className="ml-auto flex items-center gap-3 text-xs tabular-nums shrink-0">
+                <span className="text-slate-400">{q.count}×</span>
+                {q.avgMs > 0 && <span className={clsx(q.avgMs > 500 ? 'text-amber-400' : 'text-slate-500')}>avg {fmtDuration(q.avgMs)}</span>}
+                {q.maxMs > 0 && <span className={clsx(q.maxMs > 1000 ? 'text-red-400' : 'text-slate-600')}>max {fmtDuration(q.maxMs)}</span>}
+              </div>
+            </div>
+            <pre className="text-[11px] text-slate-400 font-mono whitespace-pre-wrap break-all leading-relaxed">{q.normalized}</pre>
+          </div>
+        ))}
       </div>
     </div>
   )

@@ -3,6 +3,8 @@ package handlers
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -18,22 +20,32 @@ import (
 	"offdock/internal/store"
 )
 
+func newSpanID() string {
+	b := make([]byte, 4)
+	rand.Read(b) //nolint:errcheck
+	return hex.EncodeToString(b)
+}
+
 // toTraceEvent converts an ephemeral TraceSpan into a persistable store.TraceEvent.
 func toTraceEvent(ev TraceSpan) store.TraceEvent {
 	return store.TraceEvent{
-		Time:       ev.Time,
-		Type:       string(ev.Type),
-		Method:     ev.Method,
-		Path:       ev.Path,
-		Host:       ev.Host,
-		Status:     ev.Status,
-		DurationMs: ev.DurationMs,
-		Query:      ev.Query,
-		DBType:     ev.DBType,
-		Src:        ev.Src,
-		Dst:        ev.Dst,
-		DstPort:    ev.DstPort,
-		Message:    ev.Message,
+		Time:         ev.Time,
+		Type:         string(ev.Type),
+		Method:       ev.Method,
+		Path:         ev.Path,
+		Host:         ev.Host,
+		Status:       ev.Status,
+		DurationMs:   ev.DurationMs,
+		Query:        ev.Query,
+		DBType:       ev.DBType,
+		Src:          ev.Src,
+		Dst:          ev.Dst,
+		DstPort:      ev.DstPort,
+		Message:      ev.Message,
+		SpanID:       ev.SpanID,
+		ParentSpanID: ev.ParentSpanID,
+		TableName:    ev.TableName,
+		RowsAffected: ev.RowsAffected,
 	}
 }
 
@@ -51,19 +63,25 @@ const (
 )
 
 type TraceSpan struct {
-	Time       string         `json:"time"`
-	Type       TraceEventType `json:"type"`
-	Method     string         `json:"method,omitempty"`
-	Path       string         `json:"path,omitempty"`
-	Host       string         `json:"host,omitempty"`
-	Status     int            `json:"status,omitempty"`
-	DurationMs float64        `json:"duration_ms,omitempty"`
-	Query      string         `json:"query,omitempty"`
-	DBType     string         `json:"db_type,omitempty"`
-	Src        string         `json:"src,omitempty"`
-	Dst        string         `json:"dst,omitempty"`
-	DstPort    int            `json:"dst_port,omitempty"`
-	Message    string         `json:"message,omitempty"`
+	Time         string         `json:"time"`
+	Type         TraceEventType `json:"type"`
+	Method       string         `json:"method,omitempty"`
+	Path         string         `json:"path,omitempty"`
+	Host         string         `json:"host,omitempty"`
+	Status       int            `json:"status,omitempty"`
+	DurationMs   float64        `json:"duration_ms,omitempty"`
+	Query        string         `json:"query,omitempty"`
+	DBType       string         `json:"db_type,omitempty"`
+	Src          string         `json:"src,omitempty"`
+	Dst          string         `json:"dst,omitempty"`
+	DstPort      int            `json:"dst_port,omitempty"`
+	Message      string         `json:"message,omitempty"`
+	// Span correlation
+	SpanID       string         `json:"span_id,omitempty"`
+	ParentSpanID string         `json:"parent_span_id,omitempty"`
+	// SQL enrichment
+	TableName    string         `json:"table_name,omitempty"`
+	RowsAffected int            `json:"rows_affected,omitempty"`
 }
 
 // ─── In-memory trace enable/disable registry ─────────────────────────────────
@@ -300,12 +318,16 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 		close(lines)
 	}()
 
-	// Request correlator for HTTP timing.
+	// Request correlator for HTTP timing and span correlation.
 	type openReq struct {
 		method, path, host string
+		spanID             string
 		t                  time.Time
 	}
 	openReqs := make(map[string]openReq)
+	// activeSpan tracks the most recent http_req span_id per src endpoint,
+	// so SQL/Redis spans can be parented to it.
+	activeSpan := make(map[string]string) // srcIP:srcPort -> spanID
 
 	type pkt struct {
 		srcIP, dstIP     string
@@ -330,15 +352,41 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 
 		connKey := fmt.Sprintf("%s:%d->%s:%d", p.srcIP, p.srcPort, p.dstIP, p.dstPort)
 		revKey := fmt.Sprintf("%s:%d->%s:%d", p.dstIP, p.dstPort, p.srcIP, p.srcPort)
+		srcEndpoint := fmt.Sprintf("%s:%d", p.srcIP, p.srcPort)
 
-		if ev.Type == TraceHTTPReq {
-			openReqs[connKey] = openReq{method: ev.Method, path: ev.Path, host: ev.Host, t: p.wallT}
-		} else if ev.Type == TraceHTTPResp {
+		switch ev.Type {
+		case TraceHTTPReq:
+			ev.SpanID = newSpanID()
+			openReqs[connKey] = openReq{
+				method: ev.Method, path: ev.Path, host: ev.Host,
+				spanID: ev.SpanID, t: p.wallT,
+			}
+			activeSpan[srcEndpoint] = ev.SpanID
+
+		case TraceHTTPResp:
 			if req, ok := openReqs[revKey]; ok {
 				ev.DurationMs = float64(p.wallT.Sub(req.t).Milliseconds())
+				ev.ParentSpanID = req.spanID
 				delete(openReqs, revKey)
 			}
+			// Parse rows_affected from PostgreSQL CommandComplete e.g. "C....SELECT 4"
+			if rows := parseRowsAffected(payload); rows > 0 {
+				ev.RowsAffected = rows
+			}
+
+		case TraceSQL:
+			// Attach to the most recent active HTTP span for the connection.
+			if spanID, ok := activeSpan[srcEndpoint]; ok {
+				ev.ParentSpanID = spanID
+			}
+			ev.SpanID = newSpanID()
+			// Extract table name and rows affected.
+			ev.TableName = extractTableName(ev.Query)
+			if rows := parseRowsAffectedFromSQL(payload); rows > 0 {
+				ev.RowsAffected = rows
+			}
 		}
+
 		// Expire stale open requests.
 		for k, v := range openReqs {
 			if time.Since(v.t) > 30*time.Second {
@@ -383,15 +431,20 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 // ─── Multi-protocol analysis ──────────────────────────────────────────────────
 
 var (
-	httpReqRe = regexp.MustCompile(`(?m)(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT) (/\S*) HTTP/[\d.]+`)
+	httpReqRe  = regexp.MustCompile(`(?m)(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|CONNECT) (/\S*) HTTP/[\d.]+`)
 	httpRespRe = regexp.MustCompile(`(?m)HTTP/[\d.]+ (\d{3})`)
 	hostHdrRe  = regexp.MustCompile(`(?im)^Host:\s*(\S+)`)
+	// PostgreSQL CommandComplete: "C....<command> <rows>" e.g. "C....SELECT 4" "C....UPDATE 3"
+	pgCmdRe = regexp.MustCompile(`C\.*\s*(SELECT|INSERT\s+\d+|UPDATE|DELETE)\s+(\d+)`)
+	// Table name extraction
+	tableRe = regexp.MustCompile(`(?i)(?:FROM|INTO|UPDATE|JOIN)\s+["` + "`" + `]?(\w+)["` + "`" + `]?`)
 )
 
 func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *TraceSpan {
 	src := fmt.Sprintf("%s:%d", srcIP, srcPort)
 	dst := fmt.Sprintf("%s:%d", dstIP, dstPort)
 
+	// ── HTTP ──────────────────────────────────────────────────────────────────
 	if m := httpReqRe.FindStringSubmatch(payload); m != nil {
 		ev := &TraceSpan{Type: TraceHTTPReq, Method: m[1], Path: m[2], Src: src, Dst: dst}
 		if hm := hostHdrRe.FindStringSubmatch(payload); hm != nil {
@@ -404,31 +457,223 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 		return &TraceSpan{Type: TraceHTTPResp, Status: status, Src: src, Dst: dst}
 	}
 
+	// ── PostgreSQL (port 5432) ─────────────────────────────────────────────────
 	if dstPort == 5432 || srcPort == 5432 {
-		pgKeywords := []string{"SELECT", "INSERT", "UPDATE", "DELETE",
-			"CREATE", "DROP", "ALTER", "BEGIN", "COMMIT", "ROLLBACK", "WITH", "CALL", "EXECUTE"}
-		// Try asyncpg Extended Query Protocol first: "P...<stmt_name>.<SQL>"
-		// The 'P' byte (0x50) is the Parse message type in the PG wire protocol.
+		pgKeywords := []string{
+			"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+			"BEGIN", "COMMIT", "ROLLBACK", "WITH", "CALL", "EXECUTE", "MERGE",
+			"TRUNCATE", "EXPLAIN",
+		}
 		if q := extractPostgresExtended(payload, pgKeywords); q != "" {
+			q = cleanSQL(q)
 			return &TraceSpan{Type: TraceSQL, DBType: "postgresql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
 		}
-		// Fall back to Simple Query Protocol: "Q...<SQL>\0"
 		if q := extractSQL(payload, pgKeywords); q != "" {
+			q = cleanSQL(q)
 			return &TraceSpan{Type: TraceSQL, DBType: "postgresql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
+
+	// ── MySQL (port 3306) ──────────────────────────────────────────────────────
 	if dstPort == 3306 || srcPort == 3306 {
-		if q := extractSQL(payload, []string{"SELECT", "INSERT", "UPDATE", "DELETE",
-			"CREATE", "DROP", "ALTER", "BEGIN", "COMMIT", "SET "}); q != "" {
+		if q := extractMySQL(payload); q != "" {
+			q = cleanSQL(q)
 			return &TraceSpan{Type: TraceSQL, DBType: "mysql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
+
+	// ── MSSQL / SQL Server (port 1433) ─────────────────────────────────────────
+	if dstPort == 1433 || srcPort == 1433 {
+		if q := extractMSSQL(payload); q != "" {
+			q = cleanSQL(q)
+			return &TraceSpan{Type: TraceSQL, DBType: "mssql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
+		}
+	}
+
+	// ── Redis (port 6379) ──────────────────────────────────────────────────────
 	if dstPort == 6379 || srcPort == 6379 {
 		if cmd := extractRedis(payload); cmd != "" {
 			return &TraceSpan{Type: TraceRedis, DBType: "redis", Query: cmd, Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
+
+	// ── MongoDB (port 27017) — detect OP_MSG queries ─────────────────────────
+	if dstPort == 27017 || srcPort == 27017 {
+		if q := extractMongoDB(payload); q != "" {
+			return &TraceSpan{Type: TraceSQL, DBType: "mongodb", Query: q, Src: src, Dst: dst, DstPort: dstPort}
+		}
+	}
+
 	return nil
+}
+
+// cleanSQL normalizes whitespace and truncates very long queries.
+func cleanSQL(q string) string {
+	// Collapse excessive whitespace.
+	q = strings.Join(strings.Fields(q), " ")
+	if len(q) > 2000 {
+		q = q[:2000] + " ... [truncated]"
+	}
+	return q
+}
+
+// extractTableName extracts the first table name from a SQL query.
+func extractTableName(query string) string {
+	if m := tableRe.FindStringSubmatch(query); len(m) > 1 {
+		t := strings.ToLower(m[1])
+		// Skip PostgreSQL catalog/system tables.
+		if strings.HasPrefix(t, "pg_") || t == "information_schema" {
+			return ""
+		}
+		return t
+	}
+	return ""
+}
+
+// parseRowsAffected parses row counts from PostgreSQL CommandComplete messages.
+// Format in tcpdump: "C....UPDATE 3" "C....SELECT 4" "C....INSERT 0 1"
+func parseRowsAffected(payload string) int {
+	if m := pgCmdRe.FindStringSubmatch(payload); len(m) > 2 {
+		// For INSERT the format is "INSERT 0 N", we want N.
+		parts := strings.Fields(m[0])
+		last := parts[len(parts)-1]
+		n, _ := strconv.Atoi(last)
+		return n
+	}
+	return 0
+}
+
+// parseRowsAffectedFromSQL tries to parse rows affected from the query result payload.
+func parseRowsAffectedFromSQL(payload string) int {
+	return parseRowsAffected(payload)
+}
+
+// extractMySQL handles MySQL wire protocol COM_QUERY (0x03) and
+// COM_STMT_PREPARE (0x16) packets.
+// MySQL packet: [3B len][1B seq][1B cmd][query text]
+// In ASCII tcpdump the 0x03 byte appears as a non-printable, followed by SQL text.
+func extractMySQL(payload string) string {
+	mysqlKeywords := []string{
+		"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+		"BEGIN", "COMMIT", "ROLLBACK", "SHOW", "USE", "DESCRIBE", "EXPLAIN",
+		"SET", "CALL", "START TRANSACTION", "TRUNCATE",
+	}
+	upper := strings.ToUpper(payload)
+	for _, kw := range mysqlKeywords {
+		idx := strings.Index(upper, kw)
+		if idx < 0 {
+			continue
+		}
+		if idx > 0 {
+			prev := payload[idx-1]
+			if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+				continue
+			}
+		}
+		// For MySQL, the query starts right after the command byte (0x03).
+		// Check the preceding byte — it should be 0x03 or a non-printable.
+		if idx >= 1 {
+			pre := payload[idx-1]
+			// Accept if preceded by non-alphanumeric (header byte, dot, space).
+			isValid := !((pre >= 'A' && pre <= 'Z') || (pre >= 'a' && pre <= 'z') || (pre >= '0' && pre <= '9'))
+			if !isValid {
+				continue
+			}
+		}
+		q := extractPrintableFrom(payload[idx:], 4096)
+		if q = strings.TrimSpace(q); len(q) > 3 {
+			return q
+		}
+	}
+	return ""
+}
+
+// extractMSSQL handles Microsoft TDS (Tabular Data Stream) protocol.
+// TDS SQL Batch (type 0x01): 8-byte header then raw UTF-16LE or ASCII SQL.
+// TDS RPC (type 0x03): stored procedure call.
+// In tcpdump ASCII output, the SQL text appears after header bytes.
+func extractMSSQL(payload string) string {
+	mssqlKeywords := []string{
+		"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
+		"EXEC", "EXECUTE", "MERGE", "WITH", "BEGIN TRAN", "COMMIT TRAN",
+		"ROLLBACK", "TRUNCATE", "DECLARE", "SET", "IF ", "WHILE",
+	}
+	upper := strings.ToUpper(payload)
+
+	// TDS packets often contain UTF-16LE encoded SQL — detect by looking for
+	// interleaved null bytes: "S\x00E\x00L\x00E\x00C\x00T\x00"
+	if strings.Contains(payload, "\x00S\x00E\x00L\x00") ||
+		strings.Contains(payload, "\x00I\x00N\x00S\x00") ||
+		strings.Contains(payload, "\x00U\x00P\x00D\x00") {
+		// Decode UTF-16LE by keeping only the ASCII bytes (skip nulls).
+		var decoded strings.Builder
+		for i := 0; i < len(payload)-1; i += 2 {
+			c := payload[i]
+			if c >= 0x20 && c <= 0x7e {
+				decoded.WriteByte(c)
+			} else if c == '\n' || c == '\r' || c == '\t' {
+				decoded.WriteByte(' ')
+			}
+		}
+		decoded16 := decoded.String()
+		upper16 := strings.ToUpper(decoded16)
+		for _, kw := range mssqlKeywords {
+			idx := strings.Index(upper16, kw)
+			if idx < 0 {
+				continue
+			}
+			if idx > 0 {
+				prev := decoded16[idx-1]
+				if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+					continue
+				}
+			}
+			q := strings.TrimSpace(decoded16[idx:])
+			if len(q) > 3 {
+				return q
+			}
+		}
+	}
+
+	// ASCII / single-byte SQL (some MSSQL drivers send ASCII).
+	for _, kw := range mssqlKeywords {
+		idx := strings.Index(upper, kw)
+		if idx < 0 {
+			continue
+		}
+		if idx > 0 {
+			prev := payload[idx-1]
+			if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+				continue
+			}
+		}
+		q := extractPrintableFrom(payload[idx:], 4096)
+		if q = strings.TrimSpace(q); len(q) > 3 {
+			return q
+		}
+	}
+	return ""
+}
+
+// extractMongoDB detects MongoDB OP_MSG queries in payload.
+// OP_MSG opcode = 2013 (0x7DD in little-endian). In ASCII we look for
+// "find", "insert", "update", "delete", "aggregate" collection operation keys.
+func extractMongoDB(payload string) string {
+	mongoKeywords := []string{`"find"`, `"insert"`, `"update"`, `"delete"`, `"aggregate"`, `"count"`, `"distinct"`}
+	for _, kw := range mongoKeywords {
+		if idx := strings.Index(payload, kw); idx >= 0 {
+			// Extract up to 500 chars of the JSON body.
+			end := idx + 500
+			if end > len(payload) {
+				end = len(payload)
+			}
+			q := extractPrintableFrom(payload[idx:end], 500)
+			if q = strings.TrimSpace(q); len(q) > 3 {
+				return q
+			}
+		}
+	}
+	return ""
 }
 
 // extractPostgresExtended handles the PostgreSQL Extended Query Protocol

@@ -319,6 +319,12 @@ export interface TraceEvent {
   query?: string; db_type?: string
   src?: string; dst?: string; dst_port?: number
   message?: string
+  // Span correlation
+  span_id?: string
+  parent_span_id?: string
+  // SQL enrichment
+  table_name?: string
+  rows_affected?: number
 }
 
 export interface TraceSessionSummary {

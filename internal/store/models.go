@@ -336,19 +336,25 @@ func (d DNSTicket) GetID() string { return d.ID }
 // TraceEvent mirrors a single TraceSpan captured during a container trace.
 // It is persisted as part of a TraceSession so traces survive browser close.
 type TraceEvent struct {
-	Time       string  `json:"time" msgpack:"time"`
-	Type       string  `json:"type" msgpack:"type"`
-	Method     string  `json:"method,omitempty" msgpack:"method,omitempty"`
-	Path       string  `json:"path,omitempty" msgpack:"path,omitempty"`
-	Host       string  `json:"host,omitempty" msgpack:"host,omitempty"`
-	Status     int     `json:"status,omitempty" msgpack:"status,omitempty"`
-	DurationMs float64 `json:"duration_ms,omitempty" msgpack:"duration_ms,omitempty"`
-	Query      string  `json:"query,omitempty" msgpack:"query,omitempty"`
-	DBType     string  `json:"db_type,omitempty" msgpack:"db_type,omitempty"`
-	Src        string  `json:"src,omitempty" msgpack:"src,omitempty"`
-	Dst        string  `json:"dst,omitempty" msgpack:"dst,omitempty"`
-	DstPort    int     `json:"dst_port,omitempty" msgpack:"dst_port,omitempty"`
-	Message    string  `json:"message,omitempty" msgpack:"message,omitempty"`
+	Time         string  `json:"time" msgpack:"time"`
+	Type         string  `json:"type" msgpack:"type"`
+	Method       string  `json:"method,omitempty" msgpack:"method,omitempty"`
+	Path         string  `json:"path,omitempty" msgpack:"path,omitempty"`
+	Host         string  `json:"host,omitempty" msgpack:"host,omitempty"`
+	Status       int     `json:"status,omitempty" msgpack:"status,omitempty"`
+	DurationMs   float64 `json:"duration_ms,omitempty" msgpack:"duration_ms,omitempty"`
+	Query        string  `json:"query,omitempty" msgpack:"query,omitempty"`
+	DBType       string  `json:"db_type,omitempty" msgpack:"db_type,omitempty"`
+	Src          string  `json:"src,omitempty" msgpack:"src,omitempty"`
+	Dst          string  `json:"dst,omitempty" msgpack:"dst,omitempty"`
+	DstPort      int     `json:"dst_port,omitempty" msgpack:"dst_port,omitempty"`
+	Message      string  `json:"message,omitempty" msgpack:"message,omitempty"`
+	// Span correlation for Dynatrace-style waterfall grouping
+	SpanID       string  `json:"span_id,omitempty" msgpack:"span_id,omitempty"`
+	ParentSpanID string  `json:"parent_span_id,omitempty" msgpack:"parent_span_id,omitempty"`
+	// SQL enrichment
+	TableName    string  `json:"table_name,omitempty" msgpack:"table_name,omitempty"`
+	RowsAffected int     `json:"rows_affected,omitempty" msgpack:"rows_affected,omitempty"`
 }
 
 // TraceSession is a persisted record of a container trace session, including

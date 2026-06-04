@@ -81,6 +81,15 @@ func (h *H) CreateDeployTag(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Reject duplicate tag names within the same project.
+	existingTags, _ := h.db.DeployTags.FindWhere(func(t store.DeployTag) bool {
+		return t.ProjectID == projectID && strings.EqualFold(t.Name, req.Name)
+	})
+	if len(existingTags) > 0 {
+		writeError(w, http.StatusConflict, "a tag with this name already exists — choose a different name")
+		return
+	}
+
 	tag := store.DeployTag{
 		ID:             store.NewULID(),
 		ProjectID:      projectID,
