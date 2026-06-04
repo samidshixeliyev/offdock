@@ -105,7 +105,12 @@ func (h *H) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	send("info", fmt.Sprintf("Found binary at %s — validating…", binaryPath))
+	// Read VERSION file if present.
+	versionInfo := ""
+	if vdata, err := os.ReadFile(filepath.Join(tmpDir, "VERSION")); err == nil {
+		versionInfo = " (version: " + strings.TrimSpace(string(vdata)) + ")"
+	}
+	send("info", fmt.Sprintf("Found binary%s — validating…", versionInfo))
 
 	// Sanity check: must be an ELF executable.
 	if err := validateBinary(binaryPath); err != nil {

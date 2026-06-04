@@ -594,10 +594,27 @@ function SystemUpdateSection() {
       <div className="card space-y-4">
         <div>
           <p className="text-sm font-medium text-slate-200 mb-1">Update OffDock</p>
-          <p className="text-xs text-slate-500">
-            Upload an OffDock <code className="font-mono text-slate-400">.tar.gz</code> bundle to update the binary.
-            The service will restart automatically — reconnect in a few seconds after the update completes.
+          <p className="text-xs text-slate-500 mb-3">
+            Upload an OffDock <code className="font-mono text-slate-400">.tar.gz</code> bundle.
+            Only the binary is replaced — all data, config, and settings are preserved.
+            The service restarts automatically.
           </p>
+          {/* Expected structure */}
+          <div className="rounded-lg bg-slate-950 border border-slate-800 p-3 mb-1">
+            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Required bundle structure</p>
+            <pre className="text-[11px] text-slate-400 font-mono leading-relaxed">{`offdock-bundle/          ← any folder name
+  offdock               ← binary (required — ELF x86-64)
+  VERSION               ← version string, e.g. 2026-06-04
+  install.sh            ← full install (optional)
+  offdock.service       ← systemd unit (optional)
+  debs/                 ← offline packages (optional)
+    docker/*.deb
+    nginx/*.deb`}</pre>
+            <p className="text-[10px] text-slate-600 mt-2">
+              The UI update only uses the <code className="font-mono">offdock</code> binary.
+              Use <code className="font-mono">sudo bash install.sh</code> for a full install with packages.
+            </p>
+          </div>
         </div>
 
         {/* Drop zone */}
