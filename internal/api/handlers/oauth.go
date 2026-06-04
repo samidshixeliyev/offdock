@@ -69,7 +69,7 @@ func (h *H) OAuthLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.oauthSettings.Enabled && h.oauthSettings.Issuer != "" {
-		logoutURL := h.oauthSettings.Issuer + "/oauth2/logout"
+		logoutURL := buildLogoutURL(strings.TrimRight(h.oauthSettings.Issuer, "/"))
 		if postLogoutURI != "" {
 			logoutURL += "?post_logout_redirect_uri=" + url.QueryEscape(postLogoutURI)
 		}
@@ -238,12 +238,48 @@ func (h *H) OAuthStart(w http.ResponseWriter, r *http.Request) {
 	q.Set("state", state)
 	q.Set("code_challenge", codeChallenge)
 	q.Set("code_challenge_method", "S256")
-	if r.URL.Query().Get("force") == "true" {
-		q.Set("prompt", "login")
-	}
+	// Always use prompt=login so the IdP always shows the login screen
+	// even when the user has a saved SSO session. This prevents session
+	// confusion when multiple accounts exist. ?force=true is kept for
+	// backwards compatibility but no longer needed.
+	q.Set("prompt", "login")
 
-	authURL := h.oauthSettings.Issuer + "/oauth2/authorize?" + q.Encode()
+	// Build authorization URL. Try OIDC discovery first to find the exact endpoint,
+	// then fall back to common IdP path conventions.
+	authURL := buildAuthURL(h.oauthSettings.Issuer) + "?" + q.Encode()
 	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// ─── IdP URL builders ─────────────────────────────────────────────────────────
+// These handle differences between Keycloak (/realms/<name>/protocol/openid-connect/*)
+// and standard OIDC issuers (/oauth2/*). Add cases here as new IdPs are supported.
+
+func buildAuthURL(issuer string) string {
+	if strings.Contains(issuer, "/realms/") {
+		return issuer + "/protocol/openid-connect/auth"
+	}
+	return issuer + "/oauth2/authorize"
+}
+
+func buildTokenURL(issuer string) string {
+	if strings.Contains(issuer, "/realms/") {
+		return issuer + "/protocol/openid-connect/token"
+	}
+	return issuer + "/oauth2/token"
+}
+
+func buildUserInfoURL(issuer string) string {
+	if strings.Contains(issuer, "/realms/") {
+		return issuer + "/protocol/openid-connect/userinfo"
+	}
+	return issuer + "/oauth2/userinfo"
+}
+
+func buildLogoutURL(issuer string) string {
+	if strings.Contains(issuer, "/realms/") {
+		return issuer + "/protocol/openid-connect/logout"
+	}
+	return issuer + "/oauth2/logout"
 }
 
 // OAuthCallback handles the IdP redirect back with code+state, exchanges the code
@@ -367,8 +403,8 @@ type oauthClaims struct {
 // exchangeCodeForClaims exchanges an authorization code for an access token,
 // then fetches user claims from the IdP's /oauth2/userinfo endpoint.
 func (h *H) exchangeCodeForClaims(code, codeVerifier string) (*oauthClaims, error) {
-	issuer := h.oauthSettings.Issuer
-	tokenURL := issuer + "/oauth2/token"
+	issuer := strings.TrimRight(h.oauthSettings.Issuer, "/")
+	tokenURL := buildTokenURL(issuer)
 
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
@@ -422,7 +458,7 @@ func (h *H) exchangeCodeForClaims(code, codeVerifier string) (*oauthClaims, erro
 
 // fetchUserInfo calls the IdP's /oauth2/userinfo endpoint with the access token.
 func (h *H) fetchUserInfo(accessToken string) (*oauthClaims, error) {
-	userInfoURL := h.oauthSettings.Issuer + "/oauth2/userinfo"
+	userInfoURL := buildUserInfoURL(strings.TrimRight(h.oauthSettings.Issuer, "/"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

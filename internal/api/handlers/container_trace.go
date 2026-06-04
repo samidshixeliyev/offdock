@@ -465,28 +465,24 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 			"TRUNCATE", "EXPLAIN",
 		}
 		if q := extractPostgresExtended(payload, pgKeywords); q != "" {
-			q = cleanSQL(q)
-			return &TraceSpan{Type: TraceSQL, DBType: "postgresql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
+			return &TraceSpan{Type: TraceSQL, DBType: "postgresql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
 		if q := extractSQL(payload, pgKeywords); q != "" {
-			q = cleanSQL(q)
-			return &TraceSpan{Type: TraceSQL, DBType: "postgresql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
+			return &TraceSpan{Type: TraceSQL, DBType: "postgresql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
 
 	// ── MySQL (port 3306) ──────────────────────────────────────────────────────
 	if dstPort == 3306 || srcPort == 3306 {
 		if q := extractMySQL(payload); q != "" {
-			q = cleanSQL(q)
-			return &TraceSpan{Type: TraceSQL, DBType: "mysql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
+			return &TraceSpan{Type: TraceSQL, DBType: "mysql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
 
 	// ── MSSQL / SQL Server (port 1433) ─────────────────────────────────────────
 	if dstPort == 1433 || srcPort == 1433 {
 		if q := extractMSSQL(payload); q != "" {
-			q = cleanSQL(q)
-			return &TraceSpan{Type: TraceSQL, DBType: "mssql", Query: q, Src: src, Dst: dst, DstPort: dstPort}
+			return &TraceSpan{Type: TraceSQL, DBType: "mssql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
 
@@ -507,14 +503,11 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 	return nil
 }
 
-// cleanSQL normalizes whitespace and truncates very long queries.
+// cleanSQL normalizes whitespace. Does NOT truncate — full queries are always shown.
+// String literals and numbers are NOT masked here so the user can see exact queries
+// and procedure calls. The frontend handles display length.
 func cleanSQL(q string) string {
-	// Collapse excessive whitespace.
-	q = strings.Join(strings.Fields(q), " ")
-	if len(q) > 2000 {
-		q = q[:2000] + " ... [truncated]"
-	}
-	return q
+	return strings.Join(strings.Fields(q), " ")
 }
 
 // extractTableName extracts the first table name from a SQL query.
@@ -580,7 +573,7 @@ func extractMySQL(payload string) string {
 				continue
 			}
 		}
-		q := extractPrintableFrom(payload[idx:], 4096)
+		q := extractPrintableFrom(payload[idx:], 16384)
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			return q
 		}
@@ -647,7 +640,7 @@ func extractMSSQL(payload string) string {
 				continue
 			}
 		}
-		q := extractPrintableFrom(payload[idx:], 4096)
+		q := extractPrintableFrom(payload[idx:], 16384)
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			return q
 		}
@@ -711,7 +704,7 @@ func extractPostgresExtended(payload string, keywords []string) string {
 				}
 			}
 		}
-		q := extractPrintableFrom(payload[idx:], 4096)
+		q := extractPrintableFrom(payload[idx:], 16384)
 		// Clean up: remove trailing asyncpg metadata that follows the null-terminated SQL
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			// Remove any trailing "...D....S__asyncpg_stmt_..." noise
@@ -740,7 +733,7 @@ func extractSQL(payload string, keywords []string) string {
 				continue
 			}
 		}
-		q := extractPrintableFrom(payload[idx:], 4096)
+		q := extractPrintableFrom(payload[idx:], 16384)
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			return q
 		}
