@@ -114,6 +114,61 @@ export interface DeploySettings {
   otel_enabled?: boolean
 }
 
+// ─── OpenTelemetry / Jaeger types ──────────────────────────────────────────
+
+export interface OTelTag {
+  key: string
+  type: string
+  value: string | number | boolean
+}
+
+export interface OTelSpanRef {
+  refType: 'CHILD_OF' | 'FOLLOWS_FROM'
+  traceID: string
+  spanID: string
+}
+
+export interface OTelSpan {
+  traceID: string
+  spanID: string
+  operationName: string
+  references: OTelSpanRef[]
+  startTime: number    // microseconds since epoch
+  duration: number     // microseconds
+  tags: OTelTag[]
+  processID: string
+  warnings: string[] | null
+}
+
+export interface OTelProcess {
+  serviceName: string
+  tags: OTelTag[]
+}
+
+export interface OTelTrace {
+  traceID: string
+  spans: OTelSpan[]
+  processes: Record<string, OTelProcess>
+  warnings: string[] | null
+}
+
+export interface OTelTraceSummary {
+  traceID: string
+  rootSpan: OTelSpan
+  service: string
+  spans: number
+  duration: number   // microseconds
+  startTime: number  // microseconds
+  hasError: boolean
+}
+
+export interface OTelStatus {
+  available: boolean
+  message?: string
+  otlp_http?: string   // e.g. http://HOST_IP:7070/v1/traces
+  span_count?: number
+}
+
 export interface DiskUsageRow {
   type: string
   total: string
@@ -820,6 +875,21 @@ export const api = {
   getAppLogs: (n = 500) => request<{ source: string; lines: string[] }>(`/api/v1/system/app-logs?n=${n}`),
   appLogsStreamUrl: () => '/api/v1/system/app-logs/stream',
 
+  // OpenTelemetry / Jaeger proxy
+  otelStatus: () => request<OTelStatus>('/api/v1/otel/status'),
+  otelServices: () => request<{ data: string[] }>('/api/v1/otel/services'),
+  otelOperations: (service: string) =>
+    request<{ data: Array<{ name: string; spanKind: string }> }>(`/api/v1/otel/operations?service=${encodeURIComponent(service)}`),
+  otelTraces: (params: { service?: string; limit?: number; operation?: string } = {}) => {
+    const q = new URLSearchParams()
+    if (params.service) q.set('service', params.service)
+    if (params.limit) q.set('limit', String(params.limit))
+    if (params.operation) q.set('operation', params.operation)
+    return request<{ data: OTelTrace[] }>(`/api/v1/otel/traces?${q}`)
+  },
+  otelTrace: (id: string) => request<{ data: OTelTrace[] }>(`/api/v1/otel/traces/${id}`),
+  otelDeleteTraces: () => request<{ deleted: number }>('/api/v1/otel/traces', { method: 'DELETE' }),
+
   // Docker disk usage + image prune
   getSystemDf: () => request<{ rows: DiskUsageRow[] }>('/api/v1/system/df'),
   pruneImages: (all = false) =>
@@ -836,6 +906,10 @@ export const api = {
   systemUpdateUrl: () => '/api/v1/system/update',
   systemRollbackUrl: () => '/api/v1/system/rollback',
   compactDB: () => request<{ status: string; bytes_before: number; bytes_after: number; bytes_freed: number }>('/api/v1/system/compact', { method: 'POST', body: '{}' }),
+  pruneAll: (params?: { sessions?: number; otel_spans?: number; audit?: number; deployments?: number }) => {
+    const q = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v]) => v !== undefined).map(([k,v]) => [k, String(v)])).toString() : ''
+    return request<{ status: string; sessions_deleted: number; otel_spans_deleted: number; audit_deleted: number; deployments_deleted: number }>(`/api/v1/system/prune${q}`, { method: 'POST', body: '{}' })
+  },
 
   // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
   uploadFile: (

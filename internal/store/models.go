@@ -377,6 +377,29 @@ type TraceSession struct {
 
 func (t TraceSession) GetID() string { return t.ID }
 
+// --- OTelSpan ----------------------------------------------------------------
+
+// OTelSpan stores a single span received via the OTLP HTTP endpoint.
+// Spans are grouped into traces by TraceID at query time.
+type OTelSpan struct {
+	ID           string            `json:"id"`            // OffDock internal ULID
+	TraceID      string            `json:"trace_id"`
+	SpanID       string            `json:"span_id"`
+	ParentSpanID string            `json:"parent_span_id,omitempty"`
+	Service      string            `json:"service"`
+	Name         string            `json:"name"`
+	Kind         string            `json:"kind"`          // server|client|internal|producer|consumer
+	StartTimeUs  int64             `json:"start_us"`      // epoch microseconds
+	EndTimeUs    int64             `json:"end_us"`
+	DurationUs   int64             `json:"duration_us"`
+	StatusCode   string            `json:"status_code"`   // ok|error|unset
+	StatusMsg    string            `json:"status_msg,omitempty"`
+	Attributes   map[string]string `json:"attributes,omitempty"`
+	ReceivedAt   time.Time         `json:"received_at"`
+}
+
+func (s OTelSpan) GetID() string { return s.ID }
+
 // --- SMTPConfig (runtime, from config.yaml via handlers) --------------------
 
 // SMTPSettings mirrors the SMTP fields from Config for passing to handlers.

@@ -55,6 +55,9 @@ func NewRouter(deps Deps) http.Handler {
 
 	h := handlers.New(deps.DB, deps.Auth, deps.Encryptor, deps.Docker, deps.Deployer, deps.Stats, deps.SSEHub, deps.ProjectsDir, deps.DataDir, deps.DefaultPEMPath, deps.Mailer, deps.SMTPSettings, deps.OAuthSettings)
 
+	// --- OTLP HTTP receiver (public — called by OTel agents inside containers) ---
+	r.Post("/v1/traces", h.ReceiveOTLPTraces)
+
 	// --- Public routes ---
 	r.Post("/api/v1/auth/login", h.Login)
 	// Logout is best-effort — also works without a valid token (clears cookie).
@@ -246,6 +249,14 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/settings/oauth", h.GetOAuthSettings)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/settings/oauth", h.SaveOAuthSettings)
 
+		// OpenTelemetry — native receiver (spans stored in OffDock DB).
+		r.Get("/api/v1/otel/status", h.OTelStatus)
+		r.Get("/api/v1/otel/services", h.OTelServices)
+		r.Get("/api/v1/otel/operations", h.OTelOperations)
+		r.Get("/api/v1/otel/traces", h.OTelTraces)
+		r.Get("/api/v1/otel/traces/{id}", h.OTelTrace)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleAdmin)).Delete("/api/v1/otel/traces", h.OTelDeleteTraces)
+
 		// OffDock application logs (recent lines + live SSE stream) — admin+ only.
 		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/system/app-logs", h.GetAppLogs)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/system/app-logs/stream", h.StreamAppLogs)
@@ -258,6 +269,7 @@ func NewRouter(deps Deps) http.Handler {
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/update", h.SystemUpdate)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/rollback", h.SystemRollback)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/compact", h.CompactDB)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/prune", h.PruneAll)
 
 		// Reverse proxy status probe (server-side to avoid CORS)
 		r.Get("/api/v1/proxy/status", h.ProxyStatus)

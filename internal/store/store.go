@@ -26,6 +26,7 @@ type DB struct {
 	DNSTickets     *Collection[DNSTicket]
 	DeployTags     *Collection[DeployTag]
 	TraceSessions  *Collection[TraceSession]
+	OTelSpans      *Collection[OTelSpan]
 }
 
 // Open initialises all collections, creating data files if they do not exist.
@@ -89,6 +90,9 @@ func Open(dataDir string) (*DB, error) {
 	if db.TraceSessions, err = NewCollection[TraceSession](open("trace_sessions")); err != nil {
 		return nil, err
 	}
+	if db.OTelSpans, err = NewCollection[OTelSpan](open("otel_spans")); err != nil {
+		return nil, err
+	}
 
 	return db, nil
 }
@@ -101,7 +105,7 @@ func (db *DB) Compact() error {
 		db.Users, db.Projects, db.Images, db.Compose,
 		db.EnvVars, db.Nginx, db.Deployments, db.ProxyHosts, db.DeploySettings,
 		db.AuditEvents, db.CustomRoles, db.Sessions,
-		db.OTPChallenges, db.DNSTickets, db.DeployTags, db.TraceSessions,
+		db.OTPChallenges, db.DNSTickets, db.DeployTags, db.TraceSessions, db.OTelSpans,
 	}
 	for _, c := range collections {
 		if err := c.Compact(); err != nil {
@@ -109,6 +113,27 @@ func (db *DB) Compact() error {
 		}
 	}
 	return nil
+}
+
+// PruneOTelSpans deletes the oldest OTel spans keeping at most `keep`.
+func (db *DB) PruneOTelSpans(keep int) int {
+	spans, _ := db.OTelSpans.FindAll()
+	if len(spans) <= keep {
+		return 0
+	}
+	sort.Slice(spans, func(i, j int) bool {
+		return spans[i].ReceivedAt.Before(spans[j].ReceivedAt)
+	})
+	deleted := 0
+	for _, s := range spans[:len(spans)-keep] {
+		if db.OTelSpans.Delete(s.ID) == nil {
+			deleted++
+		}
+	}
+	if deleted > 0 {
+		_ = db.OTelSpans.Compact()
+	}
+	return deleted
 }
 
 // PruneTraceSessions deletes the oldest trace sessions, keeping at most `keep`
@@ -140,7 +165,7 @@ func (db *DB) Close() error {
 		db.Users, db.Projects, db.Images, db.Compose,
 		db.EnvVars, db.Nginx, db.Deployments, db.ProxyHosts, db.DeploySettings,
 		db.AuditEvents, db.CustomRoles, db.Sessions,
-		db.OTPChallenges, db.DNSTickets, db.DeployTags, db.TraceSessions,
+		db.OTPChallenges, db.DNSTickets, db.DeployTags, db.TraceSessions, db.OTelSpans,
 	}
 	for _, c := range closers {
 		if err := c.Close(); err != nil {

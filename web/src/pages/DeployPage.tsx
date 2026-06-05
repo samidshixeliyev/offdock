@@ -693,7 +693,10 @@ export default function DeployPage() {
             onChange={e => setSettingsDraft(d => ({ ...d, webhook_url: e.target.value }))}
             className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
           />
-          <p className="text-xs text-slate-600 mt-1">OffDock sends JSON: status, project, deploy_id, timestamp</p>
+          <p className="text-xs text-slate-600 mt-1">
+            HTTP POST on deploy complete or fail — use for Slack webhooks, monitoring, CI/CD callbacks, or any HTTP endpoint.
+            Payload: <code className="text-slate-400 font-mono">{'{"status":"success|failed","project":"...","deploy_id":"...","timestamp":"..."}'}</code>
+          </p>
         </div>
 
         {/* OpenTelemetry — single toggle, everything auto-configured */}

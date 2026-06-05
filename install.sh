@@ -440,37 +440,11 @@ else
   echo "  WARNING: OpenTelemetry Java agent not found — skipping." >&2
 fi
 
-# ── Jaeger all-in-one (distributed tracing backend) ─────────────────────────
-# Loaded from the bundled image — no internet needed.
-JAEGER_NETWORK="offdock-otel"
-JAEGER_CONTAINER="offdock-jaeger"
-JAEGER_IMAGE_TAR="${SCRIPT_DIR}/images/jaeger.tar.gz"
-
-if [[ -f "${JAEGER_IMAGE_TAR}" ]]; then
-  echo "  Loading Jaeger image from bundle…"
-  docker load -i "${JAEGER_IMAGE_TAR}" 2>&1 | tail -2
-
-  # Create the shared OTel network all traced containers will join.
-  docker network inspect "${JAEGER_NETWORK}" &>/dev/null || \
-    docker network create "${JAEGER_NETWORK}" 2>/dev/null
-  echo "  Docker network '${JAEGER_NETWORK}' ready."
-
-  # Remove old container if present, then start fresh.
-  docker rm -f "${JAEGER_CONTAINER}" 2>/dev/null || true
-  docker run -d \
-    --name "${JAEGER_CONTAINER}" \
-    --network "${JAEGER_NETWORK}" \
-    -p 16686:16686 \
-    -p 4317:4317 \
-    -p 4318:4318 \
-    --restart=always \
-    jaegertracing/all-in-one:latest \
-    2>&1 | tail -1
-  echo "  Jaeger started (OTLP: :4317/:4318 — UI: :16686)"
-else
-  echo "  INFO: Jaeger image not bundled — OpenTelemetry traces will not be collected." >&2
-  echo "        Re-bundle with: bash prepare-usb.sh (on an internet machine)" >&2
-fi
+# OffDock itself is the OTLP receiver — no separate collector needed.
+# Traces from instrumented containers are sent to http://host.docker.internal:7070/v1/traces
+# and stored in OffDock's own database, viewable in the App Traces page.
+echo "  OpenTelemetry receiver: built into OffDock at :7070/v1/traces"
+echo "  App Traces page: visible in the OffDock UI → App Traces"
 
 # ============================================================================
 # INSTALL TCPDUMP (required for container network tracing)

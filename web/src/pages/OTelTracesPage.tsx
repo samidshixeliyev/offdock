@@ -1,0 +1,559 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import clsx from 'clsx'
+import {
+  Activity, AlertTriangle, ChevronDown, ChevronRight,
+  RefreshCw, GitBranch, Clock, Layers, Trash2,
+} from 'lucide-react'
+import {
+  api, OTelSpan, OTelTrace, OTelStatus,
+} from '../api/client'
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function fmtDuration(us: number): string {
+  if (us >= 1_000_000) return (us / 1_000_000).toFixed(2) + 's'
+  if (us >= 1_000) return (us / 1_000).toFixed(1) + 'ms'
+  return us.toFixed(0) + 'μs'
+}
+
+function fmtAgo(startTimeMicros: number): string {
+  const ms = Date.now() - startTimeMicros / 1000
+  if (ms < 5_000) return 'just now'
+  if (ms < 60_000) return `${Math.floor(ms / 1000)}s ago`
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`
+  return `${Math.floor(ms / 86_400_000)}d ago`
+}
+
+function getServiceForSpan(span: OTelSpan, trace: OTelTrace): string {
+  return trace.processes[span.processID]?.serviceName ?? 'unknown'
+}
+
+function getRootSpan(trace: OTelTrace): OTelSpan {
+  const root = trace.spans.find(s => !s.references || s.references.length === 0)
+  return root ?? trace.spans[0]
+}
+
+function hasError(span: OTelSpan): boolean {
+  return span.tags.some(t =>
+    (t.key === 'error' && t.value === true) ||
+    (t.key === 'otel.status_code' && t.value === 'ERROR') ||
+    (t.key === 'http.status_code' && Number(t.value) >= 500)
+  )
+}
+
+function traceHasError(trace: OTelTrace): boolean {
+  return trace.spans.some(hasError)
+}
+
+// Build a flat ordered list of spans with depth, ordered depth-first by startTime.
+interface SpanNode {
+  span: OTelSpan
+  depth: number
+  service: string
+}
+
+function buildSpanTree(trace: OTelTrace): SpanNode[] {
+  const byId = new Map<string, OTelSpan>()
+  const children = new Map<string, OTelSpan[]>()
+
+  for (const s of trace.spans) {
+    byId.set(s.spanID, s)
+    children.set(s.spanID, [])
+  }
+
+  const roots: OTelSpan[] = []
+  for (const s of trace.spans) {
+    const parentRef = s.references?.find(r => r.refType === 'CHILD_OF')
+    if (parentRef && byId.has(parentRef.spanID)) {
+      children.get(parentRef.spanID)!.push(s)
+    } else {
+      roots.push(s)
+    }
+  }
+
+  // Sort children by startTime.
+  const sortByStart = (a: OTelSpan, b: OTelSpan) => a.startTime - b.startTime
+  for (const [, kids] of children) kids.sort(sortByStart)
+  roots.sort(sortByStart)
+
+  const result: SpanNode[] = []
+  function walk(span: OTelSpan, depth: number) {
+    result.push({ span, depth, service: getServiceForSpan(span, trace) })
+    for (const child of (children.get(span.spanID) ?? [])) {
+      walk(child, depth + 1)
+    }
+  }
+  for (const root of roots) walk(root, 0)
+  return result
+}
+
+// Deterministic service color from name hash.
+const SERVICE_COLORS = [
+  'bg-blue-500/20 text-blue-300 border-blue-500/30',
+  'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+  'bg-violet-500/20 text-violet-300 border-violet-500/30',
+  'bg-amber-500/20 text-amber-300 border-amber-500/30',
+  'bg-rose-500/20 text-rose-300 border-rose-500/30',
+  'bg-cyan-500/20 text-cyan-300 border-cyan-500/30',
+  'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30',
+  'bg-orange-500/20 text-orange-300 border-orange-500/30',
+]
+const SPAN_BAR_COLORS = [
+  'from-blue-500/70 to-blue-400/50',
+  'from-emerald-500/70 to-emerald-400/50',
+  'from-violet-500/70 to-violet-400/50',
+  'from-amber-500/70 to-amber-400/50',
+  'from-rose-500/70 to-rose-400/50',
+  'from-cyan-500/70 to-cyan-400/50',
+  'from-fuchsia-500/70 to-fuchsia-400/50',
+  'from-orange-500/70 to-orange-400/50',
+]
+
+function serviceColorIdx(name: string): number {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
+  return h % SERVICE_COLORS.length
+}
+
+function ServiceBadge({ name, small }: { name: string; small?: boolean }) {
+  const idx = serviceColorIdx(name)
+  return (
+    <span className={clsx(
+      'inline-flex items-center rounded border font-mono font-medium truncate',
+      small ? 'text-[9px] px-1.5 py-0.5 max-w-[80px]' : 'text-[10px] px-2 py-0.5 max-w-[120px]',
+      SERVICE_COLORS[idx],
+    )}>
+      {name}
+    </span>
+  )
+}
+
+function spanKind(span: OTelSpan): 'server' | 'client' | 'internal' | 'producer' | 'consumer' {
+  const kind = span.tags.find(t => t.key === 'span.kind')?.value
+  if (kind === 'server') return 'server'
+  if (kind === 'client') return 'client'
+  if (kind === 'producer') return 'producer'
+  if (kind === 'consumer') return 'consumer'
+  return 'internal'
+}
+
+// ─── Span detail row ─────────────────────────────────────────────────────────
+
+interface SpanRowProps {
+  node: SpanNode
+  traceStart: number
+  traceDuration: number
+  colorIdx: number
+}
+
+function SpanRow({ node, traceStart, traceDuration, colorIdx }: SpanRowProps) {
+  const [open, setOpen] = useState(false)
+  const { span, depth, service } = node
+  const isErr = hasError(span)
+  const kind = spanKind(span)
+
+  const barLeft = traceDuration > 0 ? ((span.startTime - traceStart) / traceDuration) * 100 : 0
+  const barWidth = Math.max(
+    traceDuration > 0 ? (span.duration / traceDuration) * 100 : 0,
+    0.5,
+  )
+
+  const barGradient = isErr
+    ? 'from-red-500/70 to-red-400/50'
+    : kind === 'server' ? SPAN_BAR_COLORS[colorIdx % SPAN_BAR_COLORS.length]
+    : kind === 'client' ? 'from-slate-400/50 to-slate-300/30'
+    : 'from-slate-600/50 to-slate-500/30'
+
+  return (
+    <>
+      <div
+        onClick={() => setOpen(o => !o)}
+        className="group flex items-start gap-2 px-3 py-1.5 hover:bg-slate-800/40 cursor-pointer border-b border-slate-800/30 transition-colors"
+      >
+        {/* Indent + arrow */}
+        <div className="flex items-center shrink-0 mt-0.5" style={{ paddingLeft: depth * 16 }}>
+          {open
+            ? <ChevronDown className="w-3 h-3 text-slate-500" />
+            : <ChevronRight className="w-3 h-3 text-slate-600 group-hover:text-slate-400" />
+          }
+        </div>
+
+        {/* Left: service + operation */}
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <ServiceBadge name={service} small />
+          <span className={clsx(
+            'text-[11px] font-mono truncate',
+            isErr ? 'text-red-300' : 'text-slate-200',
+          )}>
+            {span.operationName}
+          </span>
+          {isErr && (
+            <span className="shrink-0 text-[9px] font-semibold text-red-400 bg-red-500/10 border border-red-500/20 rounded px-1 py-px">
+              ERR
+            </span>
+          )}
+        </div>
+
+        {/* Waterfall bar column */}
+        <div className="shrink-0 w-[180px] relative h-5 flex items-center">
+          <div className="absolute inset-0 flex items-center">
+            {/* Grid lines */}
+            {[25, 50, 75].map(pct => (
+              <div key={pct} className="absolute top-0 bottom-0 w-px bg-slate-700/30" style={{ left: `${pct}%` }} />
+            ))}
+            {/* Bar */}
+            <div
+              className={clsx(
+                'absolute h-[10px] rounded-full bg-gradient-to-r',
+                barGradient,
+                'shadow-sm',
+              )}
+              style={{ left: `${Math.min(barLeft, 98)}%`, width: `${Math.min(barWidth, 100 - barLeft)}%` }}
+            />
+          </div>
+        </div>
+
+        {/* Duration */}
+        <span className="shrink-0 text-[10px] font-mono text-slate-500 w-16 text-right">
+          {fmtDuration(span.duration)}
+        </span>
+      </div>
+
+      {/* Tags */}
+      {open && span.tags.length > 0 && (
+        <div className="mx-3 mb-2 ml-[calc(0.75rem+16px)] bg-slate-950/70 border border-slate-800 rounded-lg p-3 text-[10px] font-mono space-y-0.5">
+          {span.tags.map((t, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="text-slate-500 shrink-0">{t.key}</span>
+              <span className="text-slate-300 truncate">{String(t.value)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+// ─── Trace row (accordion) ──────────────────────────────────────────────────
+
+interface TraceRowProps {
+  trace: OTelTrace
+  idx: number
+}
+
+function TraceRow({ trace, idx }: TraceRowProps) {
+  const [open, setOpen] = useState(false)
+  const [loadedTrace, setLoadedTrace] = useState<OTelTrace | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  const root = getRootSpan(trace)
+  const service = getServiceForSpan(root, trace)
+  const isErr = traceHasError(trace)
+  const colorIdx = serviceColorIdx(service)
+  const totalDuration = trace.spans.reduce((max, s) => {
+    const end = s.startTime + s.duration
+    return end > max ? end : max
+  }, 0) - root.startTime
+
+  const toggle = async () => {
+    if (!open && !loadedTrace) {
+      setLoading(true)
+      try {
+        const res = await api.otelTrace(trace.traceID)
+        const full = res.data?.[0] ?? trace
+        setLoadedTrace(full)
+      } catch {
+        setLoadedTrace(trace)
+      } finally { setLoading(false) }
+    }
+    setOpen(o => !o)
+  }
+
+  const displayTrace = loadedTrace ?? trace
+  const nodes = open ? buildSpanTree(displayTrace) : []
+  const traceStart = Math.min(...displayTrace.spans.map(s => s.startTime))
+  const traceEnd = Math.max(...displayTrace.spans.map(s => s.startTime + s.duration))
+  const traceDuration = traceEnd - traceStart || 1
+
+  return (
+    <div className={clsx('border-b border-slate-800/50', idx % 2 === 0 ? 'bg-slate-950/20' : '')}>
+      {/* Summary row */}
+      <div
+        onClick={toggle}
+        className={clsx(
+          'flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors hover:bg-slate-800/30',
+          open && 'bg-slate-800/20',
+        )}
+      >
+        <span className="shrink-0">
+          {open
+            ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            : <ChevronRight className="w-3.5 h-3.5 text-slate-600" />
+          }
+        </span>
+
+        {/* Service badge */}
+        <ServiceBadge name={service} />
+
+        {/* Operation */}
+        <span className={clsx(
+          'flex-1 min-w-0 text-[11px] font-mono truncate',
+          isErr ? 'text-red-300' : 'text-slate-200',
+        )}>
+          {root.operationName}
+        </span>
+
+        {/* Duration */}
+        <span className={clsx(
+          'shrink-0 text-[11px] font-mono font-semibold',
+          totalDuration > 2_000_000 ? 'text-red-400'
+            : totalDuration > 500_000 ? 'text-amber-400'
+            : 'text-emerald-400',
+        )}>
+          {fmtDuration(totalDuration)}
+        </span>
+
+        {/* Span count */}
+        <span className="shrink-0 text-[9px] font-semibold text-slate-500 bg-slate-800 rounded px-1.5 py-0.5">
+          {trace.spans.length} spans
+        </span>
+
+        {/* Status */}
+        {isErr
+          ? <span className="shrink-0 text-[9px] font-semibold text-red-400 bg-red-500/10 border border-red-500/20 rounded px-1.5 py-0.5">ERROR</span>
+          : <span className="shrink-0 text-[9px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">OK</span>
+        }
+
+        {/* Time */}
+        <span className="shrink-0 text-[10px] text-slate-600 w-16 text-right">
+          {fmtAgo(root.startTime)}
+        </span>
+      </div>
+
+      {/* Waterfall */}
+      {open && (
+        <div className="border-t border-slate-800/50 bg-slate-950/40">
+          {/* Column header */}
+          <div className="flex items-center gap-2 px-3 py-1 bg-slate-900/60 border-b border-slate-800/50">
+            <div className="flex-1 text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Operation</div>
+            <div className="shrink-0 w-[180px] text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Timeline</div>
+            <div className="shrink-0 w-16 text-[9px] text-slate-600 uppercase tracking-wider font-semibold text-right">Duration</div>
+          </div>
+          {loading ? (
+            <div className="p-4 text-center text-slate-600 text-xs flex items-center justify-center gap-2">
+              <RefreshCw className="w-3 h-3 animate-spin" /> Loading spans…
+            </div>
+          ) : (
+            <div>
+              {nodes.map((node, i) => (
+                <SpanRow
+                  key={node.span.spanID + i}
+                  node={node}
+                  traceStart={traceStart}
+                  traceDuration={traceDuration}
+                  colorIdx={colorIdx}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Main page ───────────────────────────────────────────────────────────────
+
+export default function OTelTracesPage() {
+  const [status, setStatus] = useState<OTelStatus | null>(null)
+  const [services, setServices] = useState<string[]>([])
+  const [operations, setOperations] = useState<Array<{ name: string; spanKind: string }>>([])
+  const [traces, setTraces] = useState<OTelTrace[]>([])
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [clearing, setClearing] = useState(false)
+
+  const [selectedService, setSelectedService] = useState('')
+  const [selectedOp, setSelectedOp] = useState('')
+  const [limit, setLimit] = useState(20)
+
+  const loadRef = useRef(0)
+
+  const loadTraces = useCallback(async (svc: string, op: string, lim: number, isRefresh = false) => {
+    const id = ++loadRef.current
+    if (isRefresh) setRefreshing(true)
+    else setLoading(true)
+    try {
+      const res = await api.otelTraces({ service: svc || undefined, operation: op || undefined, limit: lim })
+      if (id === loadRef.current) setTraces(res.data ?? [])
+    } catch {
+      if (id === loadRef.current) setTraces([])
+    } finally {
+      if (id === loadRef.current) { setLoading(false); setRefreshing(false) }
+    }
+  }, [])
+
+  // Initial load
+  useEffect(() => {
+    api.otelStatus().then(setStatus).catch(() => setStatus({ available: false }))
+    api.otelServices().then(r => setServices(r.data ?? [])).catch(() => {})
+    loadTraces('', '', limit)
+  }, [])
+
+  // Service change → load operations
+  useEffect(() => {
+    if (!selectedService) { setOperations([]); setSelectedOp(''); return }
+    api.otelOperations(selectedService).then(r => setOperations(r.data ?? [])).catch(() => {})
+    setSelectedOp('')
+  }, [selectedService])
+
+  // Filter/limit change
+  useEffect(() => {
+    loadTraces(selectedService, selectedOp, limit)
+  }, [selectedService, selectedOp, limit])
+
+  const refresh = () => loadTraces(selectedService, selectedOp, limit, true)
+
+  const clearAll = async () => {
+    if (!confirm('Delete all stored traces? This cannot be undone.')) return
+    setClearing(true)
+    try { await api.otelDeleteTraces(); setTraces([]); setStatus(s => s ? { ...s, span_count: 0 } : s) }
+    catch { /* ignore */ } finally { setClearing(false) }
+  }
+
+  const inputCls = 'bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-slate-500 transition-colors'
+
+  return (
+    <div className="flex flex-col h-full min-h-0 overflow-hidden">
+      {/* Toolbar */}
+      <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-800 bg-slate-900/30">
+        <Activity className="w-4 h-4 text-blue-400 shrink-0" />
+        <span className="text-sm font-semibold text-slate-200 mr-1">App Traces</span>
+
+        {/* Service filter */}
+        <select
+          value={selectedService}
+          onChange={e => setSelectedService(e.target.value)}
+          className={inputCls}
+        >
+          <option value="">All services</option>
+          {services.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+
+        {/* Operation filter */}
+        {operations.length > 0 && (
+          <select value={selectedOp} onChange={e => setSelectedOp(e.target.value)} className={inputCls}>
+            <option value="">All operations</option>
+            {operations.map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
+          </select>
+        )}
+
+        {/* Limit */}
+        <select value={limit} onChange={e => setLimit(Number(e.target.value))} className={inputCls}>
+          <option value={20}>20 traces</option>
+          <option value={50}>50 traces</option>
+          <option value={100}>100 traces</option>
+        </select>
+
+        <div className="ml-auto flex items-center gap-2">
+          {status?.span_count !== undefined && (
+            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
+              {status.span_count.toLocaleString()} spans stored
+            </span>
+          )}
+          {traces.length > 0 && (
+            <button onClick={clearAll} disabled={clearing}
+              title="Clear all traces"
+              className="p-1.5 rounded hover:bg-slate-800 text-slate-700 hover:text-red-400 transition-colors">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <button
+            onClick={refresh}
+            disabled={refreshing}
+            className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300 transition-colors"
+          >
+            <RefreshCw className={clsx('w-3.5 h-3.5', refreshing && 'animate-spin')} />
+          </button>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {/* Status warning */}
+        {status && !status.available && (
+          <div className="mx-4 mt-4 p-4 rounded-xl border border-amber-500/30 bg-amber-500/5">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-amber-300 mb-1">OpenTelemetry not configured</p>
+                <p className="text-xs text-slate-400 mb-3">
+                  Enable it in your project's <strong className="text-slate-200">Deploy Settings → Enable OpenTelemetry tracing</strong>, then
+                  deploy your app. Jaeger starts automatically during installation.
+                </p>
+                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 text-[10px] font-mono text-slate-400 space-y-0.5">
+                  <div className="text-slate-600 mb-1"># Auto-injected into container .env on deploy:</div>
+                  <div>OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:7070/v1/traces</div>
+                  <div>OTEL_SERVICE_NAME=&lt;project-name&gt;</div>
+                  <div>JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar</div>
+                  <div className="text-slate-600 mt-1"># OffDock receives and stores all traces natively — no Jaeger needed</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Table header */}
+        {!loading && traces.length > 0 && (
+          <div className="flex items-center gap-3 px-4 py-2 bg-slate-900/50 border-b border-slate-800/50 sticky top-0 z-10">
+            <span className="w-3.5 shrink-0" />
+            <span className="text-[9px] text-slate-600 uppercase tracking-wider font-semibold w-[120px] shrink-0">Service</span>
+            <span className="text-[9px] text-slate-600 uppercase tracking-wider font-semibold flex-1">Operation</span>
+            <span className="text-[9px] text-slate-600 uppercase tracking-wider font-semibold w-16 text-right shrink-0">Duration</span>
+            <span className="text-[9px] text-slate-600 uppercase tracking-wider font-semibold w-16 shrink-0">Spans</span>
+            <span className="text-[9px] text-slate-600 uppercase tracking-wider font-semibold w-12 shrink-0">Status</span>
+            <span className="text-[9px] text-slate-600 uppercase tracking-wider font-semibold w-16 text-right shrink-0">When</span>
+          </div>
+        )}
+
+        {/* Trace list */}
+        {loading ? (
+          <div className="p-4 space-y-2">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="h-10 rounded-lg bg-slate-800/30 animate-pulse" style={{ opacity: 1 - i * 0.1 }} />
+            ))}
+          </div>
+        ) : traces.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center px-6">
+            <div className="w-12 h-12 rounded-xl bg-slate-800/60 border border-slate-700 flex items-center justify-center mb-4">
+              <GitBranch className="w-6 h-6 text-slate-600" />
+            </div>
+            <p className="text-sm font-medium text-slate-400 mb-1">No traces found</p>
+            <p className="text-xs text-slate-600 max-w-sm">
+              Deploy an app with OpenTelemetry enabled, then trigger some requests. Traces appear here within seconds.
+            </p>
+          </div>
+        ) : (
+          <div>
+            {traces.map((trace, idx) => (
+              <TraceRow key={trace.traceID} trace={trace} idx={idx} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Footer hint */}
+      {!loading && traces.length > 0 && (
+        <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-t border-slate-800/50 text-[10px] text-slate-600">
+          <Layers className="w-3 h-3" />
+          Click a row to expand the span waterfall · Click a span to see its tags
+          <span className="ml-auto flex items-center gap-1">
+            <Clock className="w-3 h-3" />
+            {status?.otlp_http && <span className="font-mono text-blue-500/60">{status.otlp_http}</span>}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
