@@ -143,8 +143,7 @@ export default function DeployPage() {
   const [envHistory, setEnvHistory] = useState<EnvVarSet[]>([])
   const [settings, setSettings] = useState<DeploySettings | null>(null)
   const [settingsDraft, setSettingsDraft] = useState<Omit<DeploySettings, 'id' | 'project_id'>>({
-    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5, webhook_url: '',
-    otel_enabled: false, otel_endpoint: '', otel_service_name: '', otel_protocol: 'http/protobuf', otel_sampler_ratio: '1.0',
+    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5, webhook_url: '', otel_enabled: false,
   })
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
@@ -194,10 +193,7 @@ export default function DeployPage() {
       setSettings(s)
       setSettingsDraft({
         health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs,
-        health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '',
-        otel_enabled: s.otel_enabled ?? false, otel_endpoint: s.otel_endpoint ?? '',
-        otel_service_name: s.otel_service_name ?? '', otel_protocol: s.otel_protocol ?? 'http/protobuf',
-        otel_sampler_ratio: s.otel_sampler_ratio ?? '1.0',
+        health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '', otel_enabled: s.otel_enabled ?? false,
       })
     }).catch(() => {})
     api.listDeployTags(id).then(t => setTags(t ?? [])).catch(() => {})
@@ -700,76 +696,26 @@ export default function DeployPage() {
           <p className="text-xs text-slate-600 mt-1">OffDock sends JSON: status, project, deploy_id, timestamp</p>
         </div>
 
-        {/* OpenTelemetry auto-instrumentation */}
-        <div className="mt-4 border border-slate-800 rounded-lg overflow-hidden">
-          <div className="flex items-center gap-3 px-4 py-3 bg-slate-900/40">
-            <label className="flex items-center gap-2 cursor-pointer select-none">
+        {/* OpenTelemetry — single toggle, everything auto-configured */}
+        <div className="mt-4 flex items-center justify-between p-4 rounded-lg border border-slate-800 bg-slate-900/30">
+          <div>
+            <label className="flex items-center gap-2.5 cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={settingsDraft.otel_enabled ?? false}
                 onChange={e => setSettingsDraft(d => ({ ...d, otel_enabled: e.target.checked }))}
-                className="rounded border-slate-600 bg-slate-800 accent-blue-500"
+                className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-blue-500"
               />
-              <span className="text-sm font-medium text-slate-200">OpenTelemetry auto-instrumentation</span>
+              <span className="text-sm font-medium text-slate-200">Enable OpenTelemetry tracing</span>
             </label>
-            <span className="text-[10px] text-slate-500 ml-auto">like Kubernetes OTel Operator</span>
+            <p className="text-xs text-slate-500 mt-1 ml-6.5">
+              Injects OTEL_* env vars + Java agent. Traces sent to local Jaeger (auto-started by installer).
+              {settingsDraft.otel_enabled && <><br /><a href="/api/v1/proxy/jaeger" target="_blank" className="text-blue-400 hover:underline">Open Jaeger UI →</a></>}
+            </p>
           </div>
-          {settingsDraft.otel_enabled && (
-            <div className="px-4 py-3 space-y-3 border-t border-slate-800">
-              <p className="text-xs text-slate-500">
-                Injects <code className="text-blue-400">OTEL_*</code> environment variables at deploy time.
-                Works with Java agent, Node.js auto-instrumentation, Python, PHP.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">OTLP Endpoint <span className="text-red-400">*</span></label>
-                  <input
-                    type="url" placeholder="http://jaeger:4318/v1/traces"
-                    value={settingsDraft.otel_endpoint ?? ''}
-                    onChange={e => setSettingsDraft(d => ({ ...d, otel_endpoint: e.target.value }))}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-blue-500"
-                  />
-                  <p className="text-[10px] text-slate-600 mt-0.5">Jaeger / Zipkin / OTel Collector endpoint</p>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Service name <span className="text-slate-500">(optional)</span></label>
-                  <input
-                    type="text" placeholder="my-service (defaults to project name)"
-                    value={settingsDraft.otel_service_name ?? ''}
-                    onChange={e => setSettingsDraft(d => ({ ...d, otel_service_name: e.target.value }))}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Protocol</label>
-                  <select
-                    value={settingsDraft.otel_protocol ?? 'http/protobuf'}
-                    onChange={e => setSettingsDraft(d => ({ ...d, otel_protocol: e.target.value }))}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="http/protobuf">HTTP/Protobuf (port 4318)</option>
-                    <option value="grpc">gRPC (port 4317)</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-slate-400 mb-1">Sample ratio <span className="text-slate-500">(0.0–1.0)</span></label>
-                  <input
-                    type="text" placeholder="1.0"
-                    value={settingsDraft.otel_sampler_ratio ?? '1.0'}
-                    onChange={e => setSettingsDraft(d => ({ ...d, otel_sampler_ratio: e.target.value }))}
-                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-blue-500"
-                  />
-                  <p className="text-[10px] text-slate-600 mt-0.5">1.0 = 100% sampled, 0.1 = 10%</p>
-                </div>
-              </div>
-              <div className="bg-slate-950/60 border border-slate-800 rounded p-3 text-[11px] text-slate-400 font-mono space-y-0.5">
-                <p className="text-slate-500 text-[10px] mb-1">Injected into container .env on deploy:</p>
-                <p>OTEL_EXPORTER_OTLP_ENDPOINT={settingsDraft.otel_endpoint || '…'}</p>
-                <p>OTEL_SERVICE_NAME={settingsDraft.otel_service_name || '<project-name>'}</p>
-                <p>JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar</p>
-              </div>
-            </div>
-          )}
+          <div className={`text-[10px] px-2 py-0.5 rounded font-semibold ${settingsDraft.otel_enabled ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-600'}`}>
+            {settingsDraft.otel_enabled ? 'ON' : 'OFF'}
+          </div>
         </div>
 
         <div className="flex items-center gap-3 mt-4">

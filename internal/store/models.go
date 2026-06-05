@@ -230,13 +230,11 @@ type DeploySettings struct {
 	HealthStableSecs  int    `json:"health_stable_secs"`         // default 5
 	WebhookURL        string `json:"webhook_url,omitempty"`      // HTTP POST on deploy complete/fail
 
-	// OpenTelemetry auto-instrumentation — injects OTEL_* env vars into the
-	// container at deploy time, same concept as the Kubernetes OTel Operator.
-	OTelEnabled      bool   `json:"otel_enabled,omitempty"`
-	OTelEndpoint     string `json:"otel_endpoint,omitempty"`     // e.g. http://jaeger:4318/v1/traces
-	OTelServiceName  string `json:"otel_service_name,omitempty"` // defaults to project name
-	OTelProtocol     string `json:"otel_protocol,omitempty"`     // http/protobuf | grpc (default: http/protobuf)
-	OTelSamplerRatio string `json:"otel_sampler_ratio,omitempty"` // 0.0-1.0, default 1.0
+	// OpenTelemetry auto-instrumentation — one toggle, everything auto-configured.
+	// When enabled, OffDock injects OTEL_* env vars and generates a compose override
+	// that mounts the Java agent and joins the offdock-otel Docker network so
+	// containers can reach the local Jaeger instance started by install.sh.
+	OTelEnabled bool `json:"otel_enabled,omitempty"`
 }
 
 func (d DeploySettings) GetID() string { return d.ID }

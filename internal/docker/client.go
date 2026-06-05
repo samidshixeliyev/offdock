@@ -220,8 +220,15 @@ func (c *Client) StartContainer(ctx context.Context, name string) error {
 
 // ComposeUp runs docker compose up -d. forceRecreate ensures containers are
 // always rebuilt even when the image digest has not changed.
-func (c *Client) ComposeUp(ctx context.Context, project, composePath string, forceRecreate bool) (string, error) {
-	args := []string{"compose", "-p", project, "-f", composePath, "up", "-d", "--remove-orphans"}
+// Additional compose override files can be passed via overrideFiles.
+func (c *Client) ComposeUp(ctx context.Context, project, composePath string, forceRecreate bool, overrideFiles ...string) (string, error) {
+	args := []string{"compose", "-p", project, "-f", composePath}
+	for _, f := range overrideFiles {
+		if f != "" {
+			args = append(args, "-f", f)
+		}
+	}
+	args = append(args, "up", "-d", "--remove-orphans")
 	if forceRecreate {
 		args = append(args, "--force-recreate")
 	}
@@ -231,6 +238,19 @@ func (c *Client) ComposeUp(ctx context.Context, project, composePath string, for
 	cmd.Stderr = &out
 	err := cmd.Run()
 	return out.String(), err
+}
+
+// EnsureNetwork creates a Docker network if it doesn't already exist.
+func (c *Client) EnsureNetwork(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	// Check if it exists first.
+	out, _ := run(ctx, "network", "inspect", name)
+	if strings.Contains(out, `"Name"`) {
+		return nil
+	}
+	_, err := run(ctx, "network", "create", name)
+	return err
 }
 
 // DeleteContainer force-removes a container by name or short ID.

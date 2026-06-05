@@ -110,12 +110,8 @@ export interface DeploySettings {
   deploy_timeout_secs: number
   health_stable_secs: number
   webhook_url?: string
-  // OpenTelemetry auto-instrumentation
+  // OpenTelemetry — one toggle, everything auto-configured (Jaeger started by install.sh)
   otel_enabled?: boolean
-  otel_endpoint?: string
-  otel_service_name?: string
-  otel_protocol?: string       // 'http/protobuf' | 'grpc'
-  otel_sampler_ratio?: string  // '0.0'–'1.0'
 }
 
 export interface DiskUsageRow {

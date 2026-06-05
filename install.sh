@@ -437,8 +437,39 @@ if [[ -f "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" ]]; then
   AGENT_VER=$(cat "${SCRIPT_DIR}/otel/VERSION" 2>/dev/null | head -1 || echo "unknown")
   echo "  OpenTelemetry Java agent installed: ${OTEL_DIR}/opentelemetry-javaagent.jar (v${AGENT_VER})"
 else
-  echo "  WARNING: OpenTelemetry Java agent not found in bundle — skipping." >&2
-  echo "  Container tracing (OTel injection) will not work for Java apps." >&2
+  echo "  WARNING: OpenTelemetry Java agent not found — skipping." >&2
+fi
+
+# ── Jaeger all-in-one (distributed tracing backend) ─────────────────────────
+# Loaded from the bundled image — no internet needed.
+JAEGER_NETWORK="offdock-otel"
+JAEGER_CONTAINER="offdock-jaeger"
+JAEGER_IMAGE_TAR="${SCRIPT_DIR}/images/jaeger.tar.gz"
+
+if [[ -f "${JAEGER_IMAGE_TAR}" ]]; then
+  echo "  Loading Jaeger image from bundle…"
+  docker load -i "${JAEGER_IMAGE_TAR}" 2>&1 | tail -2
+
+  # Create the shared OTel network all traced containers will join.
+  docker network inspect "${JAEGER_NETWORK}" &>/dev/null || \
+    docker network create "${JAEGER_NETWORK}" 2>/dev/null
+  echo "  Docker network '${JAEGER_NETWORK}' ready."
+
+  # Remove old container if present, then start fresh.
+  docker rm -f "${JAEGER_CONTAINER}" 2>/dev/null || true
+  docker run -d \
+    --name "${JAEGER_CONTAINER}" \
+    --network "${JAEGER_NETWORK}" \
+    -p 16686:16686 \
+    -p 4317:4317 \
+    -p 4318:4318 \
+    --restart=always \
+    jaegertracing/all-in-one:latest \
+    2>&1 | tail -1
+  echo "  Jaeger started (OTLP: :4317/:4318 — UI: :16686)"
+else
+  echo "  INFO: Jaeger image not bundled — OpenTelemetry traces will not be collected." >&2
+  echo "        Re-bundle with: bash prepare-usb.sh (on an internet machine)" >&2
 fi
 
 # ============================================================================

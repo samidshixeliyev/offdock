@@ -12,8 +12,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"offdock/internal/crypto"
 	"offdock/internal/docker"
@@ -233,9 +236,10 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		return fail(fmt.Errorf("build env file: %w", err))
 	}
 	// Inject OpenTelemetry env vars if auto-instrumentation is enabled.
-	if settings.OTelEnabled && settings.OTelEndpoint != "" {
-		envContent = appendOTelEnv(envContent, settings, project.Name)
-		appendLog("  OpenTelemetry injection enabled → %s", settings.OTelEndpoint)
+	// The endpoint always points to the local Jaeger instance installed by install.sh.
+	if settings.OTelEnabled {
+		envContent = appendOTelEnv(envContent, project.Name)
+		appendLog("  OpenTelemetry enabled — injecting OTEL_* env vars + compose overlay")
 	}
 	if err := atomicWrite(filepath.Join(projectDir, ".env"), []byte(envContent)); err != nil {
 		return fail(fmt.Errorf("write .env: %w", err))
@@ -248,7 +252,24 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	// hasn't changed, ensuring env vars, ports, volumes, and config are applied.
 	appendLog("[STAGE] Running docker compose")
 	appendLog("[3/4] Applying compose v%d (force-recreate, remove-orphans)…", selectedCompose.Version)
-	upOut, err := e.docker.ComposeUp(ctx, safeProject, composePath, true)
+	// Generate OTel compose override (agent volume mount + offdock-otel network)
+	// when auto-instrumentation is enabled.
+	otelOverridePath := ""
+	if settings.OTelEnabled {
+		overridePath := filepath.Join(projectDir, ".otel-override.yml")
+		if err := writeOTelComposeOverride(composePath, overridePath); err != nil {
+			appendLog("  WARNING: could not generate OTel compose override: %v", err)
+		} else {
+			otelOverridePath = overridePath
+			// Ensure the shared network exists (created by install.sh, but be safe).
+			if netErr := e.docker.EnsureNetwork(ctx, "offdock-otel"); netErr != nil {
+				appendLog("  WARNING: could not ensure offdock-otel network: %v", netErr)
+				otelOverridePath = "" // fall back to no override
+			}
+		}
+	}
+
+	upOut, err := e.docker.ComposeUp(ctx, safeProject, composePath, true, otelOverridePath)
 	if t := strings.TrimSpace(upOut); t != "" {
 		appendLog("  %s", t)
 	}
@@ -362,46 +383,78 @@ func (e *Engine) buildEnvFile(set *store.EnvVarSet) (string, error) {
 	return sb.String(), nil
 }
 
-// appendOTelEnv adds OpenTelemetry auto-instrumentation environment variables
-// to an existing .env file content. This is OffDock's equivalent of the
-// Kubernetes OTel Operator — it injects OTEL_* vars at deploy time without
-// requiring changes to the application image or compose file.
-//
-// The injected variables work with OTel auto-instrumentation agents for:
-//   - Java:   -javaagent:/otel/opentelemetry-javaagent.jar (via JAVA_TOOL_OPTIONS)
-//   - Node.js: NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register
-//   - Python:  opentelemetry-instrument (via PYTHONSTARTUP or entrypoint wrapper)
-//   - PHP:     OpenTelemetry PHP SDK auto-discovery
-func appendOTelEnv(envContent string, settings store.DeploySettings, projectName string) string {
-	if !settings.OTelEnabled || settings.OTelEndpoint == "" {
-		return envContent
-	}
+// appendOTelEnv injects OpenTelemetry environment variables into the .env file.
+// The endpoint always points to the local Jaeger instance (started by install.sh)
+// accessible inside Docker containers via the offdock-otel network.
+// No configuration needed — everything is pre-wired by the installer.
+func appendOTelEnv(envContent, projectName string) string {
+	var sb strings.Builder
+	sb.WriteString(envContent)
+	sb.WriteString("\n# OpenTelemetry — injected by OffDock (do not edit)\n")
+	// Jaeger OTLP HTTP endpoint reachable from containers on the offdock-otel network.
+	sb.WriteString("OTEL_EXPORTER_OTLP_ENDPOINT=http://offdock-jaeger:4318\n")
+	sb.WriteString("OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n")
+	sb.WriteString("OTEL_SERVICE_NAME=" + projectName + "\n")
+	sb.WriteString("OTEL_TRACES_SAMPLER=parentbased_traceidratio\n")
+	sb.WriteString("OTEL_TRACES_SAMPLER_ARG=1.0\n")
+	sb.WriteString("OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production\n")
+	// Java agent — activated by JAVA_TOOL_OPTIONS in Java containers only.
+	sb.WriteString("JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar\n")
+	return sb.String()
+}
 
-	svcName := settings.OTelServiceName
-	if svcName == "" {
-		svcName = projectName
+// writeOTelComposeOverride parses the service names from composePath and writes
+// a docker-compose override file that:
+//   - mounts /var/offdock/otel/opentelemetry-javaagent.jar into every service
+//   - joins every service to the offdock-otel Docker network so they can reach Jaeger
+func writeOTelComposeOverride(composePath, overridePath string) error {
+	serviceNames, err := parseComposeServiceNames(composePath)
+	if err != nil {
+		return fmt.Errorf("parse compose: %w", err)
 	}
-	protocol := settings.OTelProtocol
-	if protocol == "" {
-		protocol = "http/protobuf"
-	}
-	sampler := settings.OTelSamplerRatio
-	if sampler == "" {
-		sampler = "1.0"
+	if len(serviceNames) == 0 {
+		return fmt.Errorf("no services found in compose file")
 	}
 
 	var sb strings.Builder
-	sb.WriteString(envContent)
-	sb.WriteString("\n# OpenTelemetry auto-instrumentation (injected by OffDock)\n")
-	sb.WriteString("OTEL_EXPORTER_OTLP_ENDPOINT=" + settings.OTelEndpoint + "\n")
-	sb.WriteString("OTEL_EXPORTER_OTLP_PROTOCOL=" + protocol + "\n")
-	sb.WriteString("OTEL_SERVICE_NAME=" + svcName + "\n")
-	sb.WriteString("OTEL_TRACES_SAMPLER=parentbased_traceidratio\n")
-	sb.WriteString("OTEL_TRACES_SAMPLER_ARG=" + sampler + "\n")
-	sb.WriteString("OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production\n")
-	// Java agent: enable if JAVA_TOOL_OPTIONS is not already set.
-	sb.WriteString("JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS} -javaagent:/otel/opentelemetry-javaagent.jar\n")
-	return sb.String()
+	sb.WriteString("# Auto-generated by OffDock OpenTelemetry injection — do not edit\n")
+	sb.WriteString("networks:\n")
+	sb.WriteString("  offdock-otel:\n")
+	sb.WriteString("    external: true\n")
+	sb.WriteString("services:\n")
+	for _, svc := range serviceNames {
+		sb.WriteString("  " + svc + ":\n")
+		sb.WriteString("    volumes:\n")
+		sb.WriteString("      - /var/offdock/otel/opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar:ro\n")
+		sb.WriteString("    networks:\n")
+		sb.WriteString("      - default\n")
+		sb.WriteString("      - offdock-otel\n")
+	}
+
+	return atomicWrite(overridePath, []byte(sb.String()))
+}
+
+// composeFile is a minimal representation of docker-compose.yml used only to
+// extract service names for the OTel compose override generation.
+type composeFile struct {
+	Services map[string]interface{} `yaml:"services"`
+}
+
+func parseComposeServiceNames(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cf composeFile
+	if err := yaml.Unmarshal(data, &cf); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(cf.Services))
+	for k := range cf.Services {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 // composeProjectName converts a project name to a valid Docker Compose project name.
