@@ -2,7 +2,10 @@
 package api
 
 import (
+	"bufio"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -300,6 +303,8 @@ func jsonContentType(next http.Handler) http.Handler {
 }
 
 // statusRecorder wraps http.ResponseWriter to capture the status code and bytes written.
+// It must forward Flush (SSE) and Hijack (WebSocket) to the underlying writer so that
+// those interfaces remain usable through the middleware chain.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -314,6 +319,21 @@ func (sr *statusRecorder) Write(b []byte) (int, error) {
 	n, err := sr.ResponseWriter.Write(b)
 	sr.bytes += n
 	return n, err
+}
+
+// Flush forwards to the underlying Flusher so SSE streams work through this middleware.
+func (sr *statusRecorder) Flush() {
+	if f, ok := sr.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack forwards to the underlying Hijacker so WebSocket upgrades work through this middleware.
+func (sr *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := sr.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("hijack not supported")
 }
 
 // slogRequestLogger is a chi-compatible middleware that emits one structured JSON
