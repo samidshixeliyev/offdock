@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   api, Project, ContainerInfo, ComposeConfig, EnvVar,
-  DeploymentRecord, FileEntry,
+  DeploymentRecord, FileEntry, DeploySettings,
 } from '../api/client'
 import ConfirmModal from '../components/ConfirmModal'
 import { useToast } from '../components/Toast'
-import { Copy } from 'lucide-react'
+import { Copy, Settings } from 'lucide-react'
 
 type Tab = 'overview' | 'compose' | 'env' | 'deploy'
 type MsgT = 'ok' | 'err'
@@ -858,12 +858,42 @@ function DeployTab({ projectId }: { projectId: string }) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [rollbackTarget, setRollbackTarget] = useState<DeploymentRecord | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<DeploymentRecord | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [settings, setSettings] = useState<DeploySettings | null>(null)
+  const [settingsDraft, setSettingsDraft] = useState<Omit<DeploySettings, 'id' | 'project_id'>>({
+    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5,
+    webhook_url: '', otel_enabled: false, otel_endpoint: '', otel_service_name: '',
+    otel_protocol: 'http/protobuf', otel_sampler_ratio: '1.0',
+  })
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const toast = useToast()
   const logRef = useRef<HTMLDivElement>(null)
 
   const loadHistory = () =>
     api.listDeployments(projectId).then(d => setDeployments(d ?? [])).catch(() => {})
 
-  useEffect(() => { loadHistory() }, [projectId])
+  const loadSettings = () =>
+    api.getDeploySettings(projectId).then(s => {
+      setSettings(s)
+      setSettingsDraft({
+        health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs,
+        health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '',
+        otel_enabled: s.otel_enabled ?? false, otel_endpoint: s.otel_endpoint ?? '',
+        otel_service_name: s.otel_service_name ?? '', otel_protocol: s.otel_protocol ?? 'http/protobuf',
+        otel_sampler_ratio: s.otel_sampler_ratio ?? '1.0',
+      })
+    }).catch(() => {})
+
+  const saveSettings = async () => {
+    setSettingsSaving(true)
+    try {
+      const s = await api.saveDeploySettings(projectId, settingsDraft)
+      setSettings(s)
+      toast.success('Deploy settings saved')
+    } catch { toast.error('Failed to save settings') } finally { setSettingsSaving(false) }
+  }
+
+  useEffect(() => { loadHistory(); loadSettings() }, [projectId])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -1108,6 +1138,112 @@ function DeployTab({ projectId }: { projectId: string }) {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+      </section>
+
+      {/* ── Deploy Settings ───────────────────────────────────────────────────── */}
+      <section>
+        <button
+          onClick={() => { setShowSettings(s => !s) }}
+          className="flex items-center gap-2 text-sm font-semibold text-slate-400 hover:text-slate-200 transition-colors mb-3"
+        >
+          <Settings className="w-4 h-4" />
+          Deploy Settings
+          <span className="text-xs text-slate-600 font-normal ml-1">{showSettings ? '▲' : '▼'}</span>
+        </button>
+        {showSettings && (
+          <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4 space-y-4">
+            {/* Timeouts */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {[
+                { label: 'Health timeout (s)', key: 'health_timeout_secs' as const, min: 10, max: 600 },
+                { label: 'Deploy timeout (s)', key: 'deploy_timeout_secs' as const, min: 30, max: 1800 },
+                { label: 'Stable period (s)', key: 'health_stable_secs' as const, min: 0, max: 60 },
+              ].map(f => (
+                <div key={f.key}>
+                  <label className="block text-xs text-slate-400 mb-1">{f.label}</label>
+                  <input type="number" min={f.min} max={f.max}
+                    value={settingsDraft[f.key] as number}
+                    onChange={e => setSettingsDraft(d => ({ ...d, [f.key]: Number(e.target.value) }))}
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+                </div>
+              ))}
+            </div>
+            {/* Webhook */}
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Webhook URL <span className="text-slate-600">(POST on deploy complete/fail)</span></label>
+              <input type="url" placeholder="http://monitoring.intranet/deploy-hook"
+                value={settingsDraft.webhook_url ?? ''}
+                onChange={e => setSettingsDraft(d => ({ ...d, webhook_url: e.target.value }))}
+                className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-blue-500" />
+            </div>
+            {/* OTel */}
+            <div className="border border-slate-800 rounded-lg overflow-hidden">
+              <div className="flex items-center gap-3 px-4 py-3 bg-slate-900/40">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input type="checkbox"
+                    checked={settingsDraft.otel_enabled ?? false}
+                    onChange={e => setSettingsDraft(d => ({ ...d, otel_enabled: e.target.checked }))}
+                    className="rounded border-slate-600 bg-slate-800" />
+                  <span className="text-sm font-medium text-slate-200">OpenTelemetry auto-instrumentation</span>
+                </label>
+                <span className="text-[10px] text-slate-500 ml-auto">like k8s OTel Operator</span>
+              </div>
+              {settingsDraft.otel_enabled && (
+                <div className="px-4 py-3 border-t border-slate-800 space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">OTLP Endpoint <span className="text-red-400">*</span></label>
+                      <input type="url" placeholder="http://jaeger:4318/v1/traces"
+                        value={settingsDraft.otel_endpoint ?? ''}
+                        onChange={e => setSettingsDraft(d => ({ ...d, otel_endpoint: e.target.value }))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-blue-500" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Service name</label>
+                      <input type="text" placeholder="defaults to project name"
+                        value={settingsDraft.otel_service_name ?? ''}
+                        onChange={e => setSettingsDraft(d => ({ ...d, otel_service_name: e.target.value }))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Protocol</label>
+                      <select value={settingsDraft.otel_protocol ?? 'http/protobuf'}
+                        onChange={e => setSettingsDraft(d => ({ ...d, otel_protocol: e.target.value }))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500">
+                        <option value="http/protobuf">HTTP/Protobuf (port 4318)</option>
+                        <option value="grpc">gRPC (port 4317)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">Sample ratio (0.0–1.0)</label>
+                      <input type="text" placeholder="1.0"
+                        value={settingsDraft.otel_sampler_ratio ?? '1.0'}
+                        onChange={e => setSettingsDraft(d => ({ ...d, otel_sampler_ratio: e.target.value }))}
+                        className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-xs text-white font-mono focus:outline-none focus:border-blue-500" />
+                    </div>
+                  </div>
+                  <div className="bg-slate-950/60 border border-slate-800 rounded p-3 text-[11px] text-slate-400 font-mono space-y-0.5">
+                    <p className="text-slate-500 text-[10px] mb-1">Injected into container .env at deploy:</p>
+                    <p>OTEL_EXPORTER_OTLP_ENDPOINT={settingsDraft.otel_endpoint || '…'}</p>
+                    <p>OTEL_SERVICE_NAME={settingsDraft.otel_service_name || '(project name)'}</p>
+                    <p>JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar</p>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={saveSettings} disabled={settingsSaving} className="btn-secondary text-sm">
+                {settingsSaving ? 'Saving…' : 'Save Settings'}
+              </button>
+              {settings && (
+                <span className="text-xs text-slate-600">
+                  health {settings.health_timeout_secs}s · deploy {settings.deploy_timeout_secs}s
+                  {settings.otel_enabled && <span className="text-blue-400 ml-2">OTel enabled</span>}
+                </span>
+              )}
+            </div>
           </div>
         )}
       </section>

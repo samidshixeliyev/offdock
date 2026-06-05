@@ -426,6 +426,22 @@ if [[ -d "${SCRIPT_DIR}/images" ]] && ls "${SCRIPT_DIR}/images"/*.tar &>/dev/nul
 fi
 
 # ============================================================================
+# INSTALL OPENTELEMETRY AGENTS (for auto-instrumentation of deployed containers)
+# ============================================================================
+OTEL_DIR="/var/offdock/otel"
+mkdir -p "${OTEL_DIR}"
+
+if [[ -f "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" ]]; then
+  cp "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" "${OTEL_DIR}/opentelemetry-javaagent.jar"
+  chmod 644 "${OTEL_DIR}/opentelemetry-javaagent.jar"
+  AGENT_VER=$(cat "${SCRIPT_DIR}/otel/VERSION" 2>/dev/null | head -1 || echo "unknown")
+  echo "  OpenTelemetry Java agent installed: ${OTEL_DIR}/opentelemetry-javaagent.jar (v${AGENT_VER})"
+else
+  echo "  WARNING: OpenTelemetry Java agent not found in bundle — skipping." >&2
+  echo "  Container tracing (OTel injection) will not work for Java apps." >&2
+fi
+
+# ============================================================================
 # INSTALL TCPDUMP (required for container network tracing)
 # ============================================================================
 echo ""
