@@ -232,6 +232,11 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	if err != nil {
 		return fail(fmt.Errorf("build env file: %w", err))
 	}
+	// Inject OpenTelemetry env vars if auto-instrumentation is enabled.
+	if settings.OTelEnabled && settings.OTelEndpoint != "" {
+		envContent = appendOTelEnv(envContent, settings, project.Name)
+		appendLog("  OpenTelemetry injection enabled → %s", settings.OTelEndpoint)
+	}
 	if err := atomicWrite(filepath.Join(projectDir, ".env"), []byte(envContent)); err != nil {
 		return fail(fmt.Errorf("write .env: %w", err))
 	}
@@ -355,6 +360,48 @@ func (e *Engine) buildEnvFile(set *store.EnvVarSet) (string, error) {
 		sb.WriteByte('\n')
 	}
 	return sb.String(), nil
+}
+
+// appendOTelEnv adds OpenTelemetry auto-instrumentation environment variables
+// to an existing .env file content. This is OffDock's equivalent of the
+// Kubernetes OTel Operator — it injects OTEL_* vars at deploy time without
+// requiring changes to the application image or compose file.
+//
+// The injected variables work with OTel auto-instrumentation agents for:
+//   - Java:   -javaagent:/otel/opentelemetry-javaagent.jar (via JAVA_TOOL_OPTIONS)
+//   - Node.js: NODE_OPTIONS=--require @opentelemetry/auto-instrumentations-node/register
+//   - Python:  opentelemetry-instrument (via PYTHONSTARTUP or entrypoint wrapper)
+//   - PHP:     OpenTelemetry PHP SDK auto-discovery
+func appendOTelEnv(envContent string, settings store.DeploySettings, projectName string) string {
+	if !settings.OTelEnabled || settings.OTelEndpoint == "" {
+		return envContent
+	}
+
+	svcName := settings.OTelServiceName
+	if svcName == "" {
+		svcName = projectName
+	}
+	protocol := settings.OTelProtocol
+	if protocol == "" {
+		protocol = "http/protobuf"
+	}
+	sampler := settings.OTelSamplerRatio
+	if sampler == "" {
+		sampler = "1.0"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(envContent)
+	sb.WriteString("\n# OpenTelemetry auto-instrumentation (injected by OffDock)\n")
+	sb.WriteString("OTEL_EXPORTER_OTLP_ENDPOINT=" + settings.OTelEndpoint + "\n")
+	sb.WriteString("OTEL_EXPORTER_OTLP_PROTOCOL=" + protocol + "\n")
+	sb.WriteString("OTEL_SERVICE_NAME=" + svcName + "\n")
+	sb.WriteString("OTEL_TRACES_SAMPLER=parentbased_traceidratio\n")
+	sb.WriteString("OTEL_TRACES_SAMPLER_ARG=" + sampler + "\n")
+	sb.WriteString("OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production\n")
+	// Java agent: enable if JAVA_TOOL_OPTIONS is not already set.
+	sb.WriteString("JAVA_TOOL_OPTIONS=${JAVA_TOOL_OPTIONS} -javaagent:/otel/opentelemetry-javaagent.jar\n")
+	return sb.String()
 }
 
 // composeProjectName converts a project name to a valid Docker Compose project name.
