@@ -54,15 +54,16 @@ interface AggQuery {
 interface Transaction {
   id: number
   time: string
-  method: string
-  path: string
+  method: string   // HTTP method OR 'SQL'/'REDIS' for standalone DB transactions
+  path: string     // HTTP path OR query text for standalone DB transactions
   host?: string
   src?: string
   dst?: string
-  startedAt: number          // ms epoch when the http_req arrived (for the 500ms grouping window)
-  status?: number            // populated when matching http_resp arrives
+  startedAt: number          // ms epoch when the event arrived (for the GROUP_WINDOW_MS logic)
+  status?: number            // HTTP status (populated when matching http_resp arrives)
   duration_ms?: number       // populated when matching http_resp arrives
   children: ChildSpan[]
+  isDbTx?: boolean           // true for standalone SQL/Redis transactions (no parent HTTP)
 }
 
 type FilterMode = 'all' | 'http' | 'sql' | 'redis' | 'errors'
@@ -173,7 +174,25 @@ function ingestEvent(
       }
     }
 
-    if (matchIdx === -1) return prev // orphan event — drop (no parent request in window)
+    if (matchIdx === -1) {
+      // No parent HTTP request found. Create a standalone DB transaction so
+      // SQL/Redis activity from database containers is visible in the waterfall.
+      // Also handles background DB queries that fire after an HTTP response closes.
+      const query = ev.query ?? ev.type
+      const dbTx: Transaction = {
+        id: nextId(),
+        time: ev.time,
+        method: ev.type === 'redis' ? 'REDIS' : 'SQL',
+        path: query.length > 80 ? query.slice(0, 80) + '…' : query,
+        src: ev.src,
+        dst: ev.dst,
+        startedAt: now,
+        children: [],
+        isDbTx: true,
+      }
+      const next = [...prev, dbTx]
+      return next.length > MAX_TRANSACTIONS ? next.slice(-MAX_TRANSACTIONS) : next
+    }
 
     const child: ChildSpan = {
       id: nextId(),
@@ -330,13 +349,24 @@ function TransactionRow({ tx, maxDuration }: { tx: Transaction; maxDuration: num
         <span className="text-slate-600 w-20 shrink-0 tabular-nums hidden sm:inline">{tx.time}</span>
 
         {/* Colored dot + method badge */}
-        <span className={clsx('w-2 h-2 rounded-full shrink-0', methodDotColor(tx.method))} />
-        <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0 w-16 text-center', methodColor(tx.method))}>
-          {tx.method}
-        </span>
+        {tx.isDbTx ? (
+          <>
+            <span className="w-2 h-2 rounded-full shrink-0 bg-amber-400" />
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0 w-16 text-center text-amber-400 bg-amber-500/10 border-amber-500/20">
+              {tx.method}
+            </span>
+          </>
+        ) : (
+          <>
+            <span className={clsx('w-2 h-2 rounded-full shrink-0', methodDotColor(tx.method))} />
+            <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0 w-16 text-center', methodColor(tx.method))}>
+              {tx.method}
+            </span>
+          </>
+        )}
 
         {/* Path */}
-        <span className="text-slate-200 truncate flex-1 min-w-0" title={tx.path}>{tx.path}</span>
+        <span className={clsx('truncate flex-1 min-w-0', tx.isDbTx ? 'text-amber-200/80 font-mono text-[10px]' : 'text-slate-200')} title={tx.path}>{tx.path}</span>
 
         {/* Nested span counts */}
         <div className="hidden sm:flex items-center gap-1.5 shrink-0">
@@ -358,6 +388,8 @@ function TransactionRow({ tx, maxDuration }: { tx: Transaction; maxDuration: num
             <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-bold border', statusBadgeColor(tx.status))}>
               {tx.status}
             </span>
+          ) : tx.isDbTx ? (
+            <span className="text-amber-600 text-[10px]"><Database className="w-3 h-3 inline" /></span>
           ) : (
             <span className="text-slate-700 text-[10px]">…</span>
           )}
@@ -413,6 +445,9 @@ function statsFor(transactions: Transaction[]): Stats {
   for (const tx of transactions) {
     if (tx.status !== undefined && tx.status >= 400) errors += 1
     if (tx.duration_ms !== undefined && tx.duration_ms > 0) { respCount += 1; respTotal += tx.duration_ms }
+    // Count standalone DB transactions
+    if (tx.isDbTx && tx.method === 'SQL') sql += 1
+    else if (tx.isDbTx && tx.method === 'REDIS') redis += 1
     for (const c of tx.children) {
       if (c.kind === 'sql') sql += 1
       else if (c.kind === 'redis') redis += 1
@@ -425,8 +460,8 @@ function WaterfallBody({ transactions, filter }: { transactions: Transaction[]; 
   const filtered = useMemo(() => {
     switch (filter) {
       case 'errors': return transactions.filter(t => t.status !== undefined && t.status >= 400)
-      case 'sql': return transactions.filter(t => t.children.some(c => c.kind === 'sql'))
-      case 'redis': return transactions.filter(t => t.children.some(c => c.kind === 'redis'))
+      case 'sql': return transactions.filter(t => (t.isDbTx && t.method === 'SQL') || t.children.some(c => c.kind === 'sql'))
+      case 'redis': return transactions.filter(t => (t.isDbTx && t.method === 'REDIS') || t.children.some(c => c.kind === 'redis'))
       default: return transactions
     }
   }, [transactions, filter])
@@ -849,6 +884,8 @@ function LiveTracePanel({ container, onStop, onOpenSidebar }: { container: strin
     let redis = 0
     for (const tx of transactions) {
       if (tx.status !== undefined && tx.status >= 400) errors += 1
+      if (tx.isDbTx && tx.method === 'SQL') sql += 1
+      else if (tx.isDbTx && tx.method === 'REDIS') redis += 1
       for (const c of tx.children) {
         if (c.kind === 'sql') sql += 1
         else if (c.kind === 'redis') redis += 1
