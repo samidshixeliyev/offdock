@@ -477,6 +477,15 @@ var (
 	pgCmdRe = regexp.MustCompile(`C\.*\s*(SELECT|INSERT\s+\d+|UPDATE|DELETE)\s+(\d+)`)
 	// Table name extraction
 	tableRe = regexp.MustCompile(`(?i)(?:FROM|INTO|UPDATE|JOIN)\s+["` + "`" + `]?(\w+)["` + "`" + `]?`)
+
+	// In tcpdump -A output, non-printable bytes are shown as '.'.
+	// Runs of 3+ dots therefore represent binary protocol data, not literal SQL.
+	pgBinaryRunRe = regexp.MustCompile(`\.{3,}`)
+	// $N parameter placeholders in SQL text.
+	pgParamNumRe = regexp.MustCompile(`\$(\d+)`)
+	// PostgreSQL protocol noise: statement/portal names, single-byte message types.
+	// e.g. "C_5", "S1", "PC_5", "9C_5", "__asyncpg_stmt_0__"
+	pgNoiseRe = regexp.MustCompile(`^(?:\d{0,3}[A-Z][A-Z_]?\d*|__[a-z_0-9]+__)$`)
 )
 
 func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *TraceSpan {
@@ -497,7 +506,10 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 	}
 
 	// ── PostgreSQL (port 5432) ─────────────────────────────────────────────────
-	if dstPort == 5432 || srcPort == 5432 {
+	// Only parse client→server direction (dstPort==5432). Server→client packets
+	// contain CommandComplete/DataRow responses — not SQL — and previously caused
+	// spurious "SELECT 2", "COMMIT" entries to appear in the waterfall.
+	if dstPort == 5432 {
 		pgKeywords := []string{
 			"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
 			"BEGIN", "COMMIT", "ROLLBACK", "WITH", "CALL", "EXECUTE", "MERGE",
@@ -511,15 +523,15 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 		}
 	}
 
-	// ── MySQL (port 3306) ──────────────────────────────────────────────────────
-	if dstPort == 3306 || srcPort == 3306 {
+	// ── MySQL (port 3306) — client→server only ─────────────────────────────────
+	if dstPort == 3306 {
 		if q := extractMySQL(payload); q != "" {
 			return &TraceSpan{Type: TraceSQL, DBType: "mysql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
 
-	// ── MSSQL / SQL Server (port 1433) ─────────────────────────────────────────
-	if dstPort == 1433 || srcPort == 1433 {
+	// ── MSSQL / SQL Server (port 1433) — client→server only ────────────────────
+	if dstPort == 1433 {
 		if q := extractMSSQL(payload); q != "" {
 			return &TraceSpan{Type: TraceSQL, DBType: "mssql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
@@ -613,6 +625,9 @@ func extractMySQL(payload string) string {
 			}
 		}
 		q := extractPrintableFrom(payload[idx:], 16384)
+		if m := pgBinaryRunRe.FindStringIndex(q); m != nil {
+			q = q[:m[0]]
+		}
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			return q
 		}
@@ -680,6 +695,9 @@ func extractMSSQL(payload string) string {
 			}
 		}
 		q := extractPrintableFrom(payload[idx:], 16384)
+		if m := pgBinaryRunRe.FindStringIndex(q); m != nil {
+			q = q[:m[0]]
+		}
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			return q
 		}
@@ -713,11 +731,19 @@ func extractMongoDB(payload string) string {
 // Format: P<len4><stmt_name>\0<sql_text>\0
 // In ASCII tcpdump output this appears as: P...__stmt_name__.<SQL text>
 // We strip the statement name prefix to return clean SQL.
+// extractPostgresExtended handles the PostgreSQL Extended Query Protocol.
+//
+// In tcpdump -A output non-printable bytes appear as '.' so a packet like:
+//   P\x00\x00\x00NstmtName\x00INSERT INTO t VALUES ($1,$2)\x00...B\x00\x00\x00H...\x00stmtName\x00...\x24UUID1\x00\x00\x00\x24UUID2
+// looks like:
+//   P....stmtName.INSERT INTO t VALUES ($1,$2)...B...`.......stmtName......$UUID1...$UUID2
+//
+// The function:
+//  1. Finds the SQL keyword and extracts clean SQL (stops at first 3+ dot run)
+//  2. Finds the Bind message ('B...') in the binary noise after the SQL
+//  3. Extracts parameter values from the Bind section
+//  4. Substitutes $1,$2,... with the actual extracted values
 func extractPostgresExtended(payload string, keywords []string) string {
-	// Look for the pattern: after "P" and some binary bytes, find an asyncpg/JDBC
-	// statement name like "__asyncpg_stmt_N__." or "S1." or just a null-byte boundary.
-	// Strategy: find the keyword in the payload, then walk backwards to confirm
-	// we're past a statement-name boundary (null byte or known prefix).
 	upper := strings.ToUpper(payload)
 	for _, kw := range keywords {
 		idx := strings.Index(upper, kw)
@@ -726,37 +752,143 @@ func extractPostgresExtended(payload string, keywords []string) string {
 		}
 		if idx > 0 {
 			prev := payload[idx-1]
-			// Check prev char is not alphanumeric (avoid false positives mid-word)
 			if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
 				continue
 			}
-			// Must be preceded by a dot, null, or whitespace (statement name boundary)
 			if prev != '.' && prev != 0 && prev != ' ' && prev != '\n' && prev != '\r' {
-				// Relax: also allow if within 32 bytes of a 'P' byte (Parse message start)
 				start := idx - 32
 				if start < 0 {
 					start = 0
 				}
-				hasPMsg := strings.ContainsRune(payload[start:idx], 'P')
-				if !hasPMsg {
+				if !strings.ContainsRune(payload[start:idx], 'P') {
 					continue
 				}
 			}
 		}
-		q := extractPrintableFrom(payload[idx:], 16384)
-		// Clean up: remove trailing asyncpg metadata that follows the null-terminated SQL
-		if q = strings.TrimSpace(q); len(q) > 3 {
-			// Remove any trailing "...D....S__asyncpg_stmt_..." noise
-			if cut := strings.Index(q, "...D"); cut > 10 {
-				q = strings.TrimSpace(q[:cut])
-			}
-			if cut := strings.Index(q, "\x00"); cut > 3 {
-				q = strings.TrimSpace(q[:cut])
-			}
-			return q
+
+		raw := extractPrintableFrom(payload[idx:], 32768)
+		if len(raw) < 3 {
+			continue
 		}
+
+		// ── Step 1: Extract clean SQL text ───────────────────────────────────
+		// SQL text ends where binary protocol bytes begin (3+ consecutive dots).
+		sql, noise := raw, ""
+		if m := pgBinaryRunRe.FindStringIndex(raw); m != nil {
+			sql = strings.TrimSpace(raw[:m[0]])
+			noise = raw[m[0]:]
+		}
+		if sql = strings.TrimSpace(sql); len(sql) < 3 {
+			continue
+		}
+
+		// ── Step 2: Count parameters and look for Bind values ────────────────
+		paramCount := pgCountParams(sql)
+		if paramCount > 0 && noise != "" {
+			if values := pgExtractBindValues(noise, paramCount); len(values) > 0 {
+				sql = pgSubstituteParams(sql, values)
+			}
+		}
+
+		return sql
 	}
 	return ""
+}
+
+// pgCountParams returns the highest $N placeholder number found in sql.
+func pgCountParams(sql string) int {
+	max := 0
+	for _, m := range pgParamNumRe.FindAllStringSubmatch(sql, -1) {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// pgExtractBindValues extracts actual parameter values from the binary noise
+// section that follows an SQL text in a tcpdump -A PostgreSQL payload.
+//
+// PostgreSQL Bind message format (in tcpdump -A):
+//   B [4-byte length as dots][portal\0][stmt\0][format-codes][param-count][len1][val1][len2][val2]...
+//
+// 36-byte values (UUIDs) have length byte 0x24 = '$' which IS printable, so they
+// appear as "$UUID" in the output — we strip the leading '$'.
+func pgExtractBindValues(noise string, paramCount int) []string {
+	// Find the Bind message: 'B' followed immediately by binary bytes.
+	bindPos := strings.Index(noise, "B...")
+	section := noise
+	if bindPos >= 0 {
+		section = noise[bindPos+1:] // skip past 'B'
+	}
+
+	var values []string
+	// Split on binary runs (3+ dots) and collect printable blobs.
+	for _, part := range pgBinaryRunRe.Split(section, -1) {
+		part = strings.TrimSpace(part)
+		if len(part) < 1 {
+			continue
+		}
+		if pgIsProtocolNoise(part) {
+			continue
+		}
+
+		// 36-byte UUID: the 4-byte length field ends in 0x24='$', so the blob
+		// appears as "$<UUID>" — strip the leading '$' to get the raw UUID.
+		if len(part) == 37 && part[0] == '$' && pgIsHexUUID(part[1:]) {
+			part = part[1:]
+		} else if len(part) < 1 {
+			continue
+		}
+
+		values = append(values, part)
+		if len(values) >= paramCount {
+			break
+		}
+	}
+	return values
+}
+
+// pgIsProtocolNoise returns true for blobs that are PostgreSQL protocol metadata
+// rather than actual parameter values: statement names, portal names, message
+// type bytes that happen to be printable.
+func pgIsProtocolNoise(s string) bool {
+	if len(s) <= 2 {
+		return true
+	}
+	// Statement/portal name patterns: "C_5", "S1", "PC_5", "9C_5", "__asyncpg_stmt_0__"
+	return pgNoiseRe.MatchString(s)
+}
+
+// pgIsHexUUID returns true if s looks like a PostgreSQL UUID value.
+func pgIsHexUUID(s string) bool {
+	if len(s) < 32 || len(s) > 36 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+			(c >= 'A' && c <= 'F') || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// pgSubstituteParams replaces $1, $2, ... in sql with quoted extracted values.
+func pgSubstituteParams(sql string, values []string) string {
+	for i, v := range values {
+		placeholder := fmt.Sprintf("$%d", i+1)
+		if !strings.Contains(sql, placeholder) {
+			continue
+		}
+		// Quote non-numeric values.
+		quoted := v
+		if _, err := strconv.ParseFloat(v, 64); err != nil {
+			quoted = "'" + v + "'"
+		}
+		sql = strings.Replace(sql, placeholder, quoted, 1)
+	}
+	return sql
 }
 
 func extractSQL(payload string, keywords []string) string {
@@ -772,7 +904,11 @@ func extractSQL(payload string, keywords []string) string {
 				continue
 			}
 		}
-		q := extractPrintableFrom(payload[idx:], 16384)
+		q := extractPrintableFrom(payload[idx:], 32768)
+		// Strip binary protocol noise (3+ dots from tcpdump -A) and everything after.
+		if m := pgBinaryRunRe.FindStringIndex(q); m != nil {
+			q = q[:m[0]]
+		}
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			return q
 		}
