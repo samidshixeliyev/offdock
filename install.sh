@@ -431,13 +431,30 @@ fi
 OTEL_DIR="/var/offdock/otel"
 mkdir -p "${OTEL_DIR}"
 
+# Java agent
 if [[ -f "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" ]]; then
   cp "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" "${OTEL_DIR}/opentelemetry-javaagent.jar"
   chmod 644 "${OTEL_DIR}/opentelemetry-javaagent.jar"
   AGENT_VER=$(cat "${SCRIPT_DIR}/otel/VERSION" 2>/dev/null | head -1 || echo "unknown")
-  echo "  OpenTelemetry Java agent installed: ${OTEL_DIR}/opentelemetry-javaagent.jar (v${AGENT_VER})"
+  echo "  Java agent: ${OTEL_DIR}/opentelemetry-javaagent.jar (v${AGENT_VER})"
 else
   echo "  WARNING: OpenTelemetry Java agent not found — skipping." >&2
+fi
+
+# Node.js zero-dependency auto-tracer
+mkdir -p "${OTEL_DIR}/node" "${OTEL_DIR}/php"
+if [[ -f "${SCRIPT_DIR}/otel/node/tracer.js" ]]; then
+  cp "${SCRIPT_DIR}/otel/node/tracer.js" "${OTEL_DIR}/node/tracer.js"
+  chmod 644 "${OTEL_DIR}/node/tracer.js"
+  echo "  Node.js tracer: ${OTEL_DIR}/node/tracer.js"
+fi
+
+# PHP zero-dependency auto-tracer
+if [[ -f "${SCRIPT_DIR}/otel/php/tracer.php" ]]; then
+  cp "${SCRIPT_DIR}/otel/php/tracer.php" "${OTEL_DIR}/php/tracer.php"
+  cp "${SCRIPT_DIR}/otel/php/offdock.ini"  "${OTEL_DIR}/php/offdock.ini"
+  chmod 644 "${OTEL_DIR}/php/tracer.php" "${OTEL_DIR}/php/offdock.ini"
+  echo "  PHP tracer: ${OTEL_DIR}/php/tracer.php"
 fi
 
 # OffDock itself is the OTLP receiver — no separate collector needed.

@@ -218,7 +218,7 @@ func main() {
 func newHandler(apiRouter http.Handler, staticFS fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(staticFS))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Route /api/* and /v1/* (OTLP standard paths) to the API router.
+		// Route /api/* and /v1/* (OTLP + simple span paths) to the API router.
 		if (len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api") ||
 			(len(r.URL.Path) >= 3 && r.URL.Path[:3] == "/v1") {
 			apiRouter.ServeHTTP(w, r)

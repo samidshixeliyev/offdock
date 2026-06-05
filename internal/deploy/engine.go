@@ -239,17 +239,26 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	// Inject OpenTelemetry env vars if auto-instrumentation is enabled.
 	// Only inject JAVA_TOOL_OPTIONS if the agent JAR actually exists on the host —
 	// a missing/directory JAR crashes JVM containers on startup.
-	const otelAgentPath = "/var/offdock/otel/opentelemetry-javaagent.jar"
+	const otelAgentPath  = "/var/offdock/otel/opentelemetry-javaagent.jar"
+	const otelNodePath   = "/var/offdock/otel/node/tracer.js"
+	const otelPHPIniPath = "/var/offdock/otel/php/offdock.ini"
+	isFile := func(p string) bool {
+		info, err := os.Stat(p)
+		return err == nil && !info.IsDir() && info.Size() > 0
+	}
 	if settings.OTelEnabled {
-		jarOK := false
-		if info, err := os.Stat(otelAgentPath); err == nil && !info.IsDir() && info.Size() > 0 {
-			jarOK = true
-		}
-		envContent = appendOTelEnv(envContent, project.Name, jarOK)
-		if jarOK {
-			appendLog("  OpenTelemetry enabled — OTEL_* env vars + Java agent injected")
+		jarOK  := isFile(otelAgentPath)
+		nodeOK := isFile(otelNodePath)
+		phpOK  := isFile(otelPHPIniPath)
+		envContent = appendOTelEnv(envContent, project.Name, jarOK, nodeOK, phpOK)
+		loaders := []string{}
+		if jarOK  { loaders = append(loaders, "Java") }
+		if nodeOK { loaders = append(loaders, "Node.js") }
+		if phpOK  { loaders = append(loaders, "PHP") }
+		if len(loaders) > 0 {
+			appendLog("  OpenTelemetry: OTEL_* vars + auto-tracers for: %s", strings.Join(loaders, ", "))
 		} else {
-			appendLog("  OpenTelemetry enabled — OTEL_* env vars injected (Java agent JAR not found, skipping volume mount)")
+			appendLog("  OpenTelemetry: OTEL_* vars injected (tracers not found — run install.sh)")
 		}
 	}
 	if err := atomicWrite(filepath.Join(projectDir, ".env"), []byte(envContent)); err != nil {
@@ -267,14 +276,13 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	// when auto-instrumentation is enabled.
 	otelOverridePath := ""
 	if settings.OTelEnabled {
-		// Only generate the compose override (volume mount) if the agent JAR is a real file.
-		if info, err := os.Stat(otelAgentPath); err == nil && !info.IsDir() && info.Size() > 0 {
-			overridePath := filepath.Join(projectDir, ".otel-override.yml")
-			if err := writeOTelComposeOverride(composePath, overridePath); err != nil {
-				appendLog("  WARNING: could not generate OTel compose override: %v", err)
-			} else {
-				otelOverridePath = overridePath
-			}
+		// Generate the compose override with volume mounts for whichever tracer
+		// files actually exist on the host (prevents bind-mount directory bugs).
+		overridePath := filepath.Join(projectDir, ".otel-override.yml")
+		if err := writeOTelComposeOverride(composePath, overridePath, isFile); err != nil {
+			appendLog("  WARNING: could not generate OTel compose override: %v", err)
+		} else {
+			otelOverridePath = overridePath
 		}
 	}
 
@@ -396,24 +404,39 @@ func (e *Engine) buildEnvFile(set *store.EnvVarSet) (string, error) {
 // The OTLP endpoint points to OffDock itself at the host's LAN IP so containers
 // can reach it via the extra_hosts entry written by writeOTelComposeOverride.
 // No configuration needed — everything is auto-wired.
-// appendOTelEnv adds OTEL_* vars to the .env file.
-// jarOK: only set JAVA_TOOL_OPTIONS when the agent JAR is confirmed present on
-// the host — injecting it when the file is missing (or a directory) crashes
-// every Java container on startup with "Error opening zip file".
-func appendOTelEnv(envContent, projectName string, jarOK bool) string {
+// appendOTelEnv injects OpenTelemetry env vars into the .env file.
+//
+// Safety rules (all guarded to prevent container crashes):
+//   jarOK  — only set JAVA_TOOL_OPTIONS if the JAR file really exists on host
+//   nodeOK — only set NODE_OPTIONS     if the Node.js tracer file exists
+//   phpOK  — only set PHP_INI_SCAN_DIR if the PHP ini file exists
+//
+// OTEL_* vars are always safe — every language/runtime ignores unknown env vars.
+// NODE_OPTIONS with a missing --require path kills Node.js at startup.
+// PHP_INI_SCAN_DIR pointing nowhere is harmless (PHP just finds no extra ini).
+func appendOTelEnv(envContent, projectName string, jarOK, nodeOK, phpOK bool) string {
 	var sb strings.Builder
 	sb.WriteString(envContent)
-	sb.WriteString("\n# OpenTelemetry — injected by OffDock (do not edit)\n")
+	sb.WriteString("\n# OpenTelemetry auto-instrumentation — injected by OffDock (do not edit)\n")
+	// These vars are universal — safe for Java, Node.js, PHP, Go, Delphi, etc.
 	sb.WriteString("OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:7070/v1/traces\n")
 	sb.WriteString("OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n")
 	sb.WriteString("OTEL_SERVICE_NAME=" + projectName + "\n")
 	sb.WriteString("OTEL_TRACES_SAMPLER=parentbased_traceidratio\n")
 	sb.WriteString("OTEL_TRACES_SAMPLER_ARG=1.0\n")
 	sb.WriteString("OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production\n")
-	// Only add JAVA_TOOL_OPTIONS if the agent JAR file is confirmed to exist.
-	// A missing or directory path at /otel/opentelemetry-javaagent.jar crashes JVM init.
+	// Language-specific loaders — only set when the file is confirmed on the host.
 	if jarOK {
+		// Java: activates the OTel agent JAR (picked up by all JVM processes).
 		sb.WriteString("JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar\n")
+	}
+	if nodeOK {
+		// Node.js: zero-dep auto-tracer, instruments http/https/fetch.
+		sb.WriteString("NODE_OPTIONS=--require /otel/node/tracer.js\n")
+	}
+	if phpOK {
+		// PHP: auto_prepend_file injects the tracer on every request.
+		sb.WriteString("PHP_INI_SCAN_DIR=/otel/php\n")
 	}
 	return sb.String()
 }
@@ -438,7 +461,12 @@ func resolveHostIP() string {
 // a docker-compose override file that:
 //   - mounts /var/offdock/otel/opentelemetry-javaagent.jar into every service
 //   - joins every service to the offdock-otel Docker network so they can reach Jaeger
-func writeOTelComposeOverride(composePath, overridePath string) error {
+// writeOTelComposeOverride generates a docker-compose override that:
+//   - bind-mounts only the tracer files that ACTUALLY exist on the host (isFile check)
+//   - injects host.docker.internal so containers can reach OffDock at :7070
+//
+// isFile is passed in so the caller's stat results are reused consistently.
+func writeOTelComposeOverride(composePath, overridePath string, isFile func(string) bool) error {
 	serviceNames, err := parseComposeServiceNames(composePath)
 	if err != nil {
 		return fmt.Errorf("parse compose: %w", err)
@@ -449,14 +477,33 @@ func writeOTelComposeOverride(composePath, overridePath string) error {
 
 	hostIP := resolveHostIP()
 
+	// Build the list of volumes to mount — only for files that exist.
+	type vol struct{ host, container string }
+	var mounts []vol
+	candidates := []vol{
+		{"/var/offdock/otel/opentelemetry-javaagent.jar", "/otel/opentelemetry-javaagent.jar"},
+		{"/var/offdock/otel/node/tracer.js",              "/otel/node/tracer.js"},
+		{"/var/offdock/otel/php/tracer.php",              "/otel/php/tracer.php"},
+		{"/var/offdock/otel/php/offdock.ini",             "/otel/php/offdock.ini"},
+	}
+	for _, c := range candidates {
+		if isFile(c.host) {
+			mounts = append(mounts, c)
+		}
+	}
+
 	var sb strings.Builder
 	sb.WriteString("# Auto-generated by OffDock OTel injection — do not edit\n")
 	sb.WriteString("services:\n")
 	for _, svc := range serviceNames {
 		sb.WriteString("  " + svc + ":\n")
-		sb.WriteString("    volumes:\n")
-		sb.WriteString("      - /var/offdock/otel/opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar:ro\n")
-		// host.docker.internal lets containers reach OffDock on the host at :7070
+		if len(mounts) > 0 {
+			sb.WriteString("    volumes:\n")
+			for _, m := range mounts {
+				sb.WriteString("      - " + m.host + ":" + m.container + ":ro\n")
+			}
+		}
+		// host.docker.internal → host IP so containers reach OffDock at :7070
 		sb.WriteString("    extra_hosts:\n")
 		sb.WriteString("      - \"host.docker.internal:" + hostIP + "\"\n")
 	}

@@ -15,6 +15,138 @@ import (
 	"offdock/internal/store"
 )
 
+// ─── Simple span API — universal, no SDK, any language ────────────────────────
+//
+// POST /v1/span   — single span
+// POST /v1/spans  — batch (array of spans)
+//
+// Minimal JSON that any language can produce with 5 lines of code:
+//   {"service":"my-app","name":"processOrder","start_ms":1234,"end_ms":1290,"tags":{"user.id":"42"}}
+//
+// All fields except service and name are optional. The server auto-generates
+// trace_id and span_id when missing, and returns them so the caller can chain spans.
+
+type simpleSpan struct {
+	TraceID    string            `json:"trace_id"`    // optional — auto-generated if absent
+	SpanID     string            `json:"span_id"`     // optional — auto-generated if absent
+	ParentID   string            `json:"parent_id"`   // optional — links this span to a parent
+	Service    string            `json:"service"`     // required — "php-app", "node-api", "go-worker" …
+	Name       string            `json:"name"`        // required — operation name
+	StartMs    int64             `json:"start_ms"`    // Unix milliseconds; defaults to now
+	EndMs      int64             `json:"end_ms"`      // Unix milliseconds; defaults to now
+	DurationMs float64           `json:"duration_ms"` // alternative to start+end
+	Status     string            `json:"status"`      // "ok" | "error"  (default "ok")
+	Error      string            `json:"error"`       // error message if status=error
+	Tags       map[string]string `json:"tags"`        // any key/value pairs
+}
+
+func (h *H) ingestSimpleSpan(sp simpleSpan) store.OTelSpan {
+	now := time.Now()
+	nowMs := now.UnixMilli()
+
+	if sp.Service == "" {
+		sp.Service = "unknown"
+	}
+	if sp.Name == "" {
+		sp.Name = "span"
+	}
+	if sp.TraceID == "" {
+		sp.TraceID = store.NewULID()
+	}
+	if sp.SpanID == "" {
+		sp.SpanID = store.NewULID()
+	}
+
+	startMs := sp.StartMs
+	if startMs == 0 {
+		startMs = nowMs
+	}
+	endMs := sp.EndMs
+	if endMs == 0 {
+		if sp.DurationMs > 0 {
+			endMs = startMs + int64(sp.DurationMs)
+		} else {
+			endMs = nowMs
+		}
+	}
+	durUs := (endMs - startMs) * 1000
+	if durUs < 0 {
+		durUs = 0
+	}
+
+	status := sp.Status
+	if status == "" {
+		status = "ok"
+	}
+	if sp.Error != "" {
+		status = "error"
+	}
+
+	tags := sp.Tags
+	if tags == nil {
+		tags = map[string]string{}
+	}
+	if sp.Error != "" {
+		tags["error.message"] = sp.Error
+	}
+
+	return store.OTelSpan{
+		ID:           store.NewULID(),
+		TraceID:      sp.TraceID,
+		SpanID:       sp.SpanID,
+		ParentSpanID: sp.ParentID,
+		Service:      sp.Service,
+		Name:         sp.Name,
+		Kind:         "server",
+		StartTimeUs:  startMs * 1000,
+		EndTimeUs:    endMs * 1000,
+		DurationUs:   durUs,
+		StatusCode:   status,
+		StatusMsg:    sp.Error,
+		Attributes:   tags,
+		ReceivedAt:   now,
+	}
+}
+
+// ReceiveSimpleSpan accepts a single span from any language — no SDK required.
+func (h *H) ReceiveSimpleSpan(w http.ResponseWriter, r *http.Request) {
+	var sp simpleSpan
+	if err := json.NewDecoder(r.Body).Decode(&sp); err != nil {
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	ospan := h.ingestSimpleSpan(sp)
+	if err := h.db.OTelSpans.Save(ospan); err != nil {
+		slog.Warn("simple span: save", "err", err)
+	} else {
+		go h.db.PruneOTelSpans(50_000)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"trace_id":%q,"span_id":%q}`, ospan.TraceID, ospan.SpanID)
+}
+
+// ReceiveSimpleSpans accepts a batch of spans — one HTTP call for multiple spans.
+func (h *H) ReceiveSimpleSpans(w http.ResponseWriter, r *http.Request) {
+	var spans []simpleSpan
+	if err := json.NewDecoder(r.Body).Decode(&spans); err != nil {
+		// Try single span wrapped in array.
+		http.Error(w, `{"error":"expected JSON array"}`, http.StatusBadRequest)
+		return
+	}
+	saved := 0
+	for _, sp := range spans {
+		ospan := h.ingestSimpleSpan(sp)
+		if h.db.OTelSpans.Save(ospan) == nil {
+			saved++
+		}
+	}
+	if saved > 0 {
+		go h.db.PruneOTelSpans(50_000)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"saved":%d}`, saved)
+}
+
 // ─── OTLP HTTP receiver ───────────────────────────────────────────────────────
 
 // otlpRequest is the top-level OTLP JSON trace payload.

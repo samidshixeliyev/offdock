@@ -363,6 +363,134 @@ function TraceRow({ trace, idx }: TraceRowProps) {
   )
 }
 
+// ─── Integration guide ────────────────────────────────────────────────────────
+
+const LANG_EXAMPLES: Array<{ id: string; label: string; code: string }> = [
+  {
+    id: 'java',
+    label: 'Java (auto)',
+    code: `# Nothing needed — the OTel Java agent is injected automatically
+# by OffDock when "Enable OpenTelemetry tracing" is ON in Deploy Settings.
+# Spring Boot, Quarkus, Micronaut, plain Java — all auto-instrumented.`,
+  },
+  {
+    id: 'nodejs',
+    label: 'Node.js (auto)',
+    code: `# Nothing needed — offdock-tracer.js is injected automatically.
+# Instruments http/https/fetch calls + express/fastify request handlers.
+# NODE_OPTIONS=--require /otel/node/tracer.js  ← set by OffDock`,
+  },
+  {
+    id: 'php',
+    label: 'PHP (auto)',
+    code: `# Nothing needed — offdock-tracer.php auto_prepend_file is injected.
+# Instruments every request + outgoing curl calls.
+# PHP_INI_SCAN_DIR=/otel/php  ← set by OffDock`,
+  },
+  {
+    id: 'go',
+    label: 'Go',
+    code: `// POST /v1/span — works from any language, no SDK needed
+import "net/http"; import "encoding/json"; import "bytes"; import "time"
+
+func trace(service, name string, start time.Time, tags map[string]string) {
+    span := map[string]any{
+        "service":  service,
+        "name":     name,
+        "start_ms": start.UnixMilli(),
+        "end_ms":   time.Now().UnixMilli(),
+        "status":   "ok",
+        "tags":     tags,
+    }
+    b, _ := json.Marshal(span)
+    http.Post("http://host.docker.internal:7070/v1/span",
+              "application/json", bytes.NewReader(b))
+}`,
+  },
+  {
+    id: 'php-manual',
+    label: 'PHP (manual)',
+    code: `<?php
+// POST /v1/span — 5 lines, no Composer needed
+function trace(string $name, int $startMs, array $tags = []): void {
+    $body = json_encode(['service'=>$_ENV['OTEL_SERVICE_NAME']??'php-app',
+        'name'=>$name, 'start_ms'=>$startMs, 'end_ms'=>(int)(microtime(true)*1000),
+        'tags'=>$tags]);
+    $ctx = stream_context_create(['http'=>['method'=>'POST','content'=>$body,
+        'header'=>"Content-Type: application/json\r\n",'timeout'=>0.5]]);
+    @file_get_contents('http://host.docker.internal:7070/v1/span', false, $ctx);
+}`,
+  },
+  {
+    id: 'delphi',
+    label: 'Delphi',
+    code: `// POST /v1/span — THTTPClient (no external libraries needed)
+procedure TraceSpan(const Service, Name: string; StartMs, EndMs: Int64;
+                    const Status: string = 'ok');
+var
+  Client: THTTPClient;
+  Body: TStringStream;
+begin
+  Client := THTTPClient.Create;
+  Body   := TStringStream.Create(Format(
+    '{"service":"%s","name":"%s","start_ms":%d,"end_ms":%d,"status":"%s"}',
+    [Service, Name, StartMs, EndMs, Status]), TEncoding.UTF8);
+  try
+    Client.Post('http://host.docker.internal:7070/v1/span', Body, nil,
+                [TNameValuePair.Create('Content-Type','application/json')]);
+  finally
+    Body.Free; Client.Free;
+  end;
+end;`,
+  },
+  {
+    id: 'curl',
+    label: 'Any / cURL',
+    code: `# POST /v1/span — works from shell scripts, any HTTP client
+curl -s -X POST http://host.docker.internal:7070/v1/span \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "service": "my-app",
+    "name":    "processOrder",
+    "start_ms": '"$(date +%s%3N)"',
+    "end_ms":   '"$(date +%s%3N)"',
+    "status":  "ok",
+    "tags":    {"order.id": "12345"}
+  }'
+
+# For chaining spans, capture the returned trace_id/span_id:
+# {"trace_id":"...","span_id":"..."}`,
+  },
+]
+
+function IntegrationGuide() {
+  const [active, setActive] = useState('java')
+  const ex = LANG_EXAMPLES.find(e => e.id === active) ?? LANG_EXAMPLES[0]
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-slate-400">
+        Auto-injected on deploy — or use the universal <code className="text-blue-400">POST /v1/span</code> endpoint from any language:
+      </p>
+      {/* Language tabs */}
+      <div className="flex flex-wrap gap-1">
+        {LANG_EXAMPLES.map(e => (
+          <button key={e.id} onClick={() => setActive(e.id)}
+            className={clsx('text-[10px] px-2 py-1 rounded border transition-colors',
+              e.id === active
+                ? 'bg-blue-500/20 border-blue-500/40 text-blue-300'
+                : 'border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-600')}>
+            {e.label}
+          </button>
+        ))}
+      </div>
+      {/* Code block */}
+      <pre className="bg-slate-950/80 border border-slate-800 rounded-lg p-3 text-[10px] text-slate-300 font-mono overflow-x-auto whitespace-pre-wrap leading-5">
+        {ex.code}
+      </pre>
+    </div>
+  )
+}
+
 // ─── Main page ───────────────────────────────────────────────────────────────
 
 export default function OTelTracesPage() {
@@ -492,13 +620,7 @@ export default function OTelTracesPage() {
                   Enable it in your project's <strong className="text-slate-200">Deploy Settings → Enable OpenTelemetry tracing</strong>, then
                   deploy your app. Jaeger starts automatically during installation.
                 </p>
-                <div className="bg-slate-950/60 border border-slate-800 rounded-lg p-3 text-[10px] font-mono text-slate-400 space-y-0.5">
-                  <div className="text-slate-600 mb-1"># Auto-injected into container .env on deploy:</div>
-                  <div>OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:7070/v1/traces</div>
-                  <div>OTEL_SERVICE_NAME=&lt;project-name&gt;</div>
-                  <div>JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar</div>
-                  <div className="text-slate-600 mt-1"># OffDock receives and stores all traces natively — no Jaeger needed</div>
-                </div>
+                <IntegrationGuide />
               </div>
             </div>
           </div>
