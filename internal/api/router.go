@@ -55,10 +55,12 @@ func NewRouter(deps Deps) http.Handler {
 
 	h := handlers.New(deps.DB, deps.Auth, deps.Encryptor, deps.Docker, deps.Deployer, deps.Stats, deps.SSEHub, deps.ProjectsDir, deps.DataDir, deps.DefaultPEMPath, deps.Mailer, deps.SMTPSettings, deps.OAuthSettings)
 
-	// --- Trace receivers (public — no auth, called by apps inside containers) ---
-	r.Post("/v1/traces", h.ReceiveOTLPTraces)  // OTLP JSON (Java agent, Node SDK, Python, etc.)
-	r.Post("/v1/span", h.ReceiveSimpleSpan)    // Simple JSON — any language, no SDK
-	r.Post("/v1/spans", h.ReceiveSimpleSpans)  // Batch version
+	// --- OTLP receivers (public — no auth, called by OTel agents inside containers) ---
+	r.Post("/v1/traces", h.ReceiveOTLPTraces)   // OTLP JSON traces (Java agent, Node SDK, etc.)
+	r.Post("/v1/logs", h.ReceiveOTLPNoOp)       // Accept logs — return 200, not stored
+	r.Post("/v1/metrics", h.ReceiveOTLPNoOp)    // Accept metrics — return 200, not stored
+	r.Post("/v1/span", h.ReceiveSimpleSpan)     // Simple JSON — any language, no SDK
+	r.Post("/v1/spans", h.ReceiveSimpleSpans)   // Batch version
 
 	// --- Public routes ---
 	r.Post("/api/v1/auth/login", h.Login)

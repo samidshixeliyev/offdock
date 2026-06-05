@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -106,6 +108,16 @@ func (h *H) ingestSimpleSpan(sp simpleSpan) store.OTelSpan {
 		Attributes:   tags,
 		ReceivedAt:   now,
 	}
+}
+
+// ReceiveOTLPNoOp accepts OTLP logs and metrics — returns 200 without storing.
+// This prevents 404 spam from OTel agents that also try to export logs/metrics.
+func (h *H) ReceiveOTLPNoOp(w http.ResponseWriter, r *http.Request) {
+	// Drain the body so the client doesn't get a connection reset.
+	_, _ = io.Copy(io.Discard, r.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"partialSuccess":{}}`)
 }
 
 // ReceiveSimpleSpan accepts a single span from any language — no SDK required.
@@ -254,13 +266,41 @@ func statusCodeName(c int) string {
 	}
 }
 
-// ReceiveOTLPTraces accepts OTLP HTTP JSON traces from instrumented applications.
-// No authentication required — this endpoint is called by OTel agents inside containers.
-// Pruning keeps at most 50,000 spans (≈ ~50 MB at ~1 KB/span).
+// ReceiveOTLPTraces accepts OTLP HTTP traces from instrumented applications.
+// Supports: application/json (preferred), application/x-protobuf (accepted but not decoded).
+// No authentication required — called by OTel agents inside containers.
 func (h *H) ReceiveOTLPTraces(w http.ResponseWriter, r *http.Request) {
+	ct := r.Header.Get("Content-Type")
+
+	// Protobuf: we cannot decode it without the proto schema, but accept it
+	// gracefully rather than returning 400 which causes agent retry storms.
+	if strings.Contains(ct, "application/x-protobuf") || strings.Contains(ct, "protobuf") {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"partialSuccess":{}}`)
+		return
+	}
+
+	// Decompress gzip if the agent sent compressed JSON.
+	body := r.Body
+	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"partialSuccess":{}}`)
+			return
+		}
+		defer gz.Close()
+		body = gz
+	}
+
 	var req otlpRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(body).Decode(&req); err != nil {
+		// Unknown format — accept silently to prevent agent retry storms.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"partialSuccess":{}}`)
 		return
 	}
 

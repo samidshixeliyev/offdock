@@ -419,12 +419,19 @@ func appendOTelEnv(envContent, projectName string, jarOK, nodeOK, phpOK bool) st
 	sb.WriteString(envContent)
 	sb.WriteString("\n# OpenTelemetry auto-instrumentation — injected by OffDock (do not edit)\n")
 	// These vars are universal — safe for Java, Node.js, PHP, Go, Delphi, etc.
-	sb.WriteString("OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:7070/v1/traces\n")
+	// Per-signal endpoints: point traces directly to /v1/traces (protobuf accepted),
+	// and disable metrics/logs to prevent 404 spam — OffDock doesn't store those.
+	// We use OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (signal-specific, takes precedence)
+	// instead of the generic OTEL_EXPORTER_OTLP_ENDPOINT so there's no path ambiguity.
+	sb.WriteString("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://host.docker.internal:7070/v1/traces\n")
 	sb.WriteString("OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n")
 	sb.WriteString("OTEL_SERVICE_NAME=" + projectName + "\n")
 	sb.WriteString("OTEL_TRACES_SAMPLER=parentbased_traceidratio\n")
 	sb.WriteString("OTEL_TRACES_SAMPLER_ARG=1.0\n")
 	sb.WriteString("OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production\n")
+	// Disable metrics and logs — OffDock only stores traces.
+	sb.WriteString("OTEL_METRICS_EXPORTER=none\n")
+	sb.WriteString("OTEL_LOGS_EXPORTER=none\n")
 	// Language-specific loaders — only set when the file is confirmed on the host.
 	if jarOK {
 		// Java: activates the OTel agent JAR (picked up by all JVM processes).
