@@ -418,11 +418,16 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Expire stale open requests.
+		// Expire stale open requests and their activeSpan entries.
 		for k, v := range openReqs {
 			if time.Since(v.t) > 30*time.Second {
 				delete(openReqs, k)
 			}
+		}
+		// activeSpan grows unboundedly (one entry per src endpoint, never deleted).
+		// Prune entries that have no corresponding open request to prevent memory leak.
+		if len(activeSpan) > 1000 {
+			activeSpan = make(map[string]string)
 		}
 		send(*ev)
 	}

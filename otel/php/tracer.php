@@ -17,7 +17,8 @@ defined('_OFFDOCK_TRACER') or define('_OFFDOCK_TRACER', true);
 $_OTEL_BASE    = rtrim(getenv('OTEL_EXPORTER_OTLP_ENDPOINT') ?: 'http://host.docker.internal:7070', '/');
 $_OTEL_BASE    = preg_replace('#/v1/traces$#', '', $_OTEL_BASE);
 $_OTEL_ENDPOINT = $_OTEL_BASE . '/v1/span';
-$_OTEL_SERVICE  = getenv('OTEL_SERVICE_NAME') ?: ($_SERVER['HTTP_HOST'] ?? 'php-service');
+// Use OTEL_SERVICE_NAME, then hostname — never HTTP_HOST (attacker-controlled).
+$_OTEL_SERVICE  = getenv('OTEL_SERVICE_NAME') ?: (gethostname() ?: 'php-service');
 $_OTEL_START    = microtime(true);
 $_OTEL_TRACE_ID = bin2hex(random_bytes(16));
 $_OTEL_SPAN_ID  = bin2hex(random_bytes(8));

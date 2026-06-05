@@ -172,7 +172,9 @@ func (h *H) SendDNSTicket(w http.ResponseWriter, r *http.Request) {
 
 // GetSMTPSettings returns current SMTP configuration (password masked).
 func (h *H) GetSMTPSettings(w http.ResponseWriter, r *http.Request) {
+	h.settingsMu.RLock()
 	s := h.smtpSettings
+	h.settingsMu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"host":                 s.Host,
 		"port":                 s.Port,
@@ -228,12 +230,15 @@ func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	h.settingsMu.RLock()
+	existingSMTPPwd := h.smtpSettings.Password
+	h.settingsMu.RUnlock()
 	password := req.Password
 	if password == "" {
-		password = h.smtpSettings.Password
+		password = existingSMTPPwd
 	}
 
-	h.smtpSettings = store.SMTPSettings{
+	newSMTP := store.SMTPSettings{
 		Host:           req.Host,
 		Port:           req.Port,
 		Username:       req.Username,
@@ -247,10 +252,10 @@ func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		ClientKeyFile:  req.ClientKeyFile,
 		AdminEmail:     req.DNSAdminEmail,
 	}
-	h.mailer = mailer.NewWithClientCert(req.Host, req.Port, req.Username, password, req.From, mode, req.SkipVerify, req.CACertFile, req.ClientCertFile, req.ClientKeyFile)
+	newMailer := mailer.NewWithClientCert(req.Host, req.Port, req.Username, password, req.From, mode, req.SkipVerify, req.CACertFile, req.ClientCertFile, req.ClientKeyFile)
 
 	// Persist to config.yaml.
-	if err := updateConfigYAML(h.smtpSettings); err != nil {
+	if err := updateConfigYAML(newSMTP); err != nil {
 		// Non-fatal — in-memory update still works.
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "applied (could not persist: " + err.Error() + ")",
@@ -258,6 +263,11 @@ func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	h.settingsMu.Lock()
+	h.smtpSettings = newSMTP
+	h.mailer = newMailer
+	h.settingsMu.Unlock()
 
 	h.logAudit(r, "update_smtp_settings", "system", "", req.Host, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})

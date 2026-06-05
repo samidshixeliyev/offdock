@@ -95,7 +95,7 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 		if rec != nil {
 			// Auto-create a deploy tag for every successful deployment (like GitLab pipeline tags).
 			if rec.Status == store.DeployStatusSuccess {
-				tagName := fmt.Sprintf("deploy-%s", timeNow().Format("2006-01-02-150405"))
+				tagName := fmt.Sprintf("deploy-%s", rec.StartedAt.Format("2006-01-02-150405"))
 				tag := store.DeployTag{
 					ID:             store.NewULID(),
 					ProjectID:      projectID,

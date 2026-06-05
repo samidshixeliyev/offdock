@@ -38,15 +38,20 @@ func Authenticate(svc *auth.Service, db *store.DB) func(http.Handler) http.Handl
 			}
 
 			if db != nil && claims.SessionID != "" {
-				if sess, err := db.Sessions.FindByID(claims.SessionID); err == nil {
-					if sess.Revoked {
-						http.Error(w, `{"error":"session revoked"}`, http.StatusUnauthorized)
-						return
-					}
-					if time.Since(sess.LastSeen) > time.Minute {
-						sess.LastSeen = time.Now().UTC()
-						db.Sessions.Save(sess) //nolint:errcheck
-					}
+				sess, err := db.Sessions.FindByID(claims.SessionID)
+				if err != nil {
+					// Session not found — deleted, pruned, or compacted.
+					// Treat as revoked: fail closed to prevent token reuse after logout.
+					http.Error(w, `{"error":"session not found"}`, http.StatusUnauthorized)
+					return
+				}
+				if sess.Revoked {
+					http.Error(w, `{"error":"session revoked"}`, http.StatusUnauthorized)
+					return
+				}
+				if time.Since(sess.LastSeen) > time.Minute {
+					sess.LastSeen = time.Now().UTC()
+					db.Sessions.Save(sess) //nolint:errcheck
 				}
 			}
 

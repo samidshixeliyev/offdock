@@ -32,6 +32,7 @@ export default function AppLogsPage() {
   const [autoScroll, setAutoScroll] = useState(true)
 
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const esRef = useRef<EventSource | null>(null)
 
   const load = async () => {
@@ -50,7 +51,9 @@ export default function AppLogsPage() {
   useEffect(() => { load() }, [])
 
   useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    if (autoScroll && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight
+    }
   }, [lines, autoScroll])
 
   const startStream = () => {
@@ -211,7 +214,7 @@ export default function AppLogsPage() {
       </div>
 
       {/* Log content */}
-      <div className="flex-1 overflow-y-auto min-h-0 bg-slate-950/60 font-mono">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto min-h-0 bg-slate-950/60 font-mono">
         {loading ? (
           <div className="flex items-center justify-center h-32 text-slate-600 text-sm">
             <RefreshCw className="w-4 h-4 animate-spin mr-2" /> Loading…

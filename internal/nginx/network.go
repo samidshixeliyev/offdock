@@ -67,7 +67,11 @@ func GetNetworkInfo(network string) NetworkInfo {
 
 	containers := make([]NetworkContainer, 0, len(raw))
 	for id, c := range raw {
-		containers = append(containers, NetworkContainer{Name: c.Name, ID: id[:12]})
+		shortID := id
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+		containers = append(containers, NetworkContainer{Name: c.Name, ID: shortID})
 	}
 	return NetworkInfo{Name: network, Exists: true, Containers: containers}
 }

@@ -904,10 +904,10 @@ function LiveTracePanel({ container, onStop, onOpenSidebar }: { container: strin
   const filtered = useMemo(() => {
     switch (filter) {
       case 'all': return transactions
-      case 'http': return transactions
+      case 'http': return transactions.filter(t => !t.isDbTx)
       case 'errors': return transactions.filter(t => t.status !== undefined && t.status >= 400)
-      case 'sql': return transactions.filter(t => t.children.some(c => c.kind === 'sql'))
-      case 'redis': return transactions.filter(t => t.children.some(c => c.kind === 'redis'))
+      case 'sql': return transactions.filter(t => (t.isDbTx && t.method === 'SQL') || t.children.some(c => c.kind === 'sql'))
+      case 'redis': return transactions.filter(t => (t.isDbTx && t.method === 'REDIS') || t.children.some(c => c.kind === 'redis'))
       default: return transactions
     }
   }, [transactions, filter])

@@ -43,13 +43,6 @@ func (h *H) PruneAll(w http.ResponseWriter, r *http.Request) {
 	// Prune audit events.
 	auditDel := 0
 	if events, _ := h.db.AuditEvents.FindAll(); len(events) > keepAudit {
-		// Sort oldest first and delete the excess.
-		// AuditEvent.CreatedAt is the sort key.
-		for i := 0; i < len(events)-keepAudit; i++ {
-			// events are not sorted, use PruneOldest via direct delete
-			_ = i
-		}
-		// For simplicity, just prune audit events inline here.
 		type ae struct{ id string; t int64 }
 		pairs := make([]ae, 0, len(events))
 		for _, e := range events {

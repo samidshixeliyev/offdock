@@ -37,8 +37,10 @@ function breadcrumbFor(pathname: string): string {
   if (pathname === '/' || pathname === '') return 'Dashboard'
   const segs = pathname.split('/').filter(Boolean)
   if (segs[0] === 'projects') {
+    if (segs.length === 1) return 'Projects'
     if (segs[1] === 'new') return 'New Project'
     if (segs.length === 2) return 'Project'
+    if (!segs[2]) return 'Project'
     return `Project · ${segs[2].charAt(0).toUpperCase() + segs[2].slice(1)}`
   }
   const all = [...navMain, ...navSystem]

@@ -85,12 +85,14 @@ func (h *H) StreamAppLogs(w http.ResponseWriter, r *http.Request) {
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		fmt.Fprintf(w, "data: {\"line\":\"journalctl unavailable: %s\"}\n\n", err.Error())
+		b, _ := json.Marshal(map[string]string{"line": "journalctl unavailable: " + err.Error()})
+		fmt.Fprintf(w, "data: %s\n\n", b)
 		flusher.Flush()
 		return
 	}
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(w, "data: {\"line\":\"journalctl start failed: %s\"}\n\n", err.Error())
+		b, _ := json.Marshal(map[string]string{"line": "journalctl start failed: " + err.Error()})
+		fmt.Fprintf(w, "data: %s\n\n", b)
 		flusher.Flush()
 		return
 	}

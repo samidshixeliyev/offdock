@@ -42,7 +42,11 @@ func (h *H) OTPRequest(w http.ResponseWriter, r *http.Request) {
 		h.db.OTPChallenges.Save(old) //nolint:errcheck
 	}
 
-	code := generateOTPCode()
+	code, err := generateOTPCode()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not generate OTP")
+		return
+	}
 	hash := hashOTP(code)
 
 	challenge := store.OTPChallenge{
@@ -176,13 +180,13 @@ func (h *H) ValidateTerminalToken(token string) bool {
 
 // --- helpers ----------------------------------------------------------------
 
-func generateOTPCode() string {
+func generateOTPCode() (string, error) {
 	max := big.NewInt(1000000)
 	n, err := rand.Int(rand.Reader, max)
 	if err != nil {
-		n = big.NewInt(123456)
+		return "", fmt.Errorf("failed to generate OTP: %w", err)
 	}
-	return fmt.Sprintf("%06d", n.Int64())
+	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
 func generateTerminalToken() string {

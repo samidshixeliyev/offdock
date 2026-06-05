@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -67,17 +68,42 @@ func (ll *LoginLimiter) cleanup() {
 	}
 }
 
-// RealIP extracts the real client IP from the request.
+// RealIP extracts the client IP from RemoteAddr.
+// X-Real-IP / X-Forwarded-For are intentionally ignored: trusting client-supplied
+// headers allows trivial rate-limit bypass and audit-log IP spoofing.
+// nginx (or another trusted reverse proxy) should rewrite RemoteAddr itself.
 func RealIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
+	ip := r.RemoteAddr
+	// RemoteAddr is host:port for IPv4 and [::1]:port for IPv6.
+	host, _, err := splitHostPort(ip)
+	if err != nil {
+		// No port — use as-is (shouldn't happen in practice).
 		return ip
 	}
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.Split(fwd, ",")[0]
-	}
-	ip := r.RemoteAddr
-	if i := strings.LastIndex(ip, ":"); i >= 0 {
-		return ip[:i]
-	}
-	return ip
+	return host
 }
+
+func splitHostPort(addr string) (host, port string, err error) {
+	if len(addr) == 0 {
+		return "", "", fmt.Errorf("empty addr")
+	}
+	// IPv6 bracketed: [::1]:port
+	if addr[0] == '[' {
+		end := strings.LastIndex(addr, "]")
+		if end < 0 {
+			return "", "", fmt.Errorf("bad addr: %s", addr)
+		}
+		host = addr[1:end]
+		if end+1 < len(addr) && addr[end+1] == ':' {
+			port = addr[end+2:]
+		}
+		return host, port, nil
+	}
+	// IPv4: host:port
+	i := strings.LastIndex(addr, ":")
+	if i < 0 {
+		return addr, "", nil
+	}
+	return addr[:i], addr[i+1:], nil
+}
+

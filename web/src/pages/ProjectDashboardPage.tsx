@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useNavigate } from 'react-router-dom'
 import {
   api, Project, ContainerInfo, ComposeConfig, EnvVar,
   DeploymentRecord, FileEntry, DeploySettings,
@@ -925,14 +925,14 @@ function DeployTab({ projectId }: { projectId: string }) {
     return () => es.close()
   }, [streamKey, projectId])
 
-  const handleDeploy = async (composeVersion?: number) => {
+  const handleDeploy = async (composeVersion?: number, envVersion?: number) => {
     setDeploying(true)
     setCancelling(false)
     setLog([composeVersion ? `Rolling back to compose v${composeVersion}…` : 'Starting deployment…'])
     setExpandedId(null)
     setRollbackTarget(null)
     try {
-      const { deployment_id } = await api.triggerDeploy(projectId, composeVersion)
+      const { deployment_id } = await api.triggerDeploy(projectId, composeVersion, envVersion)
       setStreamKey(deployment_id)
       setActiveDepId(deployment_id)
     } catch (e) {
@@ -1017,7 +1017,7 @@ function DeployTab({ projectId }: { projectId: string }) {
                 <div key={i} className={
                   line.startsWith('✗') ? 'text-red-400' :
                   line.startsWith('✓') ? 'text-green-300 font-medium' :
-                  line.match(/\[\d+\/7\]/) ? 'text-blue-300' :
+                  line.match(/\[\d+\/\d+\]/) ? 'text-blue-300' :
                   ''
                 }>
                   {line || ' '}
@@ -1116,7 +1116,7 @@ function DeployTab({ projectId }: { projectId: string }) {
                               ? d.log_text.split('\n').map((line, i) => (
                                   <div key={i} className={
                                     line.startsWith('FAILED') || line.startsWith('CANCELLED') ? 'text-red-400' :
-                                    line.match(/\[\d+\/7\]/) ? 'text-blue-300 font-medium' :
+                                    line.match(/\[\d+\/\d+\]/) ? 'text-blue-300 font-medium' :
                                     line.includes('complete') ? 'text-green-300 font-medium' :
                                     line.startsWith('  [cleanup]') || line.startsWith('  [rollback]') ? 'text-yellow-400' :
                                     ''
@@ -1212,7 +1212,7 @@ function DeployTab({ projectId }: { projectId: string }) {
           title="Rollback Deployment"
           message={`Re-deploy compose version v${rollbackTarget.new_compose_version} (from ${new Date(rollbackTarget.started_at).toLocaleString()})? This triggers a new deployment using that compose version.`}
           confirmLabel="Rollback"
-          onConfirm={() => handleDeploy(rollbackTarget.new_compose_version)}
+          onConfirm={() => handleDeploy(rollbackTarget.new_compose_version, rollbackTarget.env_version)}
           onCancel={() => setRollbackTarget(null)}
         />
       )}
@@ -1240,6 +1240,7 @@ const statusBadge: Record<string, string> = {
 
 export default function ProjectDashboardPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('overview')
   const [project, setProject] = useState<Project | null>(null)
   const [error, setError] = useState('')
@@ -1261,7 +1262,7 @@ export default function ProjectDashboardPage() {
       toast.success(`Project cloned as "${cloned.name}"`)
       setShowClone(false)
       setCloneName('')
-      window.location.href = `/projects/${cloned.id}`
+      navigate(`/projects/${cloned.id}`)
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Clone failed') } finally { setCloning(false) }
   }
 

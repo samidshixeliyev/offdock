@@ -68,7 +68,8 @@ func Load(path string) (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return cfg, nil
+		// Config file absent — enforce JWT secret requirement; empty secret allows token forgery.
+		return nil, fmt.Errorf("config file not found at %s — run install.sh to initialise", path)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)

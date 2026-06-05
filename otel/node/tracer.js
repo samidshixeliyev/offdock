@@ -1,4 +1,5 @@
 'use strict';
+const _crypto = (() => { try { return require('crypto'); } catch { return null; } })();
 /**
  * OffDock auto-tracer for Node.js — zero dependencies, fully offline.
  *
@@ -22,9 +23,14 @@ const ENDPOINT = (() => {
 })();
 const SERVICE = process.env.OTEL_SERVICE_NAME || process.env.npm_package_name || 'node-service';
 
-function genId() {
-  return Array.from({ length: 16 }, () => (Math.random() * 16 | 0).toString(16)).join('');
+function genId(bytes) {
+  const n = bytes || 8; // 8 bytes = 16 hex chars (span_id); use 16 for trace_id
+  if (_crypto) return _crypto.randomBytes(n).toString('hex');
+  // Fallback for very old Node (should never happen in practice).
+  return Array.from({ length: n * 2 }, () => (Math.random() * 16 | 0).toString(16)).join('');
 }
+function genTraceId() { return genId(16); } // 128-bit trace id per W3C
+function genSpanId()  { return genId(8);  } // 64-bit span id per W3C
 
 function send(span) {
   try {
@@ -41,6 +47,7 @@ function send(span) {
     const mod = url.protocol === 'https:' ? https : http;
     const req = mod.request(opts);
     req.on('error', () => {});
+    req.on('timeout', () => { req.destroy(); }); // prevent socket leak on timeout
     req.write(body);
     req.end();
   } catch { /* never let tracing crash the app */ }
@@ -51,8 +58,8 @@ function patchOutgoing(mod) {
   const orig = mod.request.bind(mod);
   mod.request = function (options, cb) {
     const start = Date.now();
-    const tid   = genId();
-    const sid   = genId();
+    const tid   = genTraceId();
+    const sid   = genSpanId();
 
     let method = 'HTTP';
     let urlStr  = '';
@@ -121,8 +128,8 @@ function patchServer(mod) {
 
     const wrapped = function (req, res) {
       const start   = Date.now();
-      const tid     = req.headers['x-trace-id'] || req.headers['traceparent']?.split('-')[1] || genId();
-      const sid     = genId();
+      const tid     = req.headers['x-trace-id'] || req.headers['traceparent']?.split('-')[1] || genTraceId();
+      const sid     = genSpanId();
       const method  = (req.method || 'GET').toUpperCase();
       const urlStr  = req.url || '/';
 
@@ -187,8 +194,8 @@ if (typeof globalThis.fetch === 'function') {
   const origFetch = globalThis.fetch;
   globalThis.fetch = async function (input, init) {
     const start  = Date.now();
-    const tid    = genId();
-    const sid    = genId();
+    const tid    = genTraceId();
+    const sid    = genSpanId();
     const urlStr = typeof input === 'string' ? input : (input instanceof URL ? input.href : String(input));
     const method = ((init && init.method) || 'GET').toUpperCase();
     try {

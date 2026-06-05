@@ -6,6 +6,7 @@ import {
   Search, FileText, Container as ContainerIcon, HeartPulse, Server, CheckCircle2,
   Loader2, AlertCircle, RotateCcw, Rocket,
 } from 'lucide-react'
+import { useToast } from '../components/Toast'
 
 function duration(d: DeploymentRecord) {
   if (!d.finished_at) return '—'
@@ -136,6 +137,7 @@ function PipelineBar({ log, deploying }: { log: string[]; deploying: boolean }) 
 }
 
 export default function DeployPage() {
+  const toast = useToast()
   const { id } = useParams<{ id: string }>()
 
   const [deployments, setDeployments] = useState<DeploymentRecord[]>([])
@@ -265,7 +267,9 @@ export default function DeployPage() {
       setSettings(s)
       setSettingsSaved(true)
       setTimeout(() => setSettingsSaved(false), 2000)
-    } catch {}
+    } catch (e) {
+      toast.error('Failed to save settings: ' + (e instanceof Error ? e.message : 'unknown'))
+    }
     setSettingsSaving(false)
   }
 

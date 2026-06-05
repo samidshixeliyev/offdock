@@ -247,14 +247,16 @@ function TraceRow({ trace, idx }: TraceRowProps) {
   const [loadedTrace, setLoadedTrace] = useState<OTelTrace | null>(null)
   const [loading, setLoading] = useState(false)
 
+  if (trace.spans.length === 0) return null
   const root = getRootSpan(trace)
   const service = getServiceForSpan(root, trace)
   const isErr = traceHasError(trace)
   const colorIdx = serviceColorIdx(service)
-  const totalDuration = trace.spans.reduce((max, s) => {
-    const end = s.startTime + s.duration
-    return end > max ? end : max
-  }, 0) - root.startTime
+  // Use earliest span start (not root.startTime) to avoid negative durations
+  // when root span is not the earliest in the trace.
+  const traceStartTime = Math.min(...trace.spans.map(s => s.startTime))
+  const traceEndTime = Math.max(...trace.spans.map(s => s.startTime + s.duration))
+  const totalDuration = Math.max(0, traceEndTime - traceStartTime)
 
   const toggle = async () => {
     if (!open && !loadedTrace) {

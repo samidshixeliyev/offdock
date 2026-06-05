@@ -234,9 +234,9 @@ export default function SystemPage() {
             </div>
           )}
           <div className="flex justify-between mt-2 text-xs text-slate-600">
-            <span>Min {Math.min(...history).toFixed(1)}%</span>
+            <span>Min {history.length ? Math.min(...history).toFixed(1) : 0}%</span>
             <span>Avg {history.length ? (history.reduce((a, b) => a + b, 0) / history.length).toFixed(1) : 0}%</span>
-            <span>Max {Math.max(...history).toFixed(1)}%</span>
+            <span>Max {history.length ? Math.max(...history).toFixed(1) : 0}%</span>
           </div>
         </div>
 
