@@ -237,10 +237,20 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		return fail(fmt.Errorf("build env file: %w", err))
 	}
 	// Inject OpenTelemetry env vars if auto-instrumentation is enabled.
-	// The endpoint always points to the local Jaeger instance installed by install.sh.
+	// Only inject JAVA_TOOL_OPTIONS if the agent JAR actually exists on the host —
+	// a missing/directory JAR crashes JVM containers on startup.
+	const otelAgentPath = "/var/offdock/otel/opentelemetry-javaagent.jar"
 	if settings.OTelEnabled {
-		envContent = appendOTelEnv(envContent, project.Name)
-		appendLog("  OpenTelemetry enabled — injecting OTEL_* env vars + compose overlay")
+		jarOK := false
+		if info, err := os.Stat(otelAgentPath); err == nil && !info.IsDir() && info.Size() > 0 {
+			jarOK = true
+		}
+		envContent = appendOTelEnv(envContent, project.Name, jarOK)
+		if jarOK {
+			appendLog("  OpenTelemetry enabled — OTEL_* env vars + Java agent injected")
+		} else {
+			appendLog("  OpenTelemetry enabled — OTEL_* env vars injected (Java agent JAR not found, skipping volume mount)")
+		}
 	}
 	if err := atomicWrite(filepath.Join(projectDir, ".env"), []byte(envContent)); err != nil {
 		return fail(fmt.Errorf("write .env: %w", err))
@@ -257,11 +267,14 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	// when auto-instrumentation is enabled.
 	otelOverridePath := ""
 	if settings.OTelEnabled {
-		overridePath := filepath.Join(projectDir, ".otel-override.yml")
-		if err := writeOTelComposeOverride(composePath, overridePath); err != nil {
-			appendLog("  WARNING: could not generate OTel compose override: %v", err)
-		} else {
-			otelOverridePath = overridePath
+		// Only generate the compose override (volume mount) if the agent JAR is a real file.
+		if info, err := os.Stat(otelAgentPath); err == nil && !info.IsDir() && info.Size() > 0 {
+			overridePath := filepath.Join(projectDir, ".otel-override.yml")
+			if err := writeOTelComposeOverride(composePath, overridePath); err != nil {
+				appendLog("  WARNING: could not generate OTel compose override: %v", err)
+			} else {
+				otelOverridePath = overridePath
+			}
 		}
 	}
 
@@ -383,18 +396,25 @@ func (e *Engine) buildEnvFile(set *store.EnvVarSet) (string, error) {
 // The OTLP endpoint points to OffDock itself at the host's LAN IP so containers
 // can reach it via the extra_hosts entry written by writeOTelComposeOverride.
 // No configuration needed — everything is auto-wired.
-func appendOTelEnv(envContent, projectName string) string {
-	endpoint := fmt.Sprintf("http://host.docker.internal:7070/v1/traces")
+// appendOTelEnv adds OTEL_* vars to the .env file.
+// jarOK: only set JAVA_TOOL_OPTIONS when the agent JAR is confirmed present on
+// the host — injecting it when the file is missing (or a directory) crashes
+// every Java container on startup with "Error opening zip file".
+func appendOTelEnv(envContent, projectName string, jarOK bool) string {
 	var sb strings.Builder
 	sb.WriteString(envContent)
 	sb.WriteString("\n# OpenTelemetry — injected by OffDock (do not edit)\n")
-	sb.WriteString("OTEL_EXPORTER_OTLP_ENDPOINT=" + endpoint + "\n")
+	sb.WriteString("OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:7070/v1/traces\n")
 	sb.WriteString("OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n")
 	sb.WriteString("OTEL_SERVICE_NAME=" + projectName + "\n")
 	sb.WriteString("OTEL_TRACES_SAMPLER=parentbased_traceidratio\n")
 	sb.WriteString("OTEL_TRACES_SAMPLER_ARG=1.0\n")
 	sb.WriteString("OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production\n")
-	sb.WriteString("JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar\n")
+	// Only add JAVA_TOOL_OPTIONS if the agent JAR file is confirmed to exist.
+	// A missing or directory path at /otel/opentelemetry-javaagent.jar crashes JVM init.
+	if jarOK {
+		sb.WriteString("JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar\n")
+	}
 	return sb.String()
 }
 
