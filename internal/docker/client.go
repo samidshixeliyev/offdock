@@ -540,3 +540,85 @@ func (c *Client) ComposePS(ctx context.Context, project, composePath string) ([]
 	}
 	return result, nil
 }
+
+// ─── Disk usage + image prune ────────────────────────────────────────────────
+
+// DiskUsageRow is one row from docker system df output.
+type DiskUsageRow struct {
+	Type        string `json:"type"`
+	Total       string `json:"total"`
+	Active      string `json:"active"`
+	Size        string `json:"size"`
+	Reclaimable string `json:"reclaimable"`
+}
+
+// SystemDiskUsage runs docker system df and returns per-type disk usage.
+func (c *Client) SystemDiskUsage() ([]DiskUsageRow, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "system", "df")
+	if err != nil {
+		return nil, err
+	}
+	return parseDFOutput(out), nil
+}
+
+// parseDFOutput converts docker system df plain-text into typed rows.
+// Handles multi-word types like "Local Volumes" by splitting on ≥2 spaces.
+func parseDFOutput(out string) []DiskUsageRow {
+	var rows []DiskUsageRow
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.HasPrefix(line, "TYPE") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := splitOnMultiSpace(line)
+		if len(parts) < 4 {
+			continue
+		}
+		row := DiskUsageRow{Type: parts[0], Total: parts[1], Active: parts[2], Size: parts[3]}
+		if len(parts) > 4 {
+			row.Reclaimable = parts[4]
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func splitOnMultiSpace(s string) []string {
+	var parts []string
+	cur := ""
+	spaces := 0
+	for _, ch := range s {
+		if ch == ' ' {
+			spaces++
+			if spaces >= 2 {
+				if t := strings.TrimSpace(cur); t != "" {
+					parts = append(parts, t)
+					cur = ""
+				}
+				spaces = 0
+			} else {
+				cur += string(ch)
+			}
+		} else {
+			spaces = 0
+			cur += string(ch)
+		}
+	}
+	if t := strings.TrimSpace(cur); t != "" {
+		parts = append(parts, t)
+	}
+	return parts
+}
+
+// PruneImages removes dangling Docker images (all=false) or all images not
+// referenced by any running container (all=true).
+func (c *Client) PruneImages(all bool) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	args := []string{"image", "prune", "-f"}
+	if all {
+		args = append(args, "-a")
+	}
+	return run(ctx, args...)
+}

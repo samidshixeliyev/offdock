@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -41,7 +42,35 @@ func main() {
 	if cfg.LogLevel == "debug" {
 		logLevel = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
+
+	// Dual-output logging: stdout (captured by journald when run under systemd)
+	// + rotate-safe log file (for non-systemd environments and log viewers).
+	logOpts := &slog.HandlerOptions{
+		Level: logLevel,
+		// Add source file:line for Error and above to aid debugging.
+		AddSource: logLevel == slog.LevelDebug,
+	}
+	var logWriter io.Writer = os.Stdout
+	if cfg.LogDir != "" {
+		if err := os.MkdirAll(cfg.LogDir, 0o700); err == nil {
+			if lf, err := os.OpenFile(
+				filepath.Join(cfg.LogDir, "offdock.log"),
+				os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600,
+			); err == nil {
+				defer lf.Close()
+				logWriter = io.MultiWriter(os.Stdout, lf)
+			}
+		}
+	}
+	// JSON format: structured, parseable by log aggregators (journald, ELK, etc.).
+	// Use text format only when log_level=debug for human-readable dev output.
+	var logHandler slog.Handler
+	if cfg.LogLevel == "debug" {
+		logHandler = slog.NewTextHandler(logWriter, logOpts)
+	} else {
+		logHandler = slog.NewJSONHandler(logWriter, logOpts)
+	}
+	slog.SetDefault(slog.New(logHandler))
 
 	db, err := store.Open(cfg.DataDir)
 	if err != nil {
@@ -123,6 +152,8 @@ func main() {
 		ClaimEmail:    cfg.OAuthClaimEmail,
 		ClaimUsername: cfg.OAuthClaimUsername,
 		ClaimName:     cfg.OAuthClaimName,
+		ClaimFirst:    cfg.OAuthClaimFirst,
+		ClaimLast:     cfg.OAuthClaimLast,
 		CACertFile:    cfg.OAuthCACertFile,
 		TLSSkipVerify: cfg.OAuthTLSSkipVerify,
 	}

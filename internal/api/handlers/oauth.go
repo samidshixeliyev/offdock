@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -90,20 +91,22 @@ func (h *H) OAuthLogout(w http.ResponseWriter, r *http.Request) {
 // GetOAuthSettings returns current OAuth2 configuration (secret masked).
 func (h *H) GetOAuthSettings(w http.ResponseWriter, r *http.Request) {
 	s := h.oauthSettings
-	claimSub, claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
+	claimSub, claimEmail, claimUsername, claimName, claimFirst, claimLast := s.EffectiveClaimNames()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":          s.Enabled,
-		"issuer":           s.Issuer,
-		"client_id":        s.ClientID,
-		"secret_set":       s.ClientSecret != "",
-		"redirect_uri":     s.RedirectURI,
-		"scope":            s.Scope,
-		"claim_sub":        claimSub,
-		"claim_email":      claimEmail,
-		"claim_username":   claimUsername,
-		"claim_name":       claimName,
-		"ca_cert_file":     s.CACertFile,
-		"tls_skip_verify":  s.TLSSkipVerify,
+		"enabled":         s.Enabled,
+		"issuer":          s.Issuer,
+		"client_id":       s.ClientID,
+		"secret_set":      s.ClientSecret != "",
+		"redirect_uri":    s.RedirectURI,
+		"scope":           s.Scope,
+		"claim_sub":       claimSub,
+		"claim_email":     claimEmail,
+		"claim_username":  claimUsername,
+		"claim_name":      claimName,
+		"claim_first":     claimFirst,
+		"claim_last":      claimLast,
+		"ca_cert_file":    s.CACertFile,
+		"tls_skip_verify": s.TLSSkipVerify,
 	})
 }
 
@@ -120,6 +123,8 @@ func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 		ClaimEmail    string `json:"claim_email"`
 		ClaimUsername string `json:"claim_username"`
 		ClaimName     string `json:"claim_name"`
+		ClaimFirst    string `json:"claim_first"`
+		ClaimLast     string `json:"claim_last"`
 		CACertFile    string `json:"ca_cert_file"`
 		TLSSkipVerify bool   `json:"tls_skip_verify"`
 	}
@@ -151,6 +156,8 @@ func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 		ClaimEmail:    req.ClaimEmail,
 		ClaimUsername: req.ClaimUsername,
 		ClaimName:     req.ClaimName,
+		ClaimFirst:    req.ClaimFirst,
+		ClaimLast:     req.ClaimLast,
 		CACertFile:    req.CACertFile,
 		TLSSkipVerify: req.TLSSkipVerify,
 	}
@@ -487,10 +494,12 @@ func (h *H) fetchUserInfo(accessToken string) (*oauthClaims, error) {
 }
 
 // mapClaims converts a raw claims map to oauthClaims using the configured field names.
+// Uses fallback chains for email and display name to handle AO ID LDAP claims
+// (mail/cn/givenName/sn/uid) as well as standard OIDC claims (email/name/preferred_username).
 func (h *H) mapClaims(raw map[string]interface{}) (*oauthClaims, error) {
-	claimSub, claimEmail, claimUsername, claimName := h.oauthSettings.EffectiveClaimNames()
+	claimSub, claimEmail, claimUsername, claimName, claimFirst, claimLast := h.oauthSettings.EffectiveClaimNames()
 
-	strClaim := func(key string) string {
+	str := func(key string) string {
 		if v, ok := raw[key]; ok {
 			if s, ok := v.(string); ok {
 				return strings.TrimSpace(s)
@@ -498,12 +507,35 @@ func (h *H) mapClaims(raw map[string]interface{}) (*oauthClaims, error) {
 		}
 		return ""
 	}
+	firstNonEmpty := func(vals ...string) string {
+		for _, v := range vals {
+			if v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+
+	sub := str(claimSub)
+
+	// Email: try configured claim → OIDC "email" fallback → sub as last resort.
+	email := firstNonEmpty(str(claimEmail), str("email"), sub)
+
+	// Username: try configured claim → OIDC "preferred_username" → sub.
+	username := firstNonEmpty(str(claimUsername), str("preferred_username"), sub)
+
+	// Display name: try full-name claim (cn) → compose from first+last (givenName+sn)
+	// → username claim (uid) → OIDC preferred_username.
+	givenName := str(claimFirst)
+	surname := str(claimLast)
+	composedName := strings.TrimSpace(givenName + " " + surname)
+	displayName := firstNonEmpty(str(claimName), composedName, str(claimUsername), str("preferred_username"))
 
 	c := &oauthClaims{
-		Sub:         strClaim(claimSub),
-		Email:       strClaim(claimEmail),
-		Username:    strClaim(claimUsername),
-		DisplayName: strClaim(claimName),
+		Sub:         sub,
+		Email:       email,
+		Username:    username,
+		DisplayName: displayName,
 		Raw:         raw,
 	}
 	if c.Sub == "" {
@@ -521,11 +553,19 @@ func (h *H) upsertOAuthUser(claims *oauthClaims) (*store.User, error) {
 	})
 	if len(matches) > 0 {
 		u := matches[0]
-		u.Email = claims.Email
+		// Refresh mutable attributes from IdP on every login.
+		if claims.Email != "" {
+			u.Email = claims.Email
+		}
+		if claims.Username != "" && claims.Username != u.Username {
+			// Username changed at the IdP (e.g. uid claim updated) — sync it.
+			u.Username = claims.Username
+		}
 		u.UpdatedAt = timeNow()
 		if err := h.db.Users.Save(u); err != nil {
 			return nil, err
 		}
+		slog.Info("oauth_login_refresh", "user_id", u.ID, "username", u.Username, "provider", u.OAuthProvider)
 		return &u, nil
 	}
 
@@ -581,19 +621,21 @@ func updateOAuthConfigYAML(s store.OAuthSettings) error {
 		return err
 	}
 
-	claimSub, claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
+	claimSub, claimEmail, claimUsername, claimName, claimFirst, claimLast := s.EffectiveClaimNames()
 	updates := map[string]string{
-		"oauth_enabled":          boolStr(s.Enabled),
-		"oauth_issuer":           s.Issuer,
-		"oauth_client_id":        s.ClientID,
-		"oauth_redirect_uri":     s.RedirectURI,
-		"oauth_scope":            s.Scope,
-		"oauth_claim_sub":        claimSub,
-		"oauth_claim_email":      claimEmail,
-		"oauth_claim_username":   claimUsername,
-		"oauth_claim_name":       claimName,
-		"oauth_ca_cert_file":     s.CACertFile,
-		"oauth_tls_skip_verify":  boolStr(s.TLSSkipVerify),
+		"oauth_enabled":         boolStr(s.Enabled),
+		"oauth_issuer":          s.Issuer,
+		"oauth_client_id":       s.ClientID,
+		"oauth_redirect_uri":    s.RedirectURI,
+		"oauth_scope":           s.Scope,
+		"oauth_claim_sub":       claimSub,
+		"oauth_claim_email":     claimEmail,
+		"oauth_claim_username":  claimUsername,
+		"oauth_claim_name":      claimName,
+		"oauth_claim_first":     claimFirst,
+		"oauth_claim_last":      claimLast,
+		"oauth_ca_cert_file":    s.CACertFile,
+		"oauth_tls_skip_verify": boolStr(s.TLSSkipVerify),
 	}
 	if s.ClientSecret != "" {
 		updates["oauth_client_secret"] = s.ClientSecret

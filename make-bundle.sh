@@ -17,6 +17,7 @@
 #     debs/            ← only in --full bundles
 #       docker/*.deb
 #       nginx/*.deb
+#       tcpdump/*.deb  ← tcpdump + libpcap0.8 + libdbus-1-3
 #
 # Install on offline machine:
 #   tar -xzf offdock-*.tar.gz
@@ -82,31 +83,45 @@ echo "  ✓ install.sh, offdock.service, uninstall.sh"
 
 # ── Optional: deb packages (--full only) ─────────────────────────────────────
 if [[ $INCLUDE_DEBS -eq 1 ]]; then
-  mkdir -p "$BUNDLE_DIR/debs/docker" "$BUNDLE_DIR/debs/nginx"
+  mkdir -p "$BUNDLE_DIR/debs/docker" "$BUNDLE_DIR/debs/nginx" "$BUNDLE_DIR/debs/tcpdump"
 
-  # Search for pre-downloaded deb packages in common locations
-  DEBS_SRC=""
-  for candidate in \
-    "/home/ubuntu/offdock-offline/debs" \
-    "${SCRIPT_DIR}/../offdock-offline/debs" \
-    "${SCRIPT_DIR}/debs"; do
-    if [[ -d "${candidate}/docker" && -d "${candidate}/nginx" ]]; then
-      DEBS_SRC="$candidate"
-      break
+  # Search for pre-downloaded deb packages in common locations.
+  # Each component (docker, nginx, tcpdump) is located independently so a
+  # partial pre-download still produces a valid bundle for the components found.
+  find_debs() {
+    local component="$1"
+    for candidate in \
+      "${SCRIPT_DIR}/debs/${component}" \
+      "/home/ubuntu/offdock-offline/debs/${component}" \
+      "${SCRIPT_DIR}/../offdock-offline/debs/${component}"; do
+      if [[ -d "$candidate" ]] && ls "$candidate"/*.deb &>/dev/null 2>&1; then
+        echo "$candidate"
+        return
+      fi
+    done
+  }
+
+  _copy_debs() {
+    local component="$1" label="$2"
+    local src
+    src=$(find_debs "$component")
+    if [[ -n "$src" ]]; then
+      cp "${src}"/*.deb "$BUNDLE_DIR/debs/${component}/" 2>/dev/null || true
+      local count
+      count=$(ls "$BUNDLE_DIR/debs/${component}" 2>/dev/null | grep -c '\.deb$' || true)
+      echo "  ✓ ${label} debs: ${count} packages  (from ${src})"
+    else
+      echo "  WARNING: ${label} debs not found — run prepare-usb.sh on an internet machine to download them."
+      rmdir "$BUNDLE_DIR/debs/${component}" 2>/dev/null || true
     fi
-  done
+  }
 
-  if [[ -n "$DEBS_SRC" ]]; then
-    cp "${DEBS_SRC}/docker"/*.deb "$BUNDLE_DIR/debs/docker/" 2>/dev/null || true
-    cp "${DEBS_SRC}/nginx"/*.deb  "$BUNDLE_DIR/debs/nginx/"  2>/dev/null || true
-    echo "  ✓ Docker debs: $(ls "$BUNDLE_DIR/debs/docker" | wc -l) packages"
-    echo "  ✓ nginx debs:  $(ls "$BUNDLE_DIR/debs/nginx"  | wc -l) packages"
-  else
-    echo "  WARNING: deb packages not found — bundle will work for UI updates but"
-    echo "           cannot install Docker/nginx on an offline machine."
-    echo "           Run prepare-usb.sh on an internet machine first."
-    rmdir "$BUNDLE_DIR/debs/docker" "$BUNDLE_DIR/debs/nginx" "$BUNDLE_DIR/debs"
-  fi
+  _copy_debs docker  "Docker"
+  _copy_debs nginx   "nginx"
+  _copy_debs tcpdump "tcpdump"
+
+  # Remove empty debs/ dir if no component was found at all.
+  rmdir "$BUNDLE_DIR/debs" 2>/dev/null || true
 else
   echo "  ℹ  Skipping deb packages (UI-update bundle). Use --full for fresh-install bundle."
 fi

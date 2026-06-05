@@ -6,7 +6,7 @@ import {
   Radio, Globe, Database, Zap, Activity, RefreshCw,
   Trash2, ChevronDown, ChevronRight, Filter, X,
   Container as ContainerIcon, Play, Square, History, ArrowLeft,
-  Network, BarChart2, ArrowRight,
+  Network, BarChart2, ArrowRight, AlertTriangle, Menu, ShieldCheck,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -327,7 +327,7 @@ function TransactionRow({ tx, maxDuration }: { tx: Transaction; maxDuration: num
         </span>
 
         {/* Timestamp */}
-        <span className="text-slate-600 w-20 shrink-0 tabular-nums">{tx.time}</span>
+        <span className="text-slate-600 w-20 shrink-0 tabular-nums hidden sm:inline">{tx.time}</span>
 
         {/* Colored dot + method badge */}
         <span className={clsx('w-2 h-2 rounded-full shrink-0', methodDotColor(tx.method))} />
@@ -339,7 +339,7 @@ function TransactionRow({ tx, maxDuration }: { tx: Transaction; maxDuration: num
         <span className="text-slate-200 truncate flex-1 min-w-0" title={tx.path}>{tx.path}</span>
 
         {/* Nested span counts */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="hidden sm:flex items-center gap-1.5 shrink-0">
           {sqlCount > 0 && (
             <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
               <Database className="w-2.5 h-2.5" />{sqlCount}
@@ -364,7 +364,7 @@ function TransactionRow({ tx, maxDuration }: { tx: Transaction; maxDuration: num
         </span>
 
         {/* Duration bar (waterfall) */}
-        <div className="w-28 shrink-0 h-3.5 rounded bg-slate-800/40 overflow-hidden relative">
+        <div className="w-28 shrink-0 h-3.5 rounded bg-slate-800/40 overflow-hidden relative hidden sm:block">
           {dur > 0 && (
             <div
               className={clsx('h-full rounded transition-all', durationBarColor(dur))}
@@ -441,13 +441,13 @@ function WaterfallBody({ transactions, filter }: { transactions: Transaction[]; 
     <>
       <div className="flex items-center gap-3 px-4 py-1.5 border-b border-slate-800 shrink-0 bg-slate-900/20 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
         <span className="w-3.5 shrink-0" />
-        <span className="w-20 shrink-0">Time</span>
+        <span className="w-20 shrink-0 hidden sm:inline">Time</span>
         <span className="w-2 shrink-0" />
         <span className="w-16 shrink-0 text-center">Method</span>
         <span className="flex-1 min-w-0">Path</span>
-        <span className="shrink-0">Spans</span>
+        <span className="shrink-0 hidden sm:inline">Spans</span>
         <span className="w-12 shrink-0 text-right">Status</span>
-        <span className="w-28 shrink-0">Timeline</span>
+        <span className="w-28 shrink-0 hidden sm:block">Timeline</span>
         <span className="w-14 shrink-0 text-right">Duration</span>
       </div>
       <div className="flex-1 overflow-y-auto min-h-0 bg-slate-950/50">
@@ -564,7 +564,7 @@ function SessionReplayPanel({ sessionId, onBack }: { sessionId: string; onBack: 
 
 // ─── Sessions list panel ──────────────────────────────────────────────────────
 
-function SessionsListPanel({ onOpen }: { onOpen: (id: string) => void }) {
+function SessionsListPanel({ onOpen, onOpenSidebar }: { onOpen: (id: string) => void; onOpenSidebar: () => void }) {
   const toast = useToast()
   const [sessions, setSessions] = useState<TraceSessionSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -598,6 +598,9 @@ function SessionsListPanel({ onOpen }: { onOpen: (id: string) => void }) {
     <div className="flex flex-col h-full min-h-0">
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800 shrink-0">
         <div className="flex items-center gap-2">
+          <button onClick={onOpenSidebar} className="md:hidden p-1.5 -ml-1.5 rounded hover:bg-slate-800 text-slate-400 shrink-0" title="Sessions menu">
+            <Menu className="w-4 h-4" />
+          </button>
           <History className="w-4 h-4 text-indigo-400" />
           <span className="text-sm font-semibold text-slate-200">Saved trace sessions</span>
         </div>
@@ -606,7 +609,7 @@ function SessionsListPanel({ onOpen }: { onOpen: (id: string) => void }) {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div className="flex-1 overflow-y-auto overflow-x-auto min-h-0">
         {loading ? (
           <div className="py-12 text-center text-slate-600 text-sm">Loading…</div>
         ) : sessions.length === 0 ? (
@@ -616,7 +619,7 @@ function SessionsListPanel({ onOpen }: { onOpen: (id: string) => void }) {
             <p className="text-xs">Run a live trace — it is saved automatically when you stop.</p>
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[640px] text-sm">
             <thead className="sticky top-0 bg-slate-900 z-10">
               <tr className="border-b border-slate-800 text-[10px] uppercase tracking-wider text-slate-600">
                 <th className="text-left px-4 py-2.5 font-medium">Container</th>
@@ -670,13 +673,71 @@ function SessionsListPanel({ onOpen }: { onOpen: (id: string) => void }) {
   )
 }
 
+// ─── Trace requirements + error card ──────────────────────────────────────────
+
+const TRACE_REQUIREMENTS: { label: string; detail: string }[] = [
+  { label: 'tcpdump installed', detail: 'Run "which tcpdump" on the host — install the tcpdump package if missing.' },
+  { label: 'Root or CAP_NET_RAW', detail: 'OffDock must run as root or the service needs the CAP_NET_RAW capability.' },
+  { label: 'Bridge networking', detail: 'The container must use a Docker bridge network, not --network host.' },
+]
+
+function TraceErrorCard({ message, permanent }: { message: string; permanent: boolean }) {
+  return (
+    <div className="w-full rounded-xl border border-red-500/30 bg-red-500/5 p-4">
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-red-300">
+            {permanent ? 'Tracing cannot start' : 'Trace connection lost'}
+          </p>
+          <p className="text-xs text-red-200/80 mt-1 break-words font-mono leading-relaxed">{message}</p>
+          <div className="mt-3 space-y-1.5">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Requirements checklist</p>
+            {TRACE_REQUIREMENTS.map(req => (
+              <div key={req.label} className="flex items-start gap-2 text-xs">
+                <ShieldCheck className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                <span className="text-slate-300">
+                  <span className="font-medium">{req.label}</span>
+                  <span className="text-slate-500"> — {req.detail}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Live trace panel (waterfall + stats) ─────────────────────────────────────
 
 type PanelTab = 'waterfall' | 'graph' | 'sql'
 
-function LiveTracePanel({ container, onStop }: { container: string; onStop: () => void }) {
+const MAX_RECONNECTS = 5
+const RECONNECT_DELAY_MS = 3000
+
+function isPermanentTraceError(msg: string): boolean {
+  const m = msg.toLowerCase()
+  return (
+    m.includes('tcpdump failed to start') ||
+    m.includes('tcpdump not found') ||
+    m.includes('executable file not found') ||
+    m.includes('cap_net_raw') ||
+    m.includes('permission denied') ||
+    m.includes('could not find container network') ||
+    m.includes('host networking') ||
+    m.includes('is not running') ||
+    m.includes('non-standard bridge')
+  )
+}
+
+function LiveTracePanel({ container, onStop, onOpenSidebar }: { container: string; onStop: () => void; onOpenSidebar: () => void }) {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [status, setStatus] = useState<'connecting' | 'live' | 'error'>('connecting')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [permanent, setPermanent] = useState(false)
+  const [reconnectKey, setReconnectKey] = useState(0)
+  const [retryCount, setRetryCount] = useState(0)
   const [filter, setFilter] = useState<FilterMode>('all')
   const [panelTab, setPanelTab] = useState<PanelTab>('waterfall')
   const [autoScroll, setAutoScroll] = useState(true)
@@ -684,21 +745,73 @@ function LiveTracePanel({ container, onStop }: { container: string; onStop: () =
   const esRef = useRef<EventSource | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const idRef = useRef(0)
+  const permanentErrorRef = useRef(false)
+  const retriesRef = useRef(0)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Running tally of all response times (kept outside React state to avoid re-deriving every render).
   const respStatsRef = useRef<{ count: number; totalMs: number }>({ count: 0, totalMs: 0 })
   const [respStats, setRespStats] = useState<{ count: number; totalMs: number }>({ count: 0, totalMs: 0 })
 
   useEffect(() => {
+    // Reset permanent-error and retry state on every new connection attempt
+    // (including container changes) so a previous failure doesn't block a new trace.
+    permanentErrorRef.current = false
+    retriesRef.current = 0
+    setRetryCount(0)
+    setErrorMsg(null)
+    setPermanent(false)
+
+    setStatus('connecting')
     const es = new EventSource(api.traceUrl(container))
     esRef.current = es
 
-    es.onopen = () => setStatus('live')
-    es.onerror = () => { setStatus('error'); es.close() }
+    es.onopen = () => {
+      setStatus('live')
+      retriesRef.current = 0
+      setRetryCount(0)
+    }
+
+    es.onerror = () => {
+      es.close()
+      esRef.current = null
+      if (permanentErrorRef.current) {
+        setStatus('error')
+        return
+      }
+      if (retriesRef.current >= MAX_RECONNECTS) {
+        setStatus('error')
+        const baseMsg = `connection lost — gave up after ${MAX_RECONNECTS} retries`
+        setErrorMsg(prev => prev ?? baseMsg)
+        // After exhausting retries, check auth — Keycloak/OAuth sessions may have
+        // expired, causing a 401 that EventSource reports as a generic onerror.
+        api.me().catch(() => {
+          window.location.href = '/login'
+        })
+        return
+      }
+      retriesRef.current += 1
+      setRetryCount(retriesRef.current)
+      setStatus('connecting')
+      reconnectTimerRef.current = setTimeout(() => setReconnectKey(k => k + 1), RECONNECT_DELAY_MS)
+    }
+
     es.onmessage = (msg) => {
       try {
         const data = JSON.parse(msg.data) as TraceEvent
         const now = Date.now()
         const nextId = () => ++idRef.current
+
+        if (data.type === 'error' && data.message) {
+          setErrorMsg(data.message)
+          if (isPermanentTraceError(data.message)) {
+            permanentErrorRef.current = true
+            setPermanent(true)
+            setStatus('error')
+            es.close()
+            esRef.current = null
+          }
+          return
+        }
 
         if (data.type === 'http_resp' && data.duration_ms !== undefined && data.duration_ms > 0) {
           respStatsRef.current.count += 1
@@ -712,8 +825,12 @@ function LiveTracePanel({ container, onStop }: { container: string; onStop: () =
       }
     }
 
-    return () => { es.close(); esRef.current = null }
-  }, [container])
+    return () => {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      es.close()
+      esRef.current = null
+    }
+  }, [container, reconnectKey])
 
   useEffect(() => {
     if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -781,18 +898,27 @@ function LiveTracePanel({ container, onStop }: { container: string; onStop: () =
       <div className="px-4 py-3 border-b border-slate-800 shrink-0 bg-slate-900/40">
         <div className="flex items-center justify-between gap-3 mb-3">
           <div className="flex items-center gap-2 min-w-0">
+            <button onClick={onOpenSidebar} className="md:hidden p-1.5 -ml-1.5 rounded hover:bg-slate-800 text-slate-400 shrink-0" title="Containers">
+              <Menu className="w-4 h-4" />
+            </button>
             <span className={clsx('w-2 h-2 rounded-full shrink-0',
               status === 'live' ? 'bg-emerald-400 animate-pulse' : status === 'error' ? 'bg-red-400' : 'bg-amber-400 animate-pulse')} />
             <span className="text-sm font-mono text-slate-200 truncate">{container}</span>
             <span className={clsx('text-[10px] font-semibold uppercase tracking-wider shrink-0',
               status === 'live' ? 'text-emerald-400' : status === 'error' ? 'text-red-400' : 'text-amber-400')}>
-              {status === 'connecting' ? 'connecting' : status === 'live' ? 'live' : 'disconnected'}
+              {status === 'connecting' ? (retryCount > 0 ? `reconnecting ${retryCount}/${MAX_RECONNECTS}` : 'connecting') : status === 'live' ? 'live' : 'disconnected'}
             </span>
           </div>
           <button onClick={onStop} className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-700 text-slate-400 hover:text-red-400 hover:border-red-500/30 text-xs transition-colors shrink-0">
             <Square className="w-3 h-3" /> Stop trace
           </button>
         </div>
+
+        {status === 'error' && errorMsg && (
+          <div className="mb-3">
+            <TraceErrorCard message={errorMsg} permanent={permanent} />
+          </div>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
           <StatCard icon={Activity} label="Requests" value={String(stats.total)} color="text-blue-400" />
@@ -856,13 +982,13 @@ function LiveTracePanel({ container, onStop }: { container: string; onStop: () =
         {/* Waterfall column header */}
         <div className="flex items-center gap-3 px-4 py-1.5 border-b border-slate-800 shrink-0 bg-slate-900/20 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
           <span className="w-3.5 shrink-0" />
-          <span className="w-20 shrink-0">Time</span>
+          <span className="w-20 shrink-0 hidden sm:inline">Time</span>
           <span className="w-2 shrink-0" />
           <span className="w-16 shrink-0 text-center">Method</span>
           <span className="flex-1 min-w-0">Path</span>
-          <span className="shrink-0">Spans</span>
+          <span className="shrink-0 hidden sm:inline">Spans</span>
           <span className="w-12 shrink-0 text-right">Status</span>
-          <span className="w-28 shrink-0">Timeline</span>
+          <span className="w-28 shrink-0 hidden sm:block">Timeline</span>
           <span className="w-14 shrink-0 text-right">Duration</span>
         </div>
 
@@ -1191,6 +1317,7 @@ export default function TracingPage() {
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState<'live' | 'sessions'>('live')
   const [replaySessionId, setReplaySessionId] = useState<string | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const load = async () => {
     try {
@@ -1214,6 +1341,7 @@ export default function TracingPage() {
         await api.enableTrace(name)
         setTracedNames(prev => new Set([...prev, name]))
         setActiveTrace(name)
+        setSidebarOpen(false)
         toast.success(`Tracing enabled for ${name}`)
       } else {
         await api.disableTrace(name)
@@ -1227,18 +1355,35 @@ export default function TracingPage() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full overflow-hidden relative">
+      {/* Mobile backdrop */}
+      {sidebarOpen && (
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-30 md:hidden"
+        />
+      )}
+
       {/* Sidebar — container list */}
-      <aside className="w-72 border-r border-slate-800 flex flex-col shrink-0 bg-slate-900/30">
+      <aside className={clsx(
+        'w-72 border-r border-slate-800 flex flex-col shrink-0 bg-slate-900/95 md:bg-slate-900/30',
+        'fixed inset-y-0 left-0 z-40 transition-transform duration-300 ease-in-out md:relative md:translate-x-0',
+        sidebarOpen ? 'translate-x-0' : '-translate-x-full',
+      )}>
         <div className="px-4 py-3 border-b border-slate-800">
           <div className="flex items-center justify-between mb-3">
             <div>
               <p className="text-sm font-semibold text-slate-200">Request Tracing</p>
               <p className="text-xs text-slate-500 mt-0.5">HTTP · SQL · Redis</p>
             </div>
-            <button onClick={load} className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300">
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
+            <div className="flex items-center gap-1">
+              <button onClick={load} className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300">
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+              <button onClick={() => setSidebarOpen(false)} className="md:hidden p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
           <div className="flex items-center gap-0.5 p-0.5 bg-slate-950 border border-slate-800 rounded-lg">
             <button onClick={() => { setView('live') }}
@@ -1273,7 +1418,7 @@ export default function TracingPage() {
               return (
                 <div
                   key={c.ID}
-                  onClick={() => isEnabled && setActiveTrace(name)}
+                  onClick={() => { if (isEnabled) { setActiveTrace(name); setSidebarOpen(false) } }}
                   className={clsx(
                     'flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors border-b border-slate-800/40',
                     isActive ? 'bg-blue-950/30 border-l-2 border-l-blue-500' : 'hover:bg-slate-800/30',
@@ -1320,7 +1465,7 @@ export default function TracingPage() {
           </div>
         )}
 
-        {/* Legend */}
+        {/* Legend + system requirements */}
         {view === 'live' && <div className="px-4 py-3 border-t border-slate-800 space-y-1.5">
           <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Captured protocols</p>
           {[
@@ -1333,6 +1478,17 @@ export default function TracingPage() {
               {label}
             </div>
           ))}
+
+          <div className="mt-3 pt-2 border-t border-slate-800 space-y-1.5">
+            <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-1">System requirements</p>
+            {TRACE_REQUIREMENTS.map(req => (
+              <div key={req.label} className="flex items-start gap-2 text-[10px] text-slate-500">
+                <ShieldCheck className="w-3 h-3 text-amber-400 shrink-0 mt-0.5" />
+                <span><span className="text-slate-400 font-medium">{req.label}</span> — {req.detail}</span>
+              </div>
+            ))}
+          </div>
+
           <div className="mt-2 pt-2 border-t border-slate-800">
             <p className="text-[10px] text-slate-700 leading-relaxed">
               Requests are grouped into transactions; nested SQL & Redis spans within 500ms are correlated automatically. Encrypted (TLS) traffic is not visible.
@@ -1351,16 +1507,20 @@ export default function TracingPage() {
               onBack={() => setReplaySessionId(null)}
             />
           ) : (
-            <SessionsListPanel onOpen={id => setReplaySessionId(id)} />
+            <SessionsListPanel onOpen={id => setReplaySessionId(id)} onOpenSidebar={() => setSidebarOpen(true)} />
           )
         ) : activeTrace ? (
           <LiveTracePanel
             key={activeTrace}
             container={activeTrace}
             onStop={() => handleToggle(activeTrace, false)}
+            onOpenSidebar={() => setSidebarOpen(true)}
           />
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center gap-4 text-slate-600 p-8">
+          <div className="flex-1 flex flex-col items-center justify-center gap-4 text-slate-600 p-8 relative">
+            <button onClick={() => setSidebarOpen(true)} className="md:hidden absolute top-4 left-4 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-800 text-slate-400 text-xs">
+              <Menu className="w-4 h-4" /> Containers
+            </button>
             <div className="w-16 h-16 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center">
               <Activity className="w-8 h-8" />
             </div>

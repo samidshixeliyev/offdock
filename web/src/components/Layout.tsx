@@ -1,10 +1,11 @@
+import { useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import clsx from 'clsx'
 import {
   LayoutDashboard, Boxes, Container, Globe, Network, HardDrive, FolderTree,
   Cpu, TerminalSquare, Activity, ScrollText, Users, LogOut, ChevronRight,
-  MapPin, Settings, Radio,
+  MapPin, Settings, Radio, FileText, Menu,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -26,8 +27,9 @@ const navSystem: NavItem[] = [
   { to: '/dns',      label: 'DNS',       icon: MapPin },
   { to: '/audit',    label: 'Audit Log', icon: ScrollText },
   { to: '/users',    label: 'Users',     icon: Users },
-  { to: '/tracing',  label: 'Tracing',   icon: Radio },
-  { to: '/settings', label: 'Settings',  icon: Settings },
+  { to: '/tracing',   label: 'Tracing',   icon: Radio },
+  { to: '/app-logs',  label: 'App Logs',  icon: FileText },
+  { to: '/settings',  label: 'Settings',  icon: Settings },
 ]
 
 function breadcrumbFor(pathname: string): string {
@@ -60,12 +62,13 @@ function RoleBadge({ role }: { role: string }) {
   )
 }
 
-function SidebarLink({ item, delay }: { item: NavItem; delay: number }) {
+function SidebarLink({ item, delay, onNavigate }: { item: NavItem; delay: number; onNavigate?: () => void }) {
   const Icon = item.icon
   return (
     <NavLink
       to={item.to}
       end={item.end}
+      onClick={onNavigate}
       style={{ animationDelay: `${delay}ms` }}
       className={({ isActive }) =>
         clsx(
@@ -90,19 +93,34 @@ export default function Layout() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   const handleLogout = async () => {
     await logout()
     navigate('/login')
   }
 
+  const closeSidebar = () => setSidebarOpen(false)
   const crumb = breadcrumbFor(location.pathname)
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-950">
-      <aside className="w-64 bg-slate-950 border-r border-slate-800/50 flex flex-col shrink-0">
+      {/* Mobile backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-30 md:hidden"
+          onClick={closeSidebar}
+        />
+      )}
+
+      <aside className={clsx(
+        'w-64 bg-slate-950 border-r border-slate-800/50 flex flex-col shrink-0',
+        'fixed inset-y-0 left-0 z-40 transition-transform duration-300 ease-in-out',
+        'md:relative md:translate-x-0',
+        sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
+      )}>
         <div className="px-5 py-5 border-b border-slate-800/50">
-          <Link to="/" className="flex items-center gap-2.5 group">
+          <Link to="/" className="flex items-center gap-2.5 group" onClick={closeSidebar}>
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/30 group-hover:shadow-blue-500/50 transition-shadow duration-300">
               <Container className="w-5 h-5 text-white" />
             </div>
@@ -121,13 +139,13 @@ export default function Layout() {
           <div>
             <p className="px-3 mb-2 text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Main</p>
             <div className="space-y-1">
-              {navMain.map((item, i) => <SidebarLink key={item.to} item={item} delay={30 + i * 30} />)}
+              {navMain.map((item, i) => <SidebarLink key={item.to} item={item} delay={30 + i * 30} onNavigate={closeSidebar} />)}
             </div>
           </div>
           <div>
             <p className="px-3 mb-2 text-[10px] font-semibold text-slate-600 uppercase tracking-widest">System</p>
             <div className="space-y-1">
-              {navSystem.map((item, i) => <SidebarLink key={item.to} item={item} delay={30 + (navMain.length + i) * 30} />)}
+              {navSystem.map((item, i) => <SidebarLink key={item.to} item={item} delay={30 + (navMain.length + i) * 30} onNavigate={closeSidebar} />)}
             </div>
           </div>
         </nav>
@@ -152,12 +170,19 @@ export default function Layout() {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-hidden flex flex-col min-h-0 bg-slate-950">
-        <header className="h-14 border-b border-slate-800/50 bg-slate-950/80 backdrop-blur flex items-center px-6 shrink-0">
-          <div className="flex items-center gap-2 text-sm">
-            <Link to="/" className="text-slate-500 hover:text-slate-300 transition-colors">OffDock</Link>
-            <ChevronRight className="w-3.5 h-3.5 text-slate-700" />
-            <span className="text-slate-200 font-medium">{crumb}</span>
+      <main className="flex-1 overflow-hidden flex flex-col min-h-0 bg-slate-950 w-0 md:w-auto">
+        <header className="h-14 border-b border-slate-800/50 bg-slate-950/80 backdrop-blur flex items-center px-4 md:px-6 shrink-0 gap-3">
+          <button
+            onClick={() => setSidebarOpen(s => !s)}
+            className="md:hidden p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors shrink-0"
+            aria-label="Open navigation"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div className="flex items-center gap-2 text-sm min-w-0">
+            <Link to="/" className="text-slate-500 hover:text-slate-300 transition-colors shrink-0">OffDock</Link>
+            <ChevronRight className="w-3.5 h-3.5 text-slate-700 shrink-0" />
+            <span className="text-slate-200 font-medium truncate">{crumb}</span>
           </div>
         </header>
         <div className="flex-1 overflow-hidden flex flex-col min-h-0">

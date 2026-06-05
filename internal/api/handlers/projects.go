@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/go-chi/chi/v5"
 
@@ -98,6 +99,73 @@ func (h *H) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	cleanProjectRecords(h.db, id)
 	h.logAudit(r, "delete_project", "project", id, "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// CloneProject creates a new project by copying the name, latest compose
+// config, and latest env vars from an existing source project.
+func (h *H) CloneProject(w http.ResponseWriter, r *http.Request) {
+	srcID := chi.URLParam(r, "id")
+	src, err := h.db.Projects.FindByID(srcID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "source project not found")
+		return
+	}
+
+	var req struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	if err := decodeJSON(r, &req); err != nil || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	desc := req.Description
+	if desc == "" {
+		desc = "Cloned from " + src.Name
+	}
+	now := timeNow()
+	dst := store.Project{
+		ID:          store.NewULID(),
+		Name:        req.Name,
+		Description: desc,
+		Status:      store.ProjectStatusStopped,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := h.db.Projects.Save(dst); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not save project")
+		return
+	}
+
+	// Copy latest compose config.
+	if composes, _ := h.db.Compose.FindWhere(func(c store.ComposeConfig) bool {
+		return c.ProjectID == srcID
+	}); len(composes) > 0 {
+		sort.Slice(composes, func(i, j int) bool { return composes[i].Version > composes[j].Version })
+		c := composes[0]
+		c.ID = store.NewULID()
+		c.ProjectID = dst.ID
+		c.Version = 1
+		c.CreatedAt = now
+		h.db.Compose.Save(c) //nolint:errcheck
+	}
+
+	// Copy latest env vars.
+	if envs, _ := h.db.EnvVars.FindWhere(func(v store.EnvVarSet) bool {
+		return v.ProjectID == srcID
+	}); len(envs) > 0 {
+		sort.Slice(envs, func(i, j int) bool { return envs[i].Version > envs[j].Version })
+		e := envs[0]
+		e.ID = store.NewULID()
+		e.ProjectID = dst.ID
+		e.Version = 1
+		e.CreatedAt = now
+		h.db.EnvVars.Save(e) //nolint:errcheck
+	}
+
+	h.logAudit(r, "clone_project", "project", dst.ID, dst.Name, "cloned_from:"+src.Name)
+	writeJSON(w, http.StatusCreated, dst)
 }
 
 func cleanProjectRecords(db *store.DB, projectID string) {

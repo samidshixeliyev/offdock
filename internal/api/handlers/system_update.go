@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -18,20 +19,35 @@ import (
 
 // SystemUpdateStatus is the response to GET /api/v1/system/update/status.
 type SystemUpdateStatus struct {
-	CanUpdate   bool   `json:"can_update"`
-	InstallPath string `json:"install_path"` // e.g. /usr/local/bin/offdock
-	ScriptPath  string `json:"script_path"`  // install.sh path if found
+	CanUpdate      bool   `json:"can_update"`
+	CanRollback    bool   `json:"can_rollback"`    // true if a .bak binary exists
+	InstallPath    string `json:"install_path"`    // e.g. /usr/local/bin/offdock
+	BackupPath     string `json:"backup_path"`     // e.g. /usr/local/bin/offdock.bak
 }
 
-// GetSystemUpdateStatus returns whether the system supports self-update.
-func (h *H) GetSystemUpdateStatus(w http.ResponseWriter, r *http.Request) {
-	installPath, _ := exec.LookPath("offdock")
-	if installPath == "" {
-		installPath = "/usr/local/bin/offdock"
+// currentBinaryPath returns the absolute, symlink-resolved path of the running
+// offdock binary. Falls back to /usr/local/bin/offdock if detection fails.
+func currentBinaryPath() string {
+	if p, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(p); err == nil {
+			return resolved
+		}
+		return p
 	}
+	// Fallback: standard install location used by install.sh
+	return "/usr/local/bin/offdock"
+}
+
+// GetSystemUpdateStatus returns whether the system supports self-update and rollback.
+func (h *H) GetSystemUpdateStatus(w http.ResponseWriter, r *http.Request) {
+	installPath := currentBinaryPath()
+	bakPath := installPath + ".bak"
+	_, bakErr := os.Stat(bakPath)
 	writeJSON(w, http.StatusOK, SystemUpdateStatus{
 		CanUpdate:   true,
+		CanRollback: bakErr == nil,
 		InstallPath: installPath,
+		BackupPath:  bakPath,
 	})
 }
 
@@ -120,10 +136,23 @@ func (h *H) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 
 	send("info", "Binary validated — performing atomic replacement…")
 
-	// Atomic binary replacement: copy to .new then rename.
-	installPath := "/usr/local/bin/offdock"
+	// Atomic binary replacement with rollback support.
+	// Steps: (1) save old binary as .bak, (2) copy new to .new, (3) rename .new → install.
+	// If anything fails after step 1 we can restore from .bak.
+	installPath := currentBinaryPath()
 	newPath := installPath + ".new"
+	bakPath := installPath + ".bak"
 
+	// Step 1: save old binary for rollback.
+	if _, statErr := os.Stat(installPath); statErr == nil {
+		if cpErr := copyBinary(installPath, bakPath); cpErr != nil {
+			send("error", "Cannot back up existing binary: "+cpErr.Error())
+			return
+		}
+		send("info", "Previous binary saved as offdock.bak (rollback available).")
+	}
+
+	// Step 2: copy new binary to .new temp path.
 	input, err := os.Open(binaryPath)
 	if err != nil {
 		send("error", "Cannot open binary: "+err.Error())
@@ -144,6 +173,7 @@ func (h *H) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	output.Close()
 
+	// Step 3: atomic rename .new → install path.
 	if err := os.Rename(newPath, installPath); err != nil {
 		os.Remove(newPath)
 		send("error", "Rename failed: "+err.Error())
@@ -151,6 +181,7 @@ func (h *H) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	send("info", "Binary replaced — scheduling restart…")
+	slog.Info("system_update", "install_path", installPath, "file", header.Filename, "user", claims.Username)
 	h.logAudit(r, "system_update", "system", "", header.Filename, claims.Username)
 
 	// Schedule the restart in a fully detached child process so the restart
@@ -279,4 +310,127 @@ func validateBinary(path string) error {
 		return fmt.Errorf("not an ELF binary (wrong magic bytes)")
 	}
 	return nil
+}
+
+// CompactDB rewrites all store files removing tombstones + superseded records.
+// Safe to call online. Returns 200 with before/after byte counts.
+func (h *H) CompactDB(w http.ResponseWriter, r *http.Request) {
+	// Collect sizes before compaction.
+	before := dirSize(h.dataDir)
+
+	if err := h.db.Compact(); err != nil {
+		writeError(w, http.StatusInternalServerError, "compaction failed: "+err.Error())
+		return
+	}
+
+	after := dirSize(h.dataDir)
+	h.logAudit(r, "compact_db", "system", "", "", "")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "ok",
+		"bytes_before":  before,
+		"bytes_after":   after,
+		"bytes_freed":   before - after,
+	})
+}
+
+func dirSize(path string) int64 {
+	var total int64
+	filepath.Walk(path, func(_ string, info os.FileInfo, err error) error { //nolint:errcheck
+		if err == nil && !info.IsDir() {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// copyBinary copies src to dst, preserving file mode (used for update/rollback).
+func copyBinary(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+	return out.Close()
+}
+
+// SystemRollback restores the previous binary backup and restarts the service.
+// Only available to superadmin. Returns SSE progress.
+func (h *H) SystemRollback(w http.ResponseWriter, r *http.Request) {
+	claims := authmw.ClaimsFromContext(r.Context())
+	if claims == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	send := func(status, msg string) {
+		b, _ := json.Marshal(map[string]string{"status": status, "message": msg})
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
+
+	installPath := currentBinaryPath()
+	bakPath := installPath + ".bak"
+
+	if _, err := os.Stat(bakPath); err != nil {
+		send("error", "No rollback backup found (offdock.bak does not exist).")
+		return
+	}
+
+	if err := validateBinary(bakPath); err != nil {
+		send("error", "Backup binary is invalid: "+err.Error())
+		return
+	}
+
+	send("info", "Restoring previous binary…")
+	newPath := installPath + ".new"
+	if err := copyBinary(bakPath, newPath); err != nil {
+		send("error", "Cannot copy backup: "+err.Error())
+		return
+	}
+	if err := os.Rename(newPath, installPath); err != nil {
+		os.Remove(newPath)
+		send("error", "Rename failed: "+err.Error())
+		return
+	}
+
+	h.logAudit(r, "system_rollback", "system", "", bakPath, claims.Username)
+	send("info", "Binary restored — scheduling restart…")
+
+	restartScript := `sleep 2 && systemctl daemon-reload 2>/dev/null; systemctl restart offdock`
+	cmd := exec.Command("setsid", "sh", "-c", restartScript)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+	if err := cmd.Start(); err != nil {
+		fallback := exec.Command("sh", "-c",
+			`(sleep 2; systemctl daemon-reload 2>/dev/null; systemctl restart offdock) &`)
+		fallback.Start() //nolint:errcheck
+	}
+
+	send("success", "Rollback complete — service restarting in ~2 seconds. Reconnect shortly.")
 }

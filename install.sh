@@ -426,6 +426,26 @@ if [[ -d "${SCRIPT_DIR}/images" ]] && ls "${SCRIPT_DIR}/images"/*.tar &>/dev/nul
 fi
 
 # ============================================================================
+# INSTALL TCPDUMP (required for container network tracing)
+# ============================================================================
+echo ""
+echo "=== Checking tcpdump ==="
+if command -v tcpdump &>/dev/null; then
+  echo "  tcpdump already installed: $(tcpdump --version 2>&1 | head -1)"
+elif [[ -d "${SCRIPT_DIR}/debs/tcpdump" ]] && ls "${SCRIPT_DIR}/debs/tcpdump"/*.deb &>/dev/null 2>&1; then
+  echo "  Installing tcpdump from bundled packages..."
+  _install_debs_safe "${SCRIPT_DIR}/debs/tcpdump" "tcpdump"
+  if command -v tcpdump &>/dev/null; then
+    echo "  tcpdump installed: $(tcpdump --version 2>&1 | head -1)"
+  else
+    echo "  WARNING: tcpdump not available after install — container tracing will not work." >&2
+  fi
+else
+  echo "  WARNING: tcpdump not installed and no offline packages found in ./debs/tcpdump/" >&2
+  echo "  Container network tracing will not work. Install tcpdump to enable it." >&2
+fi
+
+# ============================================================================
 # INSTALL NGINX
 # ============================================================================
 if [[ "$SKIP_NGINX" == "false" ]]; then
@@ -511,11 +531,27 @@ else
 fi
 
 # ============================================================================
-# RUNTIME DIRECTORIES
+# RUNTIME DIRECTORIES + LOG ROTATION
 # ============================================================================
 for _dir in "${DATA_DIR}" "${LOG_DIR}" "${CERTS_DIR}" "${PROJECTS_DIR}"; do
   mkdir -p "${_dir}"; chmod 700 "${_dir}"
 done
+
+# Install logrotate config so /var/offdock/logs/offdock.log doesn't grow unbounded.
+if command -v logrotate &>/dev/null; then
+  cat > /etc/logrotate.d/offdock <<'LOGROTATEOF'
+/var/offdock/logs/offdock.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+LOGROTATEOF
+  echo "  Log rotation configured: daily, 14 days retention."
+fi
 
 # ============================================================================
 # INSTALL BINARY + SERVICE

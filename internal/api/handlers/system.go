@@ -7,6 +7,17 @@ import (
 	"time"
 )
 
+// SystemDiskUsage returns docker system df — disk space used by images,
+// containers, volumes, and build cache. Used by the System page disk panel.
+func (h *H) SystemDiskUsage(w http.ResponseWriter, r *http.Request) {
+	rows, err := h.docker.SystemDiskUsage()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "docker system df: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rows": rows})
+}
+
 // SystemStats is an SSE endpoint that emits host + container resource stats every 3 seconds.
 func (h *H) SystemStats(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)

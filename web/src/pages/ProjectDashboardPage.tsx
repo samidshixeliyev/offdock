@@ -5,6 +5,8 @@ import {
   DeploymentRecord, FileEntry,
 } from '../api/client'
 import ConfirmModal from '../components/ConfirmModal'
+import { useToast } from '../components/Toast'
+import { Copy } from 'lucide-react'
 
 type Tab = 'overview' | 'compose' | 'env' | 'deploy'
 type MsgT = 'ok' | 'err'
@@ -1146,11 +1148,27 @@ export default function ProjectDashboardPage() {
   const [tab, setTab] = useState<Tab>('overview')
   const [project, setProject] = useState<Project | null>(null)
   const [error, setError] = useState('')
+  const [cloning, setCloning] = useState(false)
+  const [showClone, setShowClone] = useState(false)
+  const [cloneName, setCloneName] = useState('')
+  const toast = useToast()
 
   useEffect(() => {
     if (!id) return
     api.getProject(id).then(setProject).catch(() => setError('Project not found'))
   }, [id])
+
+  const handleClone = async () => {
+    if (!id || !cloneName.trim()) return
+    setCloning(true)
+    try {
+      const cloned = await api.cloneProject(id, cloneName.trim())
+      toast.success(`Project cloned as "${cloned.name}"`)
+      setShowClone(false)
+      setCloneName('')
+      window.location.href = `/projects/${cloned.id}`
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Clone failed') } finally { setCloning(false) }
+  }
 
   if (error) return <div className="p-6 text-red-400 text-sm">{error}</div>
   if (!project) return <div className="p-6 text-slate-600 text-sm">Loading…</div>
@@ -1164,6 +1182,27 @@ export default function ProjectDashboardPage() {
 
   return (
     <div className="flex-1 overflow-y-auto p-6 max-w-6xl">
+      {/* Clone modal */}
+      {showClone && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-80 shadow-2xl">
+            <h2 className="text-sm font-semibold text-white mb-4">Clone project</h2>
+            <label className="block text-xs text-slate-500 mb-1.5">New project name</label>
+            <input
+              autoFocus value={cloneName} onChange={e => setCloneName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleClone()}
+              className="w-full h-8 px-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:border-blue-500 mb-4"
+            />
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowClone(false)} className="btn-secondary text-xs">Cancel</button>
+              <button onClick={handleClone} disabled={cloning || !cloneName.trim()} className="btn-primary text-xs">
+                {cloning ? 'Cloning…' : 'Clone'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-xs text-slate-600 mb-5">
         <Link to="/" className="hover:text-slate-400 transition-colors">Dashboard</Link>
@@ -1183,6 +1222,10 @@ export default function ProjectDashboardPage() {
             <p className="text-sm text-slate-600 mt-1 pl-4">{project.description}</p>
           )}
         </div>
+        <button onClick={() => { setCloneName(project.name + '-copy'); setShowClone(true) }}
+          title="Clone this project" className="btn-secondary shrink-0">
+          <Copy className="w-4 h-4" /> Clone
+        </button>
         <button onClick={() => setTab('deploy')} className="btn-primary shrink-0">
           <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
             <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />

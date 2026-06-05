@@ -43,11 +43,13 @@ type Config struct {
 	OAuthScope        string `yaml:"oauth_scope"`         // default "openid profile email"
 
 	// Claim mapping — names of JWT/userinfo claims for each user attribute.
-	// Defaults match AO ID's out-of-the-box claim names.
+	// Defaults match AO ID's LDAP-backed JWT claim names (mail/cn/uid/givenName/sn).
 	OAuthClaimSub      string `yaml:"oauth_claim_sub"`      // default "sub"
-	OAuthClaimEmail    string `yaml:"oauth_claim_email"`    // default "email"
-	OAuthClaimUsername string `yaml:"oauth_claim_username"` // default "ldap_username"
-	OAuthClaimName     string `yaml:"oauth_claim_name"`     // default "display_name"
+	OAuthClaimEmail    string `yaml:"oauth_claim_email"`    // default "mail"
+	OAuthClaimUsername string `yaml:"oauth_claim_username"` // default "uid"
+	OAuthClaimName     string `yaml:"oauth_claim_name"`     // default "cn"
+	OAuthClaimFirst    string `yaml:"oauth_claim_first"`    // default "givenName"
+	OAuthClaimLast     string `yaml:"oauth_claim_last"`     // default "sn"
 
 	// OAuth2 TLS — for IdP servers with self-signed / internal CA certificates.
 	OAuthCACertFile    string `yaml:"oauth_ca_cert_file"`         // path to CA cert PEM

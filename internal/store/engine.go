@@ -188,6 +188,65 @@ func (c *Collection[T]) load() error {
 	return nil
 }
 
+// Compact rewrites the collection file to contain only active records,
+// removing tombstones and superseded versions of entities. This keeps the
+// on-disk file small for long-running services.
+//
+// Safe to call while the collection is in use: it holds the write lock for
+// the duration of the rewrite, which is typically < 1ms for small collections
+// and < 50ms even for multi-MB trace session files.
+func (c *Collection[T]) Compact() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Write all live entities to a temp file next to the collection file.
+	tmpPath := c.path + ".compact"
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("compact create: %w", err)
+	}
+
+	for _, entity := range c.data {
+		payload, err := json.Marshal(entity)
+		if err != nil {
+			f.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("compact marshal: %w", err)
+		}
+		header := make([]byte, headerSize)
+		binary.LittleEndian.PutUint32(header[0:4], uint32(len(payload)))
+		header[4] = recordTypeActive
+		binary.LittleEndian.PutUint32(header[5:9], crc32.ChecksumIEEE(payload))
+		record := append(header, payload...) //nolint:gocritic
+		if _, err := f.Write(record); err != nil {
+			f.Close()
+			os.Remove(tmpPath)
+			return fmt.Errorf("compact write: %w", err)
+		}
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("compact sync: %w", err)
+	}
+	f.Close()
+
+	// Close the current append handle, rename temp file over it, reopen.
+	if c.f != nil {
+		c.f.Close()
+		c.f = nil
+	}
+	if err := os.Rename(tmpPath, c.path); err != nil {
+		return fmt.Errorf("compact rename: %w", err)
+	}
+	newF, err := os.OpenFile(c.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("compact reopen: %w", err)
+	}
+	c.f = newF
+	return nil
+}
+
 func (c *Collection[T]) appendRecord(recordType byte, entity T) error {
 	payload, err := json.Marshal(entity)
 	if err != nil {

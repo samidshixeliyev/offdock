@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, SystemStats } from '../api/client'
+import { api, SystemStats, DiskUsageRow } from '../api/client'
 import clsx from 'clsx'
 
 function fmtBytes(bytes: number, decimals = 1) {
@@ -80,6 +80,7 @@ function CpuBar({ pct, label }: { pct: number; label: string }) {
 export default function SystemPage() {
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [history, setHistory] = useState<number[]>([]) // CPU history for sparkline
+  const [dockerDf, setDockerDf] = useState<DiskUsageRow[]>([])
 
   // Nginx setup state
   const [nginxStatus, setNginxStatus] = useState<{ available: boolean; status: string } | null>(null)
@@ -88,6 +89,10 @@ export default function SystemPage() {
   const [nginxConfigPreview, setNginxConfigPreview] = useState('')
   const [nginxApplyMessage, setNginxApplyMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [nginxLoading, setNginxLoading] = useState(false)
+
+  useEffect(() => {
+    api.getSystemDf().then(d => setDockerDf(d.rows ?? [])).catch(() => {})
+  }, [])
 
   useEffect(() => {
     const es = new EventSource('/api/v1/system/stats')
@@ -285,6 +290,25 @@ export default function SystemPage() {
           <MetricRow label="Cached / Buffers" value={fmtBytes(stats.ram_cached_bytes ?? 0)} />
         </div>
       </div>
+
+      {/* Docker disk usage breakdown */}
+      {dockerDf.length > 0 && (
+        <section>
+          <p className="section-heading mb-3">Docker Disk Usage</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {dockerDf.map(row => (
+              <div key={row.type} className="card">
+                <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">{row.type}</div>
+                <div className="text-lg font-semibold text-white">{row.size}</div>
+                <div className="text-xs text-slate-500 mt-1">{row.total} objects · {row.active} active</div>
+                {row.reclaimable && (
+                  <div className="text-[11px] text-amber-400/80 mt-0.5">{row.reclaimable} reclaimable</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Containers */}
       {containers.length > 0 && (

@@ -143,7 +143,7 @@ export default function DeployPage() {
   const [envHistory, setEnvHistory] = useState<EnvVarSet[]>([])
   const [settings, setSettings] = useState<DeploySettings | null>(null)
   const [settingsDraft, setSettingsDraft] = useState<Omit<DeploySettings, 'id' | 'project_id'>>({
-    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5,
+    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5, webhook_url: '',
   })
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
@@ -191,7 +191,7 @@ export default function DeployPage() {
     }).catch(() => {})
     api.getDeploySettings(id).then(s => {
       setSettings(s)
-      setSettingsDraft({ health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs, health_stable_secs: s.health_stable_secs })
+      setSettingsDraft({ health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs, health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '' })
     }).catch(() => {})
     api.listDeployTags(id).then(t => setTags(t ?? [])).catch(() => {})
   }, [id])
@@ -508,7 +508,7 @@ export default function DeployPage() {
         {showTagForm && (
           <div className="p-4 rounded-xl bg-slate-950/60 border border-blue-500/20 space-y-3">
             <p className="text-xs font-semibold text-slate-300">Tag current version</p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-slate-500 mb-1">Tag name <span className="text-slate-600">(e.g. v1.0.0, stable)</span></label>
                 <input
@@ -573,7 +573,7 @@ export default function DeployPage() {
         {/* Manual version pickers */}
         <div className="border-t border-slate-800 pt-4">
           <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-3">Manual version selection</p>
-          <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
             <div>
               <label className="block text-xs text-slate-400 mb-1.5">Compose version</label>
               <select
@@ -641,7 +641,7 @@ export default function DeployPage() {
       {/* ── Deploy settings ────────────────────────────────────────────────── */}
       <div className="card">
         <h2 className="text-sm font-semibold text-white mb-4">Deploy Settings</h2>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-xs text-slate-400 mb-1">Health timeout (seconds)</label>
             <input
@@ -679,6 +679,20 @@ export default function DeployPage() {
             <p className="text-xs text-slate-600 mt-1">Time a "running" container must stay up before considered healthy</p>
           </div>
         </div>
+
+        {/* Webhook URL */}
+        <div className="mt-4">
+          <label className="block text-xs text-slate-400 mb-1">Webhook URL <span className="text-slate-600">(optional — POST on deploy complete/fail)</span></label>
+          <input
+            type="url"
+            placeholder="http://monitoring.intranet/deploy-hook"
+            value={settingsDraft.webhook_url ?? ''}
+            onChange={e => setSettingsDraft(d => ({ ...d, webhook_url: e.target.value }))}
+            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
+          />
+          <p className="text-xs text-slate-600 mt-1">OffDock sends JSON: status, project, deploy_id, timestamp</p>
+        </div>
+
         <div className="flex items-center gap-3 mt-4">
           <button
             onClick={saveSettings}
@@ -703,7 +717,7 @@ export default function DeployPage() {
           <div className="card text-slate-500 text-sm text-center py-8">No deployments yet</div>
         ) : (
           <div className="card overflow-x-auto p-0">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-500 text-xs">
                   <th className="text-left px-4 py-2.5">Status</th>

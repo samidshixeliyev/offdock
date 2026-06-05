@@ -225,9 +225,10 @@ func (d DeploymentRecord) GetID() string { return d.ID }
 type DeploySettings struct {
 	ID                string `json:"id"`
 	ProjectID         string `json:"project_id"`
-	HealthTimeoutSecs int    `json:"health_timeout_secs"` // default 120
-	DeployTimeoutSecs int    `json:"deploy_timeout_secs"` // default 300
-	HealthStableSecs  int    `json:"health_stable_secs"`  // default 5
+	HealthTimeoutSecs int    `json:"health_timeout_secs"`        // default 120
+	DeployTimeoutSecs int    `json:"deploy_timeout_secs"`        // default 300
+	HealthStableSecs  int    `json:"health_stable_secs"`         // default 5
+	WebhookURL        string `json:"webhook_url,omitempty"`      // HTTP POST on deploy complete/fail
 }
 
 func (d DeploySettings) GetID() string { return d.ID }
@@ -423,33 +424,44 @@ type OAuthSettings struct {
 	RedirectURI  string
 	Scope        string
 	// Claim mappings — configurable JWT/userinfo claim names.
+	// Defaults match AO ID's LDAP-backed JWT claim names (mail, cn, uid, givenName, sn).
 	ClaimSub      string // default "sub"
-	ClaimEmail    string // default "email"
-	ClaimUsername string // default "ldap_username"
-	ClaimName     string // default "display_name"
+	ClaimEmail    string // default "mail"
+	ClaimUsername string // default "uid"
+	ClaimName     string // default "cn"
+	ClaimFirst    string // default "givenName" — used when full-name claim is absent
+	ClaimLast     string // default "sn"        — combined with ClaimFirst
 	// TLS
 	CACertFile    string // path to custom CA cert for IdP (self-signed Exchange/internal)
 	TLSSkipVerify bool   // skip TLS verification
 }
 
-// EffectiveClaimNames returns the resolved claim names, applying defaults
+// EffectiveClaimNames returns the resolved claim names, applying AO ID LDAP defaults
 // when a field is empty.
-func (s OAuthSettings) EffectiveClaimNames() (sub, email, username, name string) {
+func (s OAuthSettings) EffectiveClaimNames() (sub, email, username, name, first, last string) {
 	sub = s.ClaimSub
 	if sub == "" {
 		sub = "sub"
 	}
 	email = s.ClaimEmail
 	if email == "" {
-		email = "email"
+		email = "mail"
 	}
 	username = s.ClaimUsername
 	if username == "" {
-		username = "ldap_username"
+		username = "uid"
 	}
 	name = s.ClaimName
 	if name == "" {
-		name = "display_name"
+		name = "cn"
+	}
+	first = s.ClaimFirst
+	if first == "" {
+		first = "givenName"
+	}
+	last = s.ClaimLast
+	if last == "" {
+		last = "sn"
 	}
 	return
 }

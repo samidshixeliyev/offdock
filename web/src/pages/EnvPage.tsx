@@ -219,8 +219,8 @@ export default function EnvPage() {
         ) : (
           <div className="divide-y divide-slate-800">
             {filtered.map(({ v, i }) => (
-              <div key={i} className="flex items-center gap-3 px-4 py-2.5">
-                <input className="input font-mono text-xs w-52 shrink-0" placeholder="KEY" value={v.key} onChange={e => updateVar(i, 'key', e.target.value.toUpperCase())} />
+              <div key={i} className="flex flex-wrap sm:flex-nowrap items-center gap-3 px-4 py-2.5">
+                <input className="input font-mono text-xs w-full sm:w-52 shrink-0" placeholder="KEY" value={v.key} onChange={e => updateVar(i, 'key', e.target.value.toUpperCase())} />
                 <div className="flex-1 relative">
                   <input className="input font-mono text-xs pr-9" placeholder="value"
                     type={v.is_secret && !v.revealed ? 'password' : 'text'} value={v.value} onChange={e => updateVar(i, 'value', e.target.value)} />

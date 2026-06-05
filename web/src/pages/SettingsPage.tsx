@@ -99,9 +99,11 @@ export default function SettingsPage() {
   const [redirectUri, setRedirectUri] = useState('')
   const [scope, setScope] = useState('openid profile email')
   const [claimSub, setClaimSub] = useState('sub')
-  const [claimEmail, setClaimEmail] = useState('email')
-  const [claimUsername, setClaimUsername] = useState('ldap_username')
-  const [claimName, setClaimName] = useState('display_name')
+  const [claimEmail, setClaimEmail] = useState('mail')
+  const [claimUsername, setClaimUsername] = useState('uid')
+  const [claimName, setClaimName] = useState('cn')
+  const [claimFirst, setClaimFirst] = useState('givenName')
+  const [claimLast, setClaimLast] = useState('sn')
   const [caCertFile, setCaCertFile] = useState('')
   const [tlsSkipVerify, setTlsSkipVerify] = useState(false)
 
@@ -115,9 +117,11 @@ export default function SettingsPage() {
         setRedirectUri(s.redirect_uri ?? '')
         setScope(s.scope || 'openid profile email')
         setClaimSub(s.claim_sub || 'sub')
-        setClaimEmail(s.claim_email || 'email')
-        setClaimUsername(s.claim_username || 'ldap_username')
-        setClaimName(s.claim_name || 'display_name')
+        setClaimEmail(s.claim_email || 'mail')
+        setClaimUsername(s.claim_username || 'uid')
+        setClaimName(s.claim_name || 'cn')
+        setClaimFirst(s.claim_first || 'givenName')
+        setClaimLast(s.claim_last || 'sn')
         setCaCertFile(s.ca_cert_file || '')
         setTlsSkipVerify(s.tls_skip_verify || false)
       })
@@ -137,6 +141,8 @@ export default function SettingsPage() {
         claim_email: claimEmail || undefined,
         claim_username: claimUsername || undefined,
         claim_name: claimName || undefined,
+        claim_first: claimFirst || undefined,
+        claim_last: claimLast || undefined,
         ca_cert_file: caCertFile || undefined,
         tls_skip_verify: tlsSkipVerify,
       })
@@ -147,6 +153,7 @@ export default function SettingsPage() {
         secret_set: prev.secret_set || clientSecret !== '',
         claim_sub: claimSub, claim_email: claimEmail,
         claim_username: claimUsername, claim_name: claimName,
+        claim_first: claimFirst, claim_last: claimLast,
       } : prev)
       toast.success('Settings saved')
     } catch (e: unknown) {
@@ -346,15 +353,17 @@ export default function SettingsPage() {
               <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest">Claim Mappings</span>
             </div>
             <p className="text-xs text-slate-600 mb-4">
-              Map JWT / UserInfo claim names to OffDock user attributes. Defaults match AO ID's out-of-the-box configuration.
+              Map JWT / UserInfo claim names to OffDock user attributes. Defaults match AO ID LDAP claim names (mail, cn, uid, givenName, sn). Changes take effect immediately without restart.
             </p>
 
             <div className="grid grid-cols-2 gap-3">
               {[
                 { label: 'Subject (unique ID)', placeholder: 'sub', value: claimSub, onChange: setClaimSub },
-                { label: 'Email address', placeholder: 'email', value: claimEmail, onChange: setClaimEmail },
-                { label: 'Username', placeholder: 'ldap_username', value: claimUsername, onChange: setClaimUsername },
-                { label: 'Display name', placeholder: 'display_name', value: claimName, onChange: setClaimName },
+                { label: 'Email address', placeholder: 'mail', value: claimEmail, onChange: setClaimEmail },
+                { label: 'Username', placeholder: 'uid', value: claimUsername, onChange: setClaimUsername },
+                { label: 'Full name (cn)', placeholder: 'cn', value: claimName, onChange: setClaimName },
+                { label: 'First name', placeholder: 'givenName', value: claimFirst, onChange: setClaimFirst },
+                { label: 'Last name', placeholder: 'sn', value: claimLast, onChange: setClaimLast },
               ].map(f => (
                 <div key={f.label} className="bg-slate-950/50 border border-slate-800 rounded-lg p-3">
                   <label className="block text-xs text-slate-500 mb-1.5">{f.label}</label>

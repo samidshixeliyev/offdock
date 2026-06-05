@@ -3,10 +3,13 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,6 +189,11 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		project.Status = store.ProjectStatusError
 		project.UpdatedAt = time.Now().UTC()
 		_ = e.db.Projects.Save(project)
+		webhookStatus := "failed"
+		if errors.Is(reason, context.Canceled) {
+			webhookStatus = "cancelled"
+		}
+		go fireWebhook(settings.WebhookURL, webhookStatus, project.Name, rec.ID)
 		return &rec, reason
 	}
 
@@ -276,6 +284,7 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 
 	appendLog("[STAGE] Complete")
 	appendLog("Deployment complete in %s", time.Since(rec.StartedAt).Round(time.Millisecond))
+	go fireWebhook(settings.WebhookURL, "success", project.Name, rec.ID)
 	return &rec, nil
 }
 
@@ -397,4 +406,34 @@ func latestEnvSet(sets []store.EnvVarSet) *store.EnvVarSet {
 		}
 	}
 	return &best
+}
+
+// fireWebhook sends a JSON POST to url with deploy result. Runs in a goroutine
+// so it never blocks the deployment path. Failures are logged but not fatal.
+func fireWebhook(webhookURL, status, projectName, deployID string) {
+	if webhookURL == "" {
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"status":     status,
+		"project":    projectName,
+		"deploy_id":  deployID,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(payload))
+	if err != nil {
+		slog.Warn("webhook: build request failed", "url", webhookURL, "err", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "OffDock/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Warn("webhook: request failed", "url", webhookURL, "err", err)
+		return
+	}
+	resp.Body.Close()
+	slog.Info("webhook: sent", "url", webhookURL, "status", resp.StatusCode, "deploy_status", status)
 }

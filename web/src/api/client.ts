@@ -109,6 +109,15 @@ export interface DeploySettings {
   health_timeout_secs: number
   deploy_timeout_secs: number
   health_stable_secs: number
+  webhook_url?: string
+}
+
+export interface DiskUsageRow {
+  type: string
+  total: string
+  active: string
+  size: string
+  reclaimable: string
 }
 
 export interface DockerImage {
@@ -408,6 +417,8 @@ export interface OAuthSettings {
   claim_email: string
   claim_username: string
   claim_name: string
+  claim_first: string
+  claim_last: string
   ca_cert_file: string
   tls_skip_verify: boolean
 }
@@ -803,9 +814,26 @@ export const api = {
     window.open('/api/v1/system/backup')
   },
 
-  // Self-update
-  getUpdateStatus: () => request<{ can_update: boolean; install_path: string }>('/api/v1/system/update/status'),
+  // App logs
+  getAppLogs: (n = 500) => request<{ source: string; lines: string[] }>(`/api/v1/system/app-logs?n=${n}`),
+  appLogsStreamUrl: () => '/api/v1/system/app-logs/stream',
+
+  // Docker disk usage + image prune
+  getSystemDf: () => request<{ rows: DiskUsageRow[] }>('/api/v1/system/df'),
+  pruneImages: (all = false) =>
+    request<{ output: string; removed_records: number }>(`/api/v1/images/prune${all ? '?all=true' : ''}`, { method: 'POST', body: '{}' }),
+
+  // Project clone
+  cloneProject: (projectId: string, name: string, description?: string) =>
+    request<{ id: string; name: string; description: string; status: string }>(`/api/v1/projects/${projectId}/clone`, {
+      method: 'POST', body: JSON.stringify({ name, description }),
+    }),
+
+  // Self-update, rollback, and DB compaction
+  getUpdateStatus: () => request<{ can_update: boolean; can_rollback: boolean; install_path: string; backup_path: string }>('/api/v1/system/update/status'),
   systemUpdateUrl: () => '/api/v1/system/update',
+  systemRollbackUrl: () => '/api/v1/system/rollback',
+  compactDB: () => request<{ status: string; bytes_before: number; bytes_after: number; bytes_freed: number }>('/api/v1/system/compact', { method: 'POST', body: '{}' }),
 
   // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
   uploadFile: (

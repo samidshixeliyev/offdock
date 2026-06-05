@@ -149,6 +149,20 @@ function ExecModal({ name, onClose }: { name: string; onClose: () => void }) {
 }
 
 // ─── Metrics bar ─────────────────────────────────────────────────────────────
+// HealthBadge extracts the Docker healthcheck state from the Status string.
+// Docker embeds it as "(healthy)", "(unhealthy)", or "(health: starting)".
+function HealthBadge({ status }: { status?: string }) {
+  if (!status) return null
+  const s = status.toLowerCase()
+  if (s.includes('(healthy)'))
+    return <span className="ml-1.5 inline-flex items-center text-[9px] font-semibold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-1.5 py-0.5">healthy</span>
+  if (s.includes('(unhealthy)'))
+    return <span className="ml-1.5 inline-flex items-center text-[9px] font-semibold uppercase tracking-wider text-red-400 bg-red-500/10 border border-red-500/20 rounded px-1.5 py-0.5">unhealthy</span>
+  if (s.includes('health: starting') || s.includes('(starting)'))
+    return <span className="ml-1.5 inline-flex items-center text-[9px] font-semibold uppercase tracking-wider text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1.5 py-0.5">starting</span>
+  return null
+}
+
 function MetricsBar({ stat }: { stat: ContainerStats }) {
   const cpu = parsePercent(stat.CPUPerc), mem = parsePercent(stat.MemPerc)
   return (
@@ -328,7 +342,10 @@ export default function ContainersPage() {
                       <td className="px-4 py-3"><input type="checkbox" className="rounded border-slate-600 bg-slate-800 cursor-pointer" checked={isSelected} onChange={() => toggleSelect(c.Names)} /></td>
                       <td className="px-4 py-3"><span className="font-mono text-sm text-slate-200 font-medium">{c.Names}</span></td>
                       <td className="px-4 py-3 text-xs text-slate-500 font-mono max-w-[200px]"><span className="truncate block" title={c.Image}>{c.Image}</span></td>
-                      <td className="px-4 py-3"><ContainerBadge state={c.State} status={c.Status} /></td>
+                      <td className="px-4 py-3">
+                        <ContainerBadge state={c.State} status={c.Status} />
+                        <HealthBadge status={c.Status} />
+                      </td>
                       <td className="px-4 py-3 text-xs text-slate-500 font-mono max-w-[160px] hidden lg:table-cell"><span className="truncate block" title={c.Ports}>{c.Ports || '—'}</span></td>
                       <td className="px-4 py-3 hidden xl:table-cell">{stat ? <MetricsBar stat={stat} /> : <span className="text-xs text-slate-600">{isRunning ? 'collecting…' : '—'}</span>}</td>
                       <td className="px-4 py-3">

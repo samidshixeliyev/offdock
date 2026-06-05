@@ -199,24 +199,8 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 
 	name := chi.URLParam(r, "name")
 
-	// Verify container is running.
-	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer checkCancel()
-	pidOut, err := exec.CommandContext(checkCtx, "docker", "inspect",
-		"--format", "{{.State.Running}}", name).Output()
-	if err != nil || strings.TrimSpace(string(pidOut)) != "true" {
-		http.Error(w, "container not found or not running", http.StatusNotFound)
-		return
-	}
-
-	// Find bridge interface and container IP.
-	iface, containerIP, err := containerBridgeIface(name)
-	if err != nil {
-		http.Error(w, "could not find container network: "+err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
-
-	// SSE setup.
+	// SSE setup first — so the client always receives onopen and error
+	// messages are delivered as TraceError events rather than HTTP errors.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -224,6 +208,27 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify container is running.
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer checkCancel()
+	pidOut, err := exec.CommandContext(checkCtx, "docker", "inspect",
+		"--format", "{{.State.Running}}", name).Output()
+	if err != nil || strings.TrimSpace(string(pidOut)) != "true" {
+		// Send error via SSE so the frontend can display it, then close.
+		fmt.Fprintf(w, "data: {\"type\":\"error\",\"message\":\"container %s is not running\"}\n\n", name)
+		flusher.Flush()
+		return
+	}
+
+	// Find bridge interface and container IP.
+	iface, containerIP, err := containerBridgeIface(name)
+	if err != nil {
+		fmt.Fprintf(w, "data: {\"type\":\"error\",\"message\":\"could not find container network: %s — container may use host networking or a non-standard bridge\"}\n\n",
+			strings.ReplaceAll(err.Error(), `"`, `\"`))
+		flusher.Flush()
 		return
 	}
 
@@ -252,6 +257,7 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = h.db.TraceSessions.Save(session)
+		h.db.PruneTraceSessions(500)
 	}
 	defer saveSession()
 
@@ -279,20 +285,24 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 	defer traceCancel()
 
 	// Run tcpdump on the bridge interface, filtering only this container's IP.
-	// -A: ASCII output; -nn: no name resolution; -s 2048: capture 2KB per packet.
+	// -A: ASCII output; -nn: no name resolution; -s 0: capture full packets.
 	cmd := exec.CommandContext(traceCtx,
-		"tcpdump", "-i", iface, "-l", "-s", "2048", "-A", "-nn",
+		"tcpdump", "-i", iface, "-l", "-s", "0", "-A", "-nn",
 		"host", containerIP, "and", "tcp",
 	)
-	cmd.Stderr = nil
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		send(TraceSpan{Type: TraceError, Message: "pipe error: " + err.Error()})
 		return
 	}
+	stderrPipe, _ := cmd.StderrPipe()
+
 	if err := cmd.Start(); err != nil {
+		if stderrPipe != nil {
+			stderrPipe.Close() //nolint:errcheck
+		}
 		send(TraceSpan{Type: TraceError, Message: "tcpdump failed to start: " + err.Error() +
-			" (offdock must run as root or have CAP_NET_RAW)"})
+			" — install tcpdump and ensure offdock runs as root or has CAP_NET_RAW"})
 		return
 	}
 	defer func() {
@@ -301,13 +311,34 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 		cmd.Wait()         //nolint:errcheck
 	}()
 
+	// Collect tcpdump stderr in background. Errors (permission denied, bad
+	// interface, etc.) go there and would otherwise be silently swallowed.
+	var stderrBuf strings.Builder
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		if stderrPipe == nil {
+			return
+		}
+		sc := bufio.NewScanner(stderrPipe)
+		for sc.Scan() {
+			line := sc.Text()
+			// Skip the normal startup messages tcpdump prints to stderr.
+			if strings.Contains(line, "listening on") || strings.Contains(line, "verbose output") {
+				continue
+			}
+			stderrBuf.WriteString(strings.TrimPrefix(line, "tcpdump: "))
+			stderrBuf.WriteByte(' ')
+		}
+	}()
+
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 
 	lines := make(chan string, 512)
 	go func() {
 		sc := bufio.NewScanner(stdout)
-		sc.Buffer(make([]byte, 131072), 131072)
+		sc.Buffer(make([]byte, 262144), 262144)
 		for sc.Scan() {
 			select {
 			case lines <- sc.Text():
@@ -405,6 +436,14 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		case line, ok := <-lines:
 			if !ok {
+				// stdout closed — tcpdump exited. Wait briefly for stderr to drain.
+				select {
+				case <-stderrDone:
+				case <-time.After(500 * time.Millisecond):
+				}
+				if msg := strings.TrimSpace(stderrBuf.String()); msg != "" {
+					send(TraceSpan{Type: TraceError, Message: "tcpdump: " + msg})
+				}
 				return
 			}
 			if m := ipHdrRe.FindStringSubmatch(line); m != nil {

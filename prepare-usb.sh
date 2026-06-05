@@ -20,7 +20,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "Preparing OffDock USB deployment package in: ${OUTPUT_DIR}"
-mkdir -p "${OUTPUT_DIR}/debs/docker" "${OUTPUT_DIR}/debs/nginx"
+mkdir -p "${OUTPUT_DIR}/debs/docker" "${OUTPUT_DIR}/debs/nginx" "${OUTPUT_DIR}/debs/tcpdump"
 
 # --- Download Docker CE packages --------------------------------------------
 echo ""
@@ -66,6 +66,15 @@ apt-get download \
   libnginx-mod-http-gzip-static 2>/dev/null || true
 cd - >/dev/null
 echo "  nginx packages downloaded to ${OUTPUT_DIR}/debs/nginx/"
+
+# --- Download tcpdump packages -----------------------------------------------
+echo ""
+echo "=== Downloading tcpdump packages ==="
+cd "${OUTPUT_DIR}/debs/tcpdump"
+apt-get download tcpdump libpcap0.8 2>/dev/null || \
+apt-get download tcpdump libpcap0.8t64 2>/dev/null || true
+cd - >/dev/null
+echo "  tcpdump packages downloaded to ${OUTPUT_DIR}/debs/tcpdump/"
 
 # --- Build OffDock binary ----------------------------------------------------
 echo ""

@@ -158,24 +158,52 @@ func (m *Mailer) sendImplicit(addr, to string, msg []byte) error {
 }
 
 // sendPlain — no TLS (plain TCP).
+// Uses manual dialing with a 15s timeout instead of smtp.SendMail so that
+// DNS failures and unreachable hosts in offline environments fail fast.
 func (m *Mailer) sendPlain(addr, to string, msg []byte) error {
-	var auth smtp.Auth
-	if m.username != "" {
-		auth = smtp.PlainAuth("", m.username, m.password, m.host)
+	conn, err := net.DialTimeout("tcp", addr, 15*time.Second)
+	if err != nil {
+		return fmt.Errorf("dial %s: %w", addr, err)
 	}
-	recipients := splitAddrs(to)
-	return smtp.SendMail(addr, auth, m.from, recipients, msg)
+	c, err := smtp.NewClient(conn, m.host)
+	if err != nil {
+		conn.Close() //nolint:errcheck
+		return fmt.Errorf("smtp client: %w", err)
+	}
+	defer c.Close() //nolint:errcheck
+	return m.doSend(c, to, msg)
 }
 
 // doSend handles auth + send on an already-connected smtp.Client.
 func (m *Mailer) doSend(c *smtp.Client, to string, msg []byte) error {
 	if m.username != "" {
-		// Try PLAIN first, fall back to LOGIN (Exchange often needs LOGIN).
-		auth := smtp.PlainAuth("", m.username, m.password, m.host)
-		if err := c.Auth(auth); err != nil {
-			if err2 := c.Auth(loginAuth(m.username, m.password)); err2 != nil {
-				return fmt.Errorf("smtp auth: %w", err)
-			}
+		// Check what auth mechanisms the server advertises after EHLO/STARTTLS.
+		// Exchange on-prem typically supports LOGIN only; relay/cloud servers
+		// prefer PLAIN. If nothing is advertised, try both.
+		_, params := c.Extension("AUTH")
+		upper := strings.ToUpper(params)
+		hasLOGIN := params == "" || strings.Contains(upper, "LOGIN")
+		hasPLAIN := params == "" || strings.Contains(upper, "PLAIN")
+
+		if !hasLOGIN && !hasPLAIN {
+			return fmt.Errorf("no supported SMTP auth mechanism; server offers: %s", params)
+		}
+
+		var authErr error
+		if hasLOGIN {
+			// Try LOGIN first — Exchange on-prem servers prefer it over PLAIN
+			// and reject PLAIN with 5.7.4 "unrecognized authentication type".
+			authErr = c.Auth(loginAuth(m.username, m.password))
+		}
+		// If LOGIN was not available OR LOGIN failed, try PLAIN.
+		// Bug fix: previously `authErr != nil && hasPLAIN` meant PLAIN was
+		// never tried when the server advertised only PLAIN (hasLOGIN=false
+		// meant we skipped LOGIN and authErr stayed nil).
+		if (authErr != nil || !hasLOGIN) && hasPLAIN {
+			authErr = c.Auth(smtp.PlainAuth("", m.username, m.password, m.host))
+		}
+		if authErr != nil {
+			return fmt.Errorf("smtp auth (server offers %q): %w", params, authErr)
 		}
 	}
 	if err := c.Mail(m.from); err != nil {

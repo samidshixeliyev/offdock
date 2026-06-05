@@ -2,7 +2,9 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -44,7 +46,7 @@ func NewRouter(deps Deps) http.Handler {
 	// Global middleware
 	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.RequestID)
-	r.Use(chimiddleware.Logger)
+	r.Use(slogRequestLogger) // structured JSON access log via slog (replaces chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	r.Use(jsonContentType)
 
@@ -99,6 +101,7 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/projects/{id}", h.GetProject)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageProjects)).Patch("/api/v1/projects/{id}", h.UpdateProject)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageProjects)).Delete("/api/v1/projects/{id}", h.DeleteProject)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageProjects)).Post("/api/v1/projects/{id}/clone", h.CloneProject)
 
 		// Compose
 		r.Get("/api/v1/projects/{id}/compose", h.GetCompose)
@@ -196,10 +199,12 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/images", h.ListImages)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageImages)).Post("/api/v1/images/load", h.LoadImage)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageImages)).Post("/api/v1/images/sync", h.SyncImages)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageImages)).Post("/api/v1/images/prune", h.PruneImages)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageImages)).Delete("/api/v1/images/{id}", h.DeleteImage)
 
-		// System stats (SSE)
+		// System stats (SSE) + disk usage
 		r.Get("/api/v1/system/stats", h.SystemStats)
+		r.Get("/api/v1/system/df", h.SystemDiskUsage)
 
 		// Audit log — admin+ only (contains usernames, IPs, resource names)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/audit", h.ListAuditEvents)
@@ -238,12 +243,18 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/settings/oauth", h.GetOAuthSettings)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/settings/oauth", h.SaveOAuthSettings)
 
+		// OffDock application logs (recent lines + live SSE stream) — admin+ only.
+		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/system/app-logs", h.GetAppLogs)
+		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/system/app-logs/stream", h.StreamAppLogs)
+
 		// Backup — superadmin only
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Get("/api/v1/system/backup", h.DownloadBackup)
 
-		// Self-update — superadmin only: upload tar.gz bundle, atomic binary replace + restart
+		// Self-update, rollback, and DB compaction — superadmin only.
 		r.Get("/api/v1/system/update/status", h.GetSystemUpdateStatus)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/update", h.SystemUpdate)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/rollback", h.SystemRollback)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/compact", h.CompactDB)
 
 		// Reverse proxy status probe (server-side to avoid CORS)
 		r.Get("/api/v1/proxy/status", h.ProxyStatus)
@@ -285,6 +296,51 @@ func jsonContentType(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		next.ServeHTTP(w, r)
+	})
+}
+
+// statusRecorder wraps http.ResponseWriter to capture the status code and bytes written.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (sr *statusRecorder) WriteHeader(code int) {
+	sr.status = code
+	sr.ResponseWriter.WriteHeader(code)
+}
+func (sr *statusRecorder) Write(b []byte) (int, error) {
+	n, err := sr.ResponseWriter.Write(b)
+	sr.bytes += n
+	return n, err
+}
+
+// slogRequestLogger is a chi-compatible middleware that emits one structured JSON
+// log line per request: method, path, status, duration, remote IP, and request ID.
+// SSE endpoints (text/event-stream) are logged when the stream ends.
+func slogRequestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sr := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sr, r)
+		ms := time.Since(start).Milliseconds()
+		reqID := chimiddleware.GetReqID(r.Context())
+		lvl := slog.LevelInfo
+		if sr.status >= 500 {
+			lvl = slog.LevelError
+		} else if sr.status >= 400 {
+			lvl = slog.LevelWarn
+		}
+		slog.Log(r.Context(), lvl, "http",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", sr.status,
+			"ms", ms,
+			"bytes", sr.bytes,
+			"ip", r.RemoteAddr,
+			"req_id", reqID,
+		)
 	})
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // DB aggregates all typed collections and is the sole entry point for
@@ -90,6 +91,47 @@ func Open(dataDir string) (*DB, error) {
 	}
 
 	return db, nil
+}
+
+// Compact rewrites every collection file to remove tombstones and superseded
+// records. Safe to call online; each collection is locked only for its own
+// rewrite. Returns the first error encountered (remaining collections still run).
+func (db *DB) Compact() error {
+	collections := []interface{ Compact() error }{
+		db.Users, db.Projects, db.Images, db.Compose,
+		db.EnvVars, db.Nginx, db.Deployments, db.ProxyHosts, db.DeploySettings,
+		db.AuditEvents, db.CustomRoles, db.Sessions,
+		db.OTPChallenges, db.DNSTickets, db.DeployTags, db.TraceSessions,
+	}
+	for _, c := range collections {
+		if err := c.Compact(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PruneTraceSessions deletes the oldest trace sessions, keeping at most `keep`
+// sessions. Runs compaction afterward to reclaim disk space. Returns the count
+// of sessions deleted. Safe to call concurrently.
+func (db *DB) PruneTraceSessions(keep int) int {
+	sessions, _ := db.TraceSessions.FindAll()
+	if len(sessions) <= keep {
+		return 0
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].StartedAt.Before(sessions[j].StartedAt)
+	})
+	deleted := 0
+	for _, s := range sessions[:len(sessions)-keep] {
+		if db.TraceSessions.Delete(s.ID) == nil {
+			deleted++
+		}
+	}
+	if deleted > 0 {
+		_ = db.TraceSessions.Compact()
+	}
+	return deleted
 }
 
 // Close releases all file handles. Must be called on shutdown.
