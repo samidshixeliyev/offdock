@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"compress/gzip"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
+	tracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/protobuf/proto"
+
 	"offdock/internal/store"
 )
 
@@ -266,56 +271,121 @@ func statusCodeName(c int) string {
 	}
 }
 
-// ReceiveOTLPTraces accepts OTLP HTTP traces from instrumented applications.
-// Supports: application/json (preferred), application/x-protobuf (accepted but not decoded).
-// No authentication required — called by OTel agents inside containers.
-func (h *H) ReceiveOTLPTraces(w http.ResponseWriter, r *http.Request) {
-	ct := r.Header.Get("Content-Type")
-
-	// Protobuf: we cannot decode it without the proto schema, but accept it
-	// gracefully rather than returning 400 which causes agent retry storms.
-	if strings.Contains(ct, "application/x-protobuf") || strings.Contains(ct, "protobuf") {
-		_, _ = io.Copy(io.Discard, r.Body)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"partialSuccess":{}}`)
-		return
-	}
-
-	// Decompress gzip if the agent sent compressed JSON.
-	body := r.Body
+// readBody reads and optionally decompresses the request body.
+func readBody(r *http.Request) ([]byte, error) {
 	if strings.EqualFold(r.Header.Get("Content-Encoding"), "gzip") {
 		gz, err := gzip.NewReader(r.Body)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"partialSuccess":{}}`)
-			return
+			return nil, err
 		}
 		defer gz.Close()
-		body = gz
+		return io.ReadAll(gz)
 	}
+	return io.ReadAll(r.Body)
+}
 
-	var req otlpRequest
-	if err := json.NewDecoder(body).Decode(&req); err != nil {
-		// Unknown format — accept silently to prevent agent retry storms.
+// ReceiveOTLPTraces accepts OTLP HTTP traces from OTel agents inside containers.
+// Handles both application/x-protobuf (Java/Go/Python agents) and application/json.
+func (h *H) ReceiveOTLPTraces(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(r)
+	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, `{"partialSuccess":{}}`)
 		return
 	}
 
+	ct := r.Header.Get("Content-Type")
+	var saved int
+
+	if strings.Contains(ct, "application/x-protobuf") || strings.Contains(ct, "protobuf") {
+		// Decode real OTLP protobuf binary.
+		// ExportTraceServiceRequest has one field: repeated ResourceSpans resource_spans = 1;
+		// We decode it as a TracesData (same wire format) from the trace/v1 package.
+		var td tracev1.TracesData
+		if err := proto.Unmarshal(body, &td); err == nil {
+			saved = h.saveProtoSpans(td.ResourceSpans)
+		}
+		// If unmarshal fails, still return 200 to prevent agent retry storms.
+	} else {
+		// JSON path (also handles gzip+json).
+		var req otlpRequest
+		if json.Unmarshal(body, &req) == nil {
+			saved = h.saveJSONSpans(req.ResourceSpans)
+		}
+	}
+
+	if saved > 0 {
+		go h.db.PruneOTelSpans(50_000)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprint(w, `{"partialSuccess":{}}`)
+}
+
+// saveProtoSpans stores spans decoded from OTLP protobuf (Java agent, Go SDK, etc.).
+func (h *H) saveProtoSpans(rss []*tracev1.ResourceSpans) int {
 	now := time.Now().UTC()
 	saved := 0
+	for _, rs := range rss {
+		service := "unknown"
+		if rs.Resource != nil {
+			service = protoAttrStr(rs.Resource.Attributes, "service.name", service)
+		}
+		for _, ss := range rs.ScopeSpans {
+			for _, sp := range ss.Spans {
+				attrs := make(map[string]string, len(sp.Attributes))
+				for _, kv := range sp.Attributes {
+					if kv.Value != nil {
+						attrs[kv.Key] = protoAnyValueStr(kv.Value)
+					}
+				}
+				startUs := int64(sp.StartTimeUnixNano) / 1000
+				endUs := int64(sp.EndTimeUnixNano) / 1000
+				durUs := endUs - startUs
+				if durUs < 0 {
+					durUs = 0
+				}
+				statusCode := "unset"
+				statusMsg := ""
+				if sp.Status != nil {
+					statusCode = protoStatusCode(sp.Status.Code)
+					statusMsg = sp.Status.Message
+				}
+				ospan := store.OTelSpan{
+					ID:           store.NewULID(),
+					TraceID:      hex.EncodeToString(sp.TraceId),
+					SpanID:       hex.EncodeToString(sp.SpanId),
+					ParentSpanID: hex.EncodeToString(sp.ParentSpanId),
+					Service:      service,
+					Name:         sp.Name,
+					Kind:         protoSpanKind(sp.Kind),
+					StartTimeUs:  startUs,
+					EndTimeUs:    endUs,
+					DurationUs:   durUs,
+					StatusCode:   statusCode,
+					StatusMsg:    statusMsg,
+					Attributes:   attrs,
+					ReceivedAt:   now,
+				}
+				if h.db.OTelSpans.Save(ospan) == nil {
+					saved++
+				}
+			}
+		}
+	}
+	return saved
+}
 
-	for _, rs := range req.ResourceSpans {
-		// Extract service.name from resource attributes.
+// saveJSONSpans stores spans decoded from OTLP JSON (Node.js SDK, custom senders, etc.).
+func (h *H) saveJSONSpans(rss []otlpResourceSpans) int {
+	now := time.Now().UTC()
+	saved := 0
+	for _, rs := range rss {
 		service := "unknown"
 		for _, kv := range rs.Resource.Attributes {
 			if kv.Key == "service.name" && kv.Value.StringValue != nil {
 				service = *kv.Value.StringValue
 			}
 		}
-
 		for _, ss := range rs.ScopeSpans {
 			for _, sp := range ss.Spans {
 				attrs := make(map[string]string, len(sp.Attributes))
@@ -324,14 +394,12 @@ func (h *H) ReceiveOTLPTraces(w http.ResponseWriter, r *http.Request) {
 						attrs[kv.Key] = v
 					}
 				}
-
 				startUs := int64(sp.StartTime) / 1000
 				endUs := int64(sp.EndTime) / 1000
 				durUs := endUs - startUs
 				if durUs < 0 {
 					durUs = 0
 				}
-
 				ospan := store.OTelSpan{
 					ID:           store.NewULID(),
 					TraceID:      sp.TraceID,
@@ -348,24 +416,69 @@ func (h *H) ReceiveOTLPTraces(w http.ResponseWriter, r *http.Request) {
 					Attributes:   attrs,
 					ReceivedAt:   now,
 				}
-				if err := h.db.OTelSpans.Save(ospan); err != nil {
-					slog.Warn("otel: save span", "err", err)
-				} else {
+				if h.db.OTelSpans.Save(ospan) == nil {
 					saved++
 				}
 			}
 		}
 	}
+	return saved
+}
 
-	// Prune asynchronously.
-	if saved > 0 {
-		go h.db.PruneOTelSpans(50_000)
+// ── protobuf helpers ─────────────────────────────────────────────────────────
+
+func protoAttrStr(attrs []*commonv1.KeyValue, key, def string) string {
+	for _, kv := range attrs {
+		if kv.Key == key && kv.Value != nil {
+			if sv := kv.Value.GetStringValue(); sv != "" {
+				return sv
+			}
+		}
 	}
+	return def
+}
 
-	// OTLP success response.
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, `{"partialSuccess":{}}`)
+func protoAnyValueStr(v *commonv1.AnyValue) string {
+	switch x := v.Value.(type) {
+	case *commonv1.AnyValue_StringValue:
+		return x.StringValue
+	case *commonv1.AnyValue_IntValue:
+		return strconv.FormatInt(x.IntValue, 10)
+	case *commonv1.AnyValue_DoubleValue:
+		return strconv.FormatFloat(x.DoubleValue, 'f', -1, 64)
+	case *commonv1.AnyValue_BoolValue:
+		if x.BoolValue {
+			return "true"
+		}
+		return "false"
+	}
+	return ""
+}
+
+func protoSpanKind(k tracev1.Span_SpanKind) string {
+	switch k {
+	case tracev1.Span_SPAN_KIND_SERVER:
+		return "server"
+	case tracev1.Span_SPAN_KIND_CLIENT:
+		return "client"
+	case tracev1.Span_SPAN_KIND_PRODUCER:
+		return "producer"
+	case tracev1.Span_SPAN_KIND_CONSUMER:
+		return "consumer"
+	default:
+		return "internal"
+	}
+}
+
+func protoStatusCode(c tracev1.Status_StatusCode) string {
+	switch c {
+	case tracev1.Status_STATUS_CODE_OK:
+		return "ok"
+	case tracev1.Status_STATUS_CODE_ERROR:
+		return "error"
+	default:
+		return "unset"
+	}
 }
 
 // ─── Query API ────────────────────────────────────────────────────────────────
