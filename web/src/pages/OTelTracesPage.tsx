@@ -3,6 +3,7 @@ import clsx from 'clsx'
 import {
   Activity, AlertTriangle, ChevronDown, ChevronRight,
   RefreshCw, GitBranch, Clock, Layers, Trash2, Search, X,
+  Globe, Database, Zap, Copy, Check, Tag,
 } from 'lucide-react'
 import {
   api, OTelSpan, OTelTrace, OTelStatus,
@@ -138,6 +139,216 @@ function spanKind(span: OTelSpan): 'server' | 'client' | 'internal' | 'producer'
   return 'internal'
 }
 
+// ─── Span detail helpers ──────────────────────────────────────────────────────
+
+function tagVal(span: OTelSpan, key: string): string {
+  return String(span.tags.find(t => t.key === key)?.value ?? '')
+}
+
+function CopyBtn2({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={e => {
+        e.stopPropagation()
+        navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1200) })
+      }}
+      className="p-0.5 rounded text-slate-700 hover:text-slate-400 shrink-0"
+      title="Copy"
+    >
+      {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+    </button>
+  )
+}
+
+function SpanDetailPanel({ span }: { span: OTelSpan }) {
+  const httpMethod  = tagVal(span, 'http.method') || tagVal(span, 'http.request.method')
+  const httpUrl     = tagVal(span, 'http.url') || tagVal(span, 'http.target') || tagVal(span, 'url.full')
+  const httpStatus  = tagVal(span, 'http.status_code') || tagVal(span, 'http.response.status_code')
+  const httpHost    = tagVal(span, 'http.host') || tagVal(span, 'server.address')
+  const dbSystem    = tagVal(span, 'db.system')
+  const dbStatement = tagVal(span, 'db.statement')
+  const dbName      = tagVal(span, 'db.name')
+  const dbTable     = tagVal(span, 'db.sql.table')
+  const dbOp        = tagVal(span, 'db.operation')
+  const grpcMethod  = tagVal(span, 'rpc.method')
+  const grpcService = tagVal(span, 'rpc.service')
+  const grpcStatus  = tagVal(span, 'rpc.grpc.status_code')
+  const errMsg      = tagVal(span, 'error.message') || tagVal(span, 'exception.message')
+  const errType     = tagVal(span, 'error.type') || tagVal(span, 'exception.type')
+  const msgSystem   = tagVal(span, 'messaging.system')
+  const msgDest     = tagVal(span, 'messaging.destination')
+
+  const hasHttp = httpMethod || httpUrl || httpStatus || httpHost
+  const hasDb   = dbSystem || dbStatement || dbOp
+  const hasGrpc = grpcMethod || grpcService
+  const hasMq   = msgSystem || msgDest
+  const hasErr  = errMsg || errType
+
+  // Remaining "other" tags after extracting structured ones above
+  const usedKeys = new Set([
+    'http.method','http.request.method','http.url','http.target','url.full',
+    'http.status_code','http.response.status_code','http.host','server.address',
+    'db.system','db.statement','db.name','db.sql.table','db.operation',
+    'rpc.method','rpc.service','rpc.grpc.status_code',
+    'error.message','exception.message','error.type','exception.type',
+    'messaging.system','messaging.destination','span.kind','otel.status_code',
+  ])
+  const otherTags = span.tags.filter(t => !usedKeys.has(t.key))
+
+  const statusNum = httpStatus ? Number(httpStatus) : 0
+  const statusColor = statusNum >= 500 ? 'text-red-400' : statusNum >= 400 ? 'text-amber-400' : statusNum >= 300 ? 'text-blue-400' : 'text-emerald-400'
+
+  return (
+    <div className="mx-3 mb-2 space-y-2 text-[10px] font-mono">
+      {/* HTTP section */}
+      {hasHttp && (
+        <div className="rounded-lg border border-blue-500/20 bg-blue-950/10 px-3 py-2 space-y-1">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Globe className="w-3 h-3 text-blue-400" />
+            <span className="text-[9px] uppercase tracking-wider text-blue-400 font-semibold">HTTP</span>
+          </div>
+          {httpMethod && (
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 w-16 shrink-0">method</span>
+              <span className="text-blue-200 font-bold">{httpMethod}</span>
+            </div>
+          )}
+          {httpUrl && (
+            <div className="flex items-start gap-2">
+              <span className="text-slate-600 w-16 shrink-0">url</span>
+              <span className="text-slate-300 break-all flex-1">{httpUrl}</span>
+              <CopyBtn2 text={httpUrl} />
+            </div>
+          )}
+          {httpHost && !httpUrl && (
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 w-16 shrink-0">host</span>
+              <span className="text-slate-300">{httpHost}</span>
+            </div>
+          )}
+          {httpStatus && (
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 w-16 shrink-0">status</span>
+              <span className={clsx('font-bold', statusColor)}>{httpStatus}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* DB section */}
+      {hasDb && (
+        <div className="rounded-lg border border-amber-500/20 bg-amber-950/10 px-3 py-2 space-y-1.5">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Database className="w-3 h-3 text-amber-400" />
+            <span className="text-[9px] uppercase tracking-wider text-amber-400 font-semibold">
+              {dbSystem ? dbSystem.toUpperCase() : 'DATABASE'}
+            </span>
+            {dbName && <span className="text-slate-600">· {dbName}</span>}
+            {dbTable && <span className="text-slate-600">· table: {dbTable}</span>}
+            {dbOp && <span className="text-amber-300/60 font-bold">{dbOp}</span>}
+          </div>
+          {dbStatement && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-slate-600">statement</span>
+                <CopyBtn2 text={dbStatement} />
+              </div>
+              <pre className="text-amber-200/90 whitespace-pre-wrap break-all leading-relaxed rounded px-2.5 py-2 bg-amber-950/30 max-h-40 overflow-y-auto text-[11px]">
+                {dbStatement}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* gRPC section */}
+      {hasGrpc && (
+        <div className="rounded-lg border border-violet-500/20 bg-violet-950/10 px-3 py-2 space-y-1">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Zap className="w-3 h-3 text-violet-400" />
+            <span className="text-[9px] uppercase tracking-wider text-violet-400 font-semibold">gRPC</span>
+          </div>
+          {grpcService && (
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 w-16 shrink-0">service</span>
+              <span className="text-slate-300">{grpcService}</span>
+            </div>
+          )}
+          {grpcMethod && (
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 w-16 shrink-0">method</span>
+              <span className="text-violet-200 font-bold">{grpcMethod}</span>
+            </div>
+          )}
+          {grpcStatus && (
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 w-16 shrink-0">status</span>
+              <span className={clsx('font-bold', grpcStatus === '0' ? 'text-emerald-400' : 'text-red-400')}>{grpcStatus}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Messaging section */}
+      {hasMq && (
+        <div className="rounded-lg border border-cyan-500/20 bg-cyan-950/10 px-3 py-2 space-y-1">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Activity className="w-3 h-3 text-cyan-400" />
+            <span className="text-[9px] uppercase tracking-wider text-cyan-400 font-semibold">
+              {msgSystem ? msgSystem.toUpperCase() : 'MESSAGING'}
+            </span>
+          </div>
+          {msgDest && (
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 w-16 shrink-0">dest</span>
+              <span className="text-cyan-200">{msgDest}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Error section */}
+      {hasErr && (
+        <div className="rounded-lg border border-red-500/20 bg-red-950/10 px-3 py-2 space-y-1">
+          <div className="flex items-center gap-1.5 mb-1">
+            <AlertTriangle className="w-3 h-3 text-red-400" />
+            <span className="text-[9px] uppercase tracking-wider text-red-400 font-semibold">Error</span>
+          </div>
+          {errType && (
+            <div className="flex items-center gap-2">
+              <span className="text-slate-600 w-16 shrink-0">type</span>
+              <span className="text-red-300 font-bold">{errType}</span>
+            </div>
+          )}
+          {errMsg && (
+            <div className="flex items-start gap-2">
+              <span className="text-slate-600 w-16 shrink-0">message</span>
+              <span className="text-red-200/90 break-all flex-1">{errMsg}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Other tags */}
+      {otherTags.length > 0 && (
+        <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-3 py-2 space-y-0.5">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Tag className="w-3 h-3 text-slate-500" />
+            <span className="text-[9px] uppercase tracking-wider text-slate-600 font-semibold">Attributes</span>
+          </div>
+          {otherTags.map((t, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="text-slate-600 shrink-0 min-w-[6rem] max-w-[10rem] truncate">{t.key}</span>
+              <span className="text-slate-300 break-all flex-1">{String(t.value)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Span detail row ─────────────────────────────────────────────────────────
 
 interface SpanRowProps {
@@ -165,6 +376,12 @@ function SpanRow({ node, traceStart, traceDuration, colorIdx }: SpanRowProps) {
     : kind === 'client' ? 'from-slate-400/50 to-slate-300/30'
     : 'from-slate-600/50 to-slate-500/30'
 
+  // Show a sub-label for common span types
+  const httpMethod = tagVal(span, 'http.method') || tagVal(span, 'http.request.method')
+  const httpStatus = tagVal(span, 'http.status_code') || tagVal(span, 'http.response.status_code')
+  const dbSystem   = tagVal(span, 'db.system')
+  const dbOp       = tagVal(span, 'db.operation')
+
   return (
     <>
       <div
@@ -179,7 +396,7 @@ function SpanRow({ node, traceStart, traceDuration, colorIdx }: SpanRowProps) {
           }
         </div>
 
-        {/* Left: service + operation */}
+        {/* Left: service + operation + kind hints */}
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <ServiceBadge name={service} small />
           <span className={clsx(
@@ -188,6 +405,29 @@ function SpanRow({ node, traceStart, traceDuration, colorIdx }: SpanRowProps) {
           )}>
             {span.operationName}
           </span>
+          {/* HTTP method + status inline hint */}
+          {httpMethod && (
+            <span className="shrink-0 text-[9px] font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-1 py-px">
+              {httpMethod}
+            </span>
+          )}
+          {httpStatus && (
+            <span className={clsx(
+              'shrink-0 text-[9px] font-bold rounded px-1 py-px border',
+              Number(httpStatus) >= 500 ? 'text-red-400 bg-red-500/10 border-red-500/20'
+              : Number(httpStatus) >= 400 ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
+              : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
+            )}>
+              {httpStatus}
+            </span>
+          )}
+          {/* DB type hint */}
+          {dbSystem && !httpMethod && (
+            <span className="shrink-0 text-[9px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1 py-px">
+              {dbSystem.toUpperCase()}
+              {dbOp ? ` ${dbOp}` : ''}
+            </span>
+          )}
           {isErr && (
             <span className="shrink-0 text-[9px] font-semibold text-red-400 bg-red-500/10 border border-red-500/20 rounded px-1 py-px">
               ERR
@@ -196,7 +436,7 @@ function SpanRow({ node, traceStart, traceDuration, colorIdx }: SpanRowProps) {
         </div>
 
         {/* Waterfall bar column */}
-        <div className="shrink-0 w-[180px] relative h-5 flex items-center">
+        <div className="shrink-0 w-[200px] relative h-5 flex items-center">
           <div className="absolute inset-0 flex items-center">
             {/* Grid lines */}
             {[25, 50, 75].map(pct => (
@@ -209,7 +449,7 @@ function SpanRow({ node, traceStart, traceDuration, colorIdx }: SpanRowProps) {
                 barGradient,
                 'shadow-sm',
               )}
-              style={{ left: `${Math.min(barLeft, 98)}%`, width: `${Math.min(barWidth, 100 - barLeft)}%` }}
+              style={{ left: `${Math.min(barLeft, 97)}%`, width: `${Math.max(Math.min(barWidth, 100 - barLeft), 0.5)}%` }}
             />
           </div>
         </div>
@@ -220,16 +460,9 @@ function SpanRow({ node, traceStart, traceDuration, colorIdx }: SpanRowProps) {
         </span>
       </div>
 
-      {/* Tags */}
-      {open && span.tags.length > 0 && (
-        <div className="mx-3 mb-2 ml-[calc(0.75rem+16px)] bg-slate-950/70 border border-slate-800 rounded-lg p-3 text-[10px] font-mono space-y-0.5">
-          {span.tags.map((t, i) => (
-            <div key={i} className="flex gap-2">
-              <span className="text-slate-500 shrink-0">{t.key}</span>
-              <span className="text-slate-300 truncate">{String(t.value)}</span>
-            </div>
-          ))}
-        </div>
+      {/* Structured span detail */}
+      {open && (
+        <SpanDetailPanel span={span} />
       )}
     </>
   )
@@ -339,8 +572,8 @@ function TraceRow({ trace, idx }: TraceRowProps) {
         <div className="border-t border-slate-800/50 bg-slate-950/40">
           {/* Column header */}
           <div className="flex items-center gap-2 px-3 py-1 bg-slate-900/60 border-b border-slate-800/50">
-            <div className="flex-1 text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Operation</div>
-            <div className="shrink-0 w-[180px] text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Timeline</div>
+            <div className="flex-1 text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Operation · Service · HTTP/DB hints</div>
+            <div className="shrink-0 w-[200px] text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Timeline</div>
             <div className="shrink-0 w-16 text-[9px] text-slate-600 uppercase tracking-wider font-semibold text-right">Duration</div>
           </div>
           {loading ? (
