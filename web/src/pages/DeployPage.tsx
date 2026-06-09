@@ -741,7 +741,7 @@ export default function DeployPage() {
             </div>
           </div>
 
-          {settingsDraft.otel_enabled && composeServices.length > 0 && (
+          {settingsDraft.otel_enabled && (
             <div className="border-t border-slate-800 px-4 pb-4 pt-3">
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
                 Service Language Overrides
@@ -749,6 +749,9 @@ export default function DeployPage() {
               <p className="text-[11px] text-slate-600 mb-3">
                 OffDock auto-detects languages from image names. Override here when detection is wrong or the image name gives no hint (e.g. <code className="text-slate-400">keycloak</code>, custom builds).
               </p>
+              {composeServices.length === 0 ? (
+                <p className="text-[11px] text-slate-600 italic">No compose services found — save a compose file first, then return here to set language overrides.</p>
+              ) : (
               <div className="space-y-2">
                 {composeServices.map(svc => {
                   const detected = svc.detected_langs.length > 0 ? svc.detected_langs.join(', ') : 'none detected'
@@ -791,6 +794,7 @@ export default function DeployPage() {
                   )
                 })}
               </div>
+              )}
             </div>
           )}
         </div>
