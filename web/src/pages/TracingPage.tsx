@@ -7,6 +7,7 @@ import {
   Trash2, ChevronDown, ChevronRight, Filter, X,
   Container as ContainerIcon, Play, Square, History, ArrowLeft,
   Network, BarChart2, ArrowRight, AlertTriangle, Menu, ShieldCheck,
+  Copy, Check, ExternalLink,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -82,24 +83,6 @@ function methodColor(m: string): string {
     case 'DELETE': return 'text-red-400 bg-red-500/10 border-red-500/20'
     default: return 'text-slate-400 bg-slate-700/30 border-slate-600/30'
   }
-}
-
-function methodDotColor(m: string): string {
-  switch (m.toUpperCase()) {
-    case 'GET': return 'bg-emerald-400'
-    case 'POST': return 'bg-blue-400'
-    case 'PUT':
-    case 'PATCH': return 'bg-amber-400'
-    case 'DELETE': return 'bg-red-400'
-    default: return 'bg-slate-500'
-  }
-}
-
-function statusTextColor(s: number): string {
-  if (s >= 500) return 'text-red-400'
-  if (s >= 400) return 'text-amber-400'
-  if (s >= 300) return 'text-blue-400'
-  return 'text-emerald-400'
 }
 
 function statusBadgeColor(s: number): string {
@@ -266,56 +249,115 @@ function StatCard({ icon: Icon, label, value, color }: {
   )
 }
 
-// ─── Child span row ───────────────────────────────────────────────────────────
+// ─── Copy button helper ───────────────────────────────────────────────────────
 
-function childIcon(kind: SpanKind) {
-  switch (kind) {
-    case 'sql': return <Database className="w-3 h-3 text-amber-400 shrink-0" />
-    case 'redis': return <Zap className="w-3 h-3 text-red-400 shrink-0" />
-    case 'http_resp': return <Globe className="w-3 h-3 text-indigo-400 shrink-0" />
-  }
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={e => {
+        e.stopPropagation()
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1200)
+        })
+      }}
+      className="p-1 rounded text-slate-700 hover:text-slate-400 transition-colors shrink-0"
+      title="Copy to clipboard"
+    >
+      {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+    </button>
+  )
 }
 
-function ChildSpanRow({ span, last }: { span: ChildSpan; last: boolean }) {
+// ─── Child span row ───────────────────────────────────────────────────────────
+
+function ChildSpanRow({ span }: { span: ChildSpan }) {
+  const leftBar = span.kind === 'sql'
+    ? 'border-l-amber-500/70'
+    : span.kind === 'redis'
+    ? 'border-l-red-500/70'
+    : 'border-l-indigo-500/50'
+
+  const bg = span.kind === 'sql'
+    ? 'bg-amber-950/10'
+    : span.kind === 'redis'
+    ? 'bg-red-950/10'
+    : 'bg-indigo-950/8'
+
   return (
-    <div className="flex items-start gap-2 pl-8 pr-4 py-1.5 text-[11px] font-mono hover:bg-slate-800/20">
-      <span className="text-slate-700 select-none">{last ? '└─' : '├─'}</span>
-      {childIcon(span.kind)}
+    <div className={clsx('ml-7 mr-0 border-l-2 pl-3 pr-3 py-2', leftBar, bg)}>
+      {/* Header row */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {span.kind === 'sql' && (
+          <>
+            <Database className="w-3 h-3 text-amber-400 shrink-0" />
+            <SqlOpBadge query={span.query} />
+            <DbBadge dbType={span.db_type} />
+            {span.table_name && (
+              <span className="text-[10px] text-amber-400/70 font-mono">
+                <span className="text-slate-600">table:</span> {span.table_name}
+              </span>
+            )}
+          </>
+        )}
+        {span.kind === 'redis' && (
+          <>
+            <Zap className="w-3 h-3 text-red-400 shrink-0" />
+            <span className="text-[10px] font-bold text-red-300 uppercase tracking-wider">Redis</span>
+          </>
+        )}
+        {span.kind === 'http_resp' && (
+          <>
+            <Globe className="w-3 h-3 text-indigo-400 shrink-0" />
+            <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider">Response</span>
+            {span.status !== undefined && (
+              <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-bold border', statusBadgeColor(span.status))}>
+                {span.status}
+              </span>
+            )}
+          </>
+        )}
 
-      {span.kind === 'sql' && (
-        <>
-          <SqlOpBadge query={span.query} />
-          <DbBadge dbType={span.db_type} />
-          <pre className="flex-1 min-w-0 text-amber-200/80 whitespace-pre-wrap break-all leading-relaxed">{span.query}</pre>
-          {span.table_name && <span className="text-[10px] text-slate-600 font-mono shrink-0">{span.table_name}</span>}
+        {/* Right-aligned meta */}
+        <div className="ml-auto flex items-center gap-2 text-[10px] shrink-0">
           {span.rows_affected !== undefined && span.rows_affected > 0 && (
-            <span className="text-[10px] text-slate-500 shrink-0">{span.rows_affected} rows</span>
+            <span className="text-slate-600 tabular-nums">{span.rows_affected} rows</span>
           )}
           {span.duration_ms !== undefined && span.duration_ms > 0 && (
-            <span className={clsx('shrink-0 text-[10px] font-semibold tabular-nums', durationColor(span.duration_ms))}>
+            <span className={clsx('font-semibold tabular-nums', durationColor(span.duration_ms))}>
               {fmtDuration(span.duration_ms)}
             </span>
           )}
-        </>
-      )}
-
-      {span.kind === 'redis' && (
-        <>
-          <span className="text-red-300/90 font-bold text-[10px] uppercase w-10 shrink-0">REDIS</span>
-          <pre className="flex-1 min-w-0 text-red-200/80 whitespace-pre-wrap break-all leading-relaxed">{span.query}</pre>
-        </>
-      )}
-
-      {span.kind === 'http_resp' && (
-        <>
-          <span className="text-indigo-300/90 font-bold text-[10px] uppercase w-10 shrink-0">RESP</span>
-          <span className={clsx('flex-1 min-w-0 font-bold', statusTextColor(span.status ?? 0))}>{span.status ?? '—'}</span>
-          {span.duration_ms !== undefined && span.duration_ms > 0 && (
-            <span className={clsx('shrink-0 font-semibold', durationColor(span.duration_ms))}>
-              {fmtDuration(span.duration_ms)}
-            </span>
+          {span.dst && (
+            <span className="text-slate-700 font-mono text-[9px]">{span.dst}</span>
           )}
-        </>
+          {span.query && span.kind !== 'http_resp' && <CopyBtn text={span.query} />}
+        </div>
+      </div>
+
+      {/* Query / command body */}
+      {span.query && span.kind === 'sql' && (
+        <pre className="mt-1.5 text-[11px] text-amber-200/85 font-mono whitespace-pre-wrap break-all leading-relaxed rounded px-2.5 py-2 bg-amber-950/25 max-h-40 overflow-y-auto">
+          {span.query}
+        </pre>
+      )}
+      {span.query && span.kind === 'redis' && (
+        <pre className="mt-1.5 text-[11px] text-red-200/85 font-mono whitespace-pre-wrap break-all leading-relaxed rounded px-2.5 py-2 bg-red-950/25 max-h-24 overflow-y-auto">
+          {span.query}
+        </pre>
+      )}
+
+      {/* HTTP response timing bar */}
+      {span.kind === 'http_resp' && span.duration_ms !== undefined && span.duration_ms > 0 && (
+        <div className="mt-1.5 flex items-center gap-2">
+          <div className="flex-1 h-1 rounded bg-slate-800/60 overflow-hidden">
+            <div className={clsx('h-full rounded', durationBarColor(span.duration_ms))} style={{ width: '100%' }} />
+          </div>
+          <span className={clsx('text-[10px] font-semibold tabular-nums', durationColor(span.duration_ms))}>
+            {fmtDuration(span.duration_ms)}
+          </span>
+        </div>
       )}
     </div>
   )
@@ -327,95 +369,119 @@ function TransactionRow({ tx, maxDuration }: { tx: Transaction; maxDuration: num
   const [expanded, setExpanded] = useState(false)
   const dur = tx.duration_ms ?? 0
   const barWidth = maxDuration > 0 ? Math.min(100, (dur / maxDuration) * 100) : 0
-  const sqlCount = tx.children.filter(c => c.kind === 'sql').length
-  const redisCount = tx.children.filter(c => c.kind === 'redis').length
+  const sqlChildren = tx.children.filter(c => c.kind === 'sql')
+  const redisChildren = tx.children.filter(c => c.kind === 'redis')
   const hasChildren = tx.children.length > 0
+  const isError = tx.status !== undefined && tx.status >= 400
+  const isSlow = dur > 500 && !isError
+  const isExternal = !!tx.host && !tx.isDbTx
+
+  const leftBorder = isError
+    ? 'border-l-red-500'
+    : isSlow
+    ? 'border-l-amber-500'
+    : dur > 0
+    ? 'border-l-emerald-500/50'
+    : 'border-l-slate-700/50'
 
   return (
-    <div className="border-b border-slate-800/50">
+    <div className={clsx('border-b border-slate-800/40 border-l-2', leftBorder)}>
       <div
         onClick={() => hasChildren && setExpanded(e => !e)}
         className={clsx(
-          'flex items-center gap-3 px-4 py-2.5 text-xs font-mono transition-colors',
-          hasChildren && 'cursor-pointer hover:bg-slate-800/25',
+          'flex items-start gap-2 px-3 py-2.5 text-xs transition-colors',
+          hasChildren ? 'cursor-pointer hover:bg-slate-800/20' : '',
         )}
       >
         {/* Expand chevron */}
-        <span className="w-3.5 shrink-0 text-slate-600">
-          {hasChildren ? (expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />) : null}
+        <span className="w-4 shrink-0 text-slate-600 pt-0.5">
+          {hasChildren
+            ? (expanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />)
+            : null}
         </span>
 
-        {/* Timestamp */}
-        <span className="text-slate-600 w-20 shrink-0 tabular-nums hidden sm:inline">{tx.time}</span>
+        {/* Content block */}
+        <div className="flex-1 min-w-0 space-y-0.5">
+          {/* Primary row: method + path + status */}
+          <div className="flex items-center gap-2 min-w-0">
+            {tx.isDbTx ? (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0 text-amber-400 bg-amber-500/10 border-amber-500/20">
+                {tx.method}
+              </span>
+            ) : (
+              <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0 min-w-[3.5rem] text-center', methodColor(tx.method))}>
+                {tx.method}
+              </span>
+            )}
+            <span
+              className={clsx('flex-1 min-w-0 truncate font-mono', tx.isDbTx ? 'text-amber-200/80 text-[10px]' : 'text-slate-200 text-xs')}
+              title={tx.path}
+            >
+              {tx.path}
+            </span>
+            {tx.status !== undefined ? (
+              <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0', statusBadgeColor(tx.status))}>
+                {tx.status}
+              </span>
+            ) : !tx.isDbTx && (
+              <span className="text-slate-700 text-[10px] shrink-0">…</span>
+            )}
+          </div>
 
-        {/* Colored dot + method badge */}
-        {tx.isDbTx ? (
-          <>
-            <span className="w-2 h-2 rounded-full shrink-0 bg-amber-400" />
-            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0 w-16 text-center text-amber-400 bg-amber-500/10 border-amber-500/20">
-              {tx.method}
-            </span>
-          </>
-        ) : (
-          <>
-            <span className={clsx('w-2 h-2 rounded-full shrink-0', methodDotColor(tx.method))} />
-            <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-bold border shrink-0 w-16 text-center', methodColor(tx.method))}>
-              {tx.method}
-            </span>
-          </>
-        )}
+          {/* Secondary row: timestamp + host + spans + timeline */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-slate-700 text-[10px] tabular-nums shrink-0">{tx.time}</span>
 
-        {/* Path */}
-        <span className={clsx('truncate flex-1 min-w-0', tx.isDbTx ? 'text-amber-200/80 font-mono text-[10px]' : 'text-slate-200')} title={tx.path}>{tx.path}</span>
+            {isExternal && (
+              <span className="flex items-center gap-1 text-[10px] text-indigo-400/80 shrink-0">
+                <ExternalLink className="w-2.5 h-2.5" />
+                {tx.host}
+              </span>
+            )}
 
-        {/* Nested span counts */}
-        <div className="hidden sm:flex items-center gap-1.5 shrink-0">
-          {sqlCount > 0 && (
-            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
-              <Database className="w-2.5 h-2.5" />{sqlCount}
-            </span>
-          )}
-          {redisCount > 0 && (
-            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-red-500/10 text-red-300 border border-red-500/20">
-              <Zap className="w-2.5 h-2.5" />{redisCount}
-            </span>
-          )}
+            {tx.src && tx.dst && (
+              <span className="text-[10px] text-slate-700 font-mono shrink-0">
+                {tx.src.split(':')[0]} → {tx.dst.split(':')[0]}
+              </span>
+            )}
+
+            {sqlChildren.length > 0 && (
+              <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shrink-0">
+                <Database className="w-2 h-2" />{sqlChildren.length} SQL
+              </span>
+            )}
+            {redisChildren.length > 0 && (
+              <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-semibold bg-red-500/10 text-red-300 border border-red-500/20 shrink-0">
+                <Zap className="w-2 h-2" />{redisChildren.length} Redis
+              </span>
+            )}
+
+            {/* Waterfall bar */}
+            {maxDuration > 0 && dur > 0 && (
+              <div className="flex items-center gap-1.5 flex-1 min-w-[80px] max-w-[200px]">
+                <div className="flex-1 h-1.5 rounded bg-slate-800/60 overflow-hidden">
+                  <div
+                    className={clsx('h-full rounded transition-all', durationBarColor(dur))}
+                    style={{ width: `${barWidth}%` }}
+                  />
+                </div>
+                <span className={clsx('text-[10px] font-semibold tabular-nums shrink-0', durationColor(dur))}>
+                  {fmtDuration(dur)}
+                </span>
+              </div>
+            )}
+            {dur === 0 && (
+              <span className="text-slate-700 text-[10px] tabular-nums shrink-0">—</span>
+            )}
+          </div>
         </div>
-
-        {/* Status badge */}
-        <span className="w-12 shrink-0 text-right">
-          {tx.status !== undefined ? (
-            <span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-bold border', statusBadgeColor(tx.status))}>
-              {tx.status}
-            </span>
-          ) : tx.isDbTx ? (
-            <span className="text-amber-600 text-[10px]"><Database className="w-3 h-3 inline" /></span>
-          ) : (
-            <span className="text-slate-700 text-[10px]">…</span>
-          )}
-        </span>
-
-        {/* Duration bar (waterfall) */}
-        <div className="w-28 shrink-0 h-3.5 rounded bg-slate-800/40 overflow-hidden relative hidden sm:block">
-          {dur > 0 && (
-            <div
-              className={clsx('h-full rounded transition-all', durationBarColor(dur))}
-              style={{ width: `${barWidth}%` }}
-            />
-          )}
-        </div>
-
-        {/* Duration text */}
-        <span className={clsx('w-14 shrink-0 text-right font-semibold tabular-nums', dur > 0 ? durationColor(dur) : 'text-slate-700')}>
-          {dur > 0 ? fmtDuration(dur) : '—'}
-        </span>
       </div>
 
       {/* Expanded child spans */}
       {expanded && hasChildren && (
-        <div className="bg-slate-950/40 border-t border-slate-800/40 py-1">
-          {tx.children.map((c, i) => (
-            <ChildSpanRow key={c.id} span={c} last={i === tx.children.length - 1} />
+        <div className="bg-slate-950/40 border-t border-slate-800/30 py-1 space-y-1">
+          {tx.children.map(c => (
+            <ChildSpanRow key={c.id} span={c} />
           ))}
         </div>
       )}
@@ -474,16 +540,11 @@ function WaterfallBody({ transactions, filter }: { transactions: Transaction[]; 
 
   return (
     <>
-      <div className="flex items-center gap-3 px-4 py-1.5 border-b border-slate-800 shrink-0 bg-slate-900/20 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
-        <span className="w-3.5 shrink-0" />
-        <span className="w-20 shrink-0 hidden sm:inline">Time</span>
-        <span className="w-2 shrink-0" />
-        <span className="w-16 shrink-0 text-center">Method</span>
-        <span className="flex-1 min-w-0">Path</span>
-        <span className="shrink-0 hidden sm:inline">Spans</span>
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-800 shrink-0 bg-slate-900/20 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
+        <span className="w-4 shrink-0" />
+        <span className="w-14 shrink-0 text-center">Method</span>
+        <span className="flex-1 min-w-0">Path · Host · Timing</span>
         <span className="w-12 shrink-0 text-right">Status</span>
-        <span className="w-28 shrink-0 hidden sm:block">Timeline</span>
-        <span className="w-14 shrink-0 text-right">Duration</span>
       </div>
       <div className="flex-1 overflow-y-auto min-h-0 bg-slate-950/50">
         {filtered.length === 0 ? (
@@ -1017,16 +1078,11 @@ function LiveTracePanel({ container, onStop, onOpenSidebar }: { container: strin
       {/* Panel content */}
       {panelTab === 'waterfall' && <>
         {/* Waterfall column header */}
-        <div className="flex items-center gap-3 px-4 py-1.5 border-b border-slate-800 shrink-0 bg-slate-900/20 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
-          <span className="w-3.5 shrink-0" />
-          <span className="w-20 shrink-0 hidden sm:inline">Time</span>
-          <span className="w-2 shrink-0" />
-          <span className="w-16 shrink-0 text-center">Method</span>
-          <span className="flex-1 min-w-0">Path</span>
-          <span className="shrink-0 hidden sm:inline">Spans</span>
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-slate-800 shrink-0 bg-slate-900/20 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
+          <span className="w-4 shrink-0" />
+          <span className="w-14 shrink-0 text-center">Method</span>
+          <span className="flex-1 min-w-0">Path · Host · Timing</span>
           <span className="w-12 shrink-0 text-right">Status</span>
-          <span className="w-28 shrink-0 hidden sm:block">Timeline</span>
-          <span className="w-14 shrink-0 text-right">Duration</span>
         </div>
 
         {/* Waterfall body */}
