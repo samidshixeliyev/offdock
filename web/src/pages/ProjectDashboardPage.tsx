@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import {
   api, Project, ContainerInfo, ComposeConfig, EnvVar,
-  DeploymentRecord, FileEntry, DeploySettings,
+  DeploymentRecord, FileEntry, DeploySettings, ComposeServiceInfo,
 } from '../api/client'
 import ConfirmModal from '../components/ConfirmModal'
 import { useToast } from '../components/Toast'
@@ -865,25 +865,38 @@ function DeployTab({ projectId }: { projectId: string }) {
     webhook_url: '', otel_enabled: false,
   })
   const [settingsSaving, setSettingsSaving] = useState(false)
+  const [composeServices, setComposeServices] = useState<ComposeServiceInfo[]>([])
+  const [langOverrides, setLangOverrides] = useState<Record<string, string>>({})
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualName, setManualName] = useState('')
+  const [manualLang, setManualLang] = useState('java')
   const toast = useToast()
   const logRef = useRef<HTMLDivElement>(null)
 
   const loadHistory = () =>
     api.listDeployments(projectId).then(d => setDeployments(d ?? [])).catch(() => {})
 
-  const loadSettings = () =>
+  const loadSettings = () => {
     api.getDeploySettings(projectId).then(s => {
       setSettings(s)
       setSettingsDraft({
         health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs,
-        health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '', otel_enabled: s.otel_enabled ?? false,
+        health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '',
+        otel_enabled: s.otel_enabled ?? false, otel_language_overrides: s.otel_language_overrides,
       })
+      setLangOverrides(s.otel_language_overrides ?? {})
     }).catch(() => {})
+    api.getComposeServices(projectId).then(r => setComposeServices(r.services ?? [])).catch(() => {})
+  }
 
   const saveSettings = async () => {
     setSettingsSaving(true)
     try {
-      const s = await api.saveDeploySettings(projectId, settingsDraft)
+      const payload = {
+        ...settingsDraft,
+        otel_language_overrides: Object.keys(langOverrides).length > 0 ? langOverrides : undefined,
+      }
+      const s = await api.saveDeploySettings(projectId, payload)
       setSettings(s)
       toast.success('Deploy settings saved')
     } catch { toast.error('Failed to save settings') } finally { setSettingsSaving(false) }
@@ -1174,23 +1187,118 @@ function DeployTab({ projectId }: { projectId: string }) {
                 onChange={e => setSettingsDraft(d => ({ ...d, webhook_url: e.target.value }))}
                 className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-blue-500" />
             </div>
-            {/* OTel — one toggle, everything pre-configured */}
-            <div className="flex items-center justify-between p-4 rounded-lg border border-slate-800 bg-slate-950/40">
-              <div>
-                <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                  <input type="checkbox"
-                    checked={settingsDraft.otel_enabled ?? false}
-                    onChange={e => setSettingsDraft(d => ({ ...d, otel_enabled: e.target.checked }))}
-                    className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-blue-500" />
-                  <span className="text-sm font-medium text-slate-200">Enable OpenTelemetry tracing</span>
-                </label>
-                <p className="text-xs text-slate-500 mt-1 ml-6">
-                  Injects OTEL_* env vars + Java agent at deploy. Jaeger started automatically by installer.
-                </p>
+            {/* OTel toggle + language overrides */}
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 overflow-hidden">
+              <div className="flex items-center justify-between p-4">
+                <div>
+                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input type="checkbox"
+                      checked={settingsDraft.otel_enabled ?? false}
+                      onChange={e => setSettingsDraft(d => ({ ...d, otel_enabled: e.target.checked }))}
+                      className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-blue-500" />
+                    <span className="text-sm font-medium text-slate-200">Enable OpenTelemetry tracing</span>
+                  </label>
+                  <p className="text-xs text-slate-500 mt-1 ml-6">
+                    Injects OTEL_* env vars and tracer agents automatically per service.
+                  </p>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded font-semibold shrink-0 ${settingsDraft.otel_enabled ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-600'}`}>
+                  {settingsDraft.otel_enabled ? 'ON' : 'OFF'}
+                </span>
               </div>
-              <span className={`text-[10px] px-2 py-0.5 rounded font-semibold shrink-0 ${settingsDraft.otel_enabled ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-600'}`}>
-                {settingsDraft.otel_enabled ? 'ON' : 'OFF'}
-              </span>
+              {settingsDraft.otel_enabled && (() => {
+                const composeNames = new Set(composeServices.map(s => s.name))
+                const manualNames = Object.keys(langOverrides).filter(n => !composeNames.has(n)).sort()
+                const addManual = () => {
+                  const name = manualName.trim()
+                  if (!name) return
+                  setLangOverrides(prev => ({ ...prev, [name]: manualLang }))
+                  setManualName(''); setManualLang('java'); setManualOpen(false)
+                }
+                const removeOverride = (name: string) =>
+                  setLangOverrides(prev => { const next = { ...prev }; delete next[name]; return next })
+                const langSelect = (name: string, value: string, isCompose: boolean) => (
+                  <select
+                    value={value}
+                    onChange={e => {
+                      const v = e.target.value
+                      setLangOverrides(prev => {
+                        const next = { ...prev }
+                        if (isCompose && v === '') { delete next[name] } else { next[name] = v }
+                        return next
+                      })
+                    }}
+                    className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
+                  >
+                    {isCompose && <option value="">Auto ({(composeServices.find(s => s.name === name)?.detected_langs ?? []).join(', ') || 'none detected'})</option>}
+                    <option value="java">Java</option>
+                    <option value="nodejs">Node.js</option>
+                    <option value="php">PHP</option>
+                    <option value="python">Python</option>
+                    <option value="ruby">Ruby</option>
+                    <option value="none">Disabled (skip)</option>
+                  </select>
+                )
+                return (
+                  <div className="border-t border-slate-800 px-4 pb-4 pt-3">
+                    <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Service Language Overrides</p>
+                    <p className="text-[11px] text-slate-600 mb-3">Override auto-detection or manually map service names to languages.</p>
+                    <div className="space-y-2">
+                      {composeServices.map(svc => (
+                        <div key={svc.name} className="flex items-center gap-3 text-sm">
+                          <div className="flex-1 min-w-0">
+                            <span className="font-mono text-slate-200 text-xs">{svc.name}</span>
+                            {svc.image && <span className="ml-2 text-[10px] text-slate-600 font-mono">{svc.image}</span>}
+                          </div>
+                          {langSelect(svc.name, langOverrides[svc.name] ?? '', true)}
+                        </div>
+                      ))}
+                      {manualNames.map(name => (
+                        <div key={name} className="flex items-center gap-3 text-sm">
+                          <div className="flex-1 min-w-0">
+                            <span className="font-mono text-slate-200 text-xs">{name}</span>
+                            <span className="ml-2 text-[10px] text-amber-500/80 font-semibold">manual</span>
+                          </div>
+                          {langSelect(name, langOverrides[name] ?? 'java', false)}
+                          <button type="button" onClick={() => removeOverride(name)} className="text-[10px] text-slate-500 hover:text-red-400 px-1">Remove</button>
+                        </div>
+                      ))}
+                      {composeServices.length === 0 && manualNames.length === 0 && (
+                        <p className="text-[11px] text-slate-600 italic">No services detected — use "Add override" to map a service name to a language.</p>
+                      )}
+                    </div>
+                    <div className="mt-3 pt-3 border-t border-slate-800/60">
+                      {manualOpen ? (
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                          <input autoFocus type="text" placeholder="service name" value={manualName}
+                            onChange={e => setManualName(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManual() } }}
+                            className="flex-1 text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-blue-500"
+                          />
+                          <select value={manualLang} onChange={e => setManualLang(e.target.value)}
+                            className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0">
+                            <option value="java">Java</option>
+                            <option value="nodejs">Node.js</option>
+                            <option value="php">PHP</option>
+                            <option value="python">Python</option>
+                            <option value="ruby">Ruby</option>
+                            <option value="none">Disabled</option>
+                          </select>
+                          <button type="button" onClick={addManual} disabled={!manualName.trim()}
+                            className="text-xs px-3 py-1 rounded bg-blue-600 text-white disabled:opacity-40 shrink-0">Add</button>
+                          <button type="button" onClick={() => { setManualOpen(false); setManualName('') }}
+                            className="text-xs text-slate-500 hover:text-slate-300 shrink-0">Cancel</button>
+                        </div>
+                      ) : (
+                        <button type="button" onClick={() => setManualOpen(true)}
+                          className="text-[11px] text-blue-400 hover:text-blue-300 font-medium">
+                          + Add manual override
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
             <div className="flex items-center gap-3">
               <button onClick={saveSettings} disabled={settingsSaving} className="btn-secondary text-sm">

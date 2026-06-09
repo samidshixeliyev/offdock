@@ -462,7 +462,6 @@ var sensitivePaths = []string{
 	"/etc/gshadow",
 	"/etc/sudoers",
 	"/root/.ssh",
-	"/home",
 	"/var/offdock/data",  // bcrypt hashes, session tokens, OTP hashes
 	"/var/offdock/certs", // TLS private keys
 }
