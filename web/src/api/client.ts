@@ -467,9 +467,11 @@ export interface DNSTicket {
 }
 export interface SMTPSettings {
   host: string; port: number; username: string; password_set: boolean
-  from: string; mode: string; starttls: boolean; insecure_skip_verify: boolean
+  from: string; from_name: string; mode: string; starttls: boolean; insecure_skip_verify: boolean
   ca_cert_file: string; client_cert_file: string; client_key_file: string
   dns_admin_email: string; configured: boolean
+  otp_subject: string; otp_body: string
+  dns_subject: string; dns_body: string
 }
 
 export interface UsbDrive {

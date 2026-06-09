@@ -141,7 +141,7 @@ func main() {
 		smtpMode = "starttls"
 	}
 	m := mailer.NewWithClientCert(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword,
-		cfg.SMTPFrom, smtpMode, cfg.SMTPSkipVerify, cfg.SMTPCACertFile,
+		cfg.SMTPFrom, cfg.SMTPFromName, smtpMode, cfg.SMTPSkipVerify, cfg.SMTPCACertFile,
 		cfg.SMTPClientCertFile, cfg.SMTPClientKeyFile)
 
 	smtpSettings := store.SMTPSettings{
@@ -150,6 +150,7 @@ func main() {
 		Username:       cfg.SMTPUsername,
 		Password:       cfg.SMTPPassword,
 		From:           cfg.SMTPFrom,
+		FromName:       cfg.SMTPFromName,
 		Mode:           smtpMode,
 		StartTLS:       cfg.SMTPStartTLS,
 		SkipVerify:     cfg.SMTPSkipVerify,
@@ -157,6 +158,10 @@ func main() {
 		ClientCertFile: cfg.SMTPClientCertFile,
 		ClientKeyFile:  cfg.SMTPClientKeyFile,
 		AdminEmail:     cfg.DNSAdminEmail,
+		OTPSubject:     cfg.OTPEmailSubject,
+		OTPBody:        cfg.OTPEmailBody,
+		DNSSubject:     cfg.DNSEmailSubject,
+		DNSBody:        cfg.DNSEmailBody,
 	}
 
 	oauthSettings := store.OAuthSettings{

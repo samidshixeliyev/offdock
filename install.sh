@@ -3,6 +3,8 @@
 #
 # Usage:
 #   sudo bash install.sh            — interactive setup (recommended)
+#   sudo bash install.sh --update   — replace binary + restart service
+#   sudo bash install.sh --deps     — install bundled packages + OTel only (no binary swap)
 #   sudo bash install.sh --uninstall — remove OffDock
 
 set -euo pipefail
@@ -27,13 +29,15 @@ PEM_PATH=""
 SKIP_NGINX=false
 UNINSTALL=false
 UPDATE=false  # --update: replace binary only, no interactive setup, no downtime beyond restart
+DEPS=false    # --deps:   install bundled packages + OTel agents only, no binary swap or service restart
 
 # --- argument parsing -------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case $1 in
     --uninstall) UNINSTALL=true; shift ;;
     --update)    UPDATE=true; shift ;;
-    *) echo "Unknown argument: $1  (accepted: --uninstall | --update)" >&2; exit 1 ;;
+    --deps)      DEPS=true;   shift ;;
+    *) echo "Unknown argument: $1  (accepted: --uninstall | --update | --deps)" >&2; exit 1 ;;
   esac
 done
 
@@ -122,12 +126,80 @@ if [[ "$UNINSTALL" == "true" ]]; then
 fi
 
 # --- check required files ---------------------------------------------------
-if [[ ! -f "${SCRIPT_DIR}/${BINARY_NAME}" ]]; then
-  echo "ERROR: '${BINARY_NAME}' binary not found in ${SCRIPT_DIR}" >&2
-  echo "       Build it first: make all" >&2; exit 1
+# --deps skips the binary entirely; only needs the debs/ and otel/ directories.
+if [[ "$DEPS" == "false" ]]; then
+  if [[ ! -f "${SCRIPT_DIR}/${BINARY_NAME}" ]]; then
+    echo "ERROR: '${BINARY_NAME}' binary not found in ${SCRIPT_DIR}" >&2
+    echo "       Build it first: make all" >&2; exit 1
+  fi
+  if [[ ! -f "${SCRIPT_DIR}/offdock.service" ]]; then
+    echo "ERROR: offdock.service not found in ${SCRIPT_DIR}" >&2; exit 1
+  fi
 fi
-if [[ ! -f "${SCRIPT_DIR}/offdock.service" ]]; then
-  echo "ERROR: offdock.service not found in ${SCRIPT_DIR}" >&2; exit 1
+
+# ============================================================================
+# DEPS PATH — install bundled packages + OTel agents, no binary/service change
+# ============================================================================
+# Use this to install docker/nginx/tcpdump and refresh OTel agents without
+# touching the running OffDock service. Safe to run independently on any
+# machine that has the bundle extracted — OffDock does not need to be installed.
+if [[ "$DEPS" == "true" ]]; then
+  echo ""
+  echo "╔══════════════════════════════════════════════════╗"
+  echo "║         OffDock Dependency Setup                 ║"
+  echo "╚══════════════════════════════════════════════════╝"
+
+  echo ""
+  echo "=== Installing bundled packages ==="
+  for _component in docker nginx tcpdump; do
+    if [[ -d "${SCRIPT_DIR}/debs/${_component}" ]] && ls "${SCRIPT_DIR}/debs/${_component}"/*.deb &>/dev/null 2>&1; then
+      echo "  Installing ${_component}..."
+      _install_debs_safe "${SCRIPT_DIR}/debs/${_component}" "${_component}"
+    else
+      echo "  No debs for ${_component} — skipping."
+    fi
+  done
+
+  # Ensure docker and nginx start if they were just installed.
+  command -v docker &>/dev/null && { systemctl enable docker 2>/dev/null || true; systemctl start docker 2>/dev/null || true; }
+  command -v nginx  &>/dev/null && { systemctl enable nginx  2>/dev/null || true; systemctl start nginx  2>/dev/null || true; }
+
+  # Refresh OpenTelemetry agent files.
+  echo ""
+  echo "=== Installing OpenTelemetry agents ==="
+  OTEL_DIR="/var/offdock/otel"
+  mkdir -p "${OTEL_DIR}" "${OTEL_DIR}/node" "${OTEL_DIR}/php" "${OTEL_DIR}/python" "${OTEL_DIR}/ruby"
+  if [[ -f "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" ]]; then
+    cp "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" "${OTEL_DIR}/opentelemetry-javaagent.jar"
+    chmod 644 "${OTEL_DIR}/opentelemetry-javaagent.jar"
+    echo "  Java agent installed."
+  fi
+  if [[ -f "${SCRIPT_DIR}/otel/node/tracer.js" ]]; then
+    cp "${SCRIPT_DIR}/otel/node/tracer.js" "${OTEL_DIR}/node/tracer.js"
+    chmod 644 "${OTEL_DIR}/node/tracer.js"
+    echo "  Node.js tracer installed."
+  fi
+  if [[ -f "${SCRIPT_DIR}/otel/php/tracer.php" ]]; then
+    cp "${SCRIPT_DIR}/otel/php/tracer.php" "${OTEL_DIR}/php/tracer.php"
+    cp "${SCRIPT_DIR}/otel/php/offdock.ini"  "${OTEL_DIR}/php/offdock.ini"
+    chmod 644 "${OTEL_DIR}/php/tracer.php" "${OTEL_DIR}/php/offdock.ini"
+    echo "  PHP tracer installed."
+  fi
+  if [[ -f "${SCRIPT_DIR}/otel/python/sitecustomize.py" ]]; then
+    cp "${SCRIPT_DIR}/otel/python/sitecustomize.py" "${OTEL_DIR}/python/sitecustomize.py"
+    chmod 644 "${OTEL_DIR}/python/sitecustomize.py"
+    echo "  Python tracer installed."
+  fi
+  if [[ -f "${SCRIPT_DIR}/otel/ruby/tracer.rb" ]]; then
+    cp "${SCRIPT_DIR}/otel/ruby/tracer.rb" "${OTEL_DIR}/ruby/tracer.rb"
+    chmod 644 "${OTEL_DIR}/ruby/tracer.rb"
+    echo "  Ruby tracer installed."
+  fi
+
+  echo ""
+  echo "  Done. Packages and OTel agents are ready."
+  echo "  Run 'sudo bash install.sh' to complete OffDock setup, or '--update' to swap the binary."
+  exit 0
 fi
 
 # ============================================================================
@@ -155,7 +227,17 @@ if [[ "$UPDATE" == "true" ]]; then
   fi
 
   # Graceful restart: systemd sends SIGTERM, waits for clean shutdown, then starts fresh.
+  # If the service doesn't exist yet (first binary drop), install the service file and enable it.
   echo "  Restarting service (brief downtime expected — a few seconds)..."
+  if ! systemctl is-enabled --quiet "${BINARY_NAME}" 2>/dev/null; then
+    echo "  Service not found — installing service file..."
+    if [[ -f "${SCRIPT_DIR}/offdock.service" ]]; then
+      cp "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}"
+      chmod 644 "${SERVICE_FILE}"
+    fi
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable "${BINARY_NAME}" 2>/dev/null || true
+  fi
   systemctl restart "${BINARY_NAME}" 2>/dev/null || {
     echo "ERROR: restart failed — check: journalctl -u offdock -n 30" >&2; exit 1
   }

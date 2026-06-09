@@ -30,6 +30,7 @@ type Mailer struct {
 	username       string
 	password       string
 	from           string
+	fromName       string // display name, e.g. "OffDock Alerts" → "OffDock Alerts <from@company.com>"
 	mode           Mode
 	skipVerify     bool
 	caCertFile     string
@@ -40,12 +41,13 @@ type Mailer struct {
 // New creates a Mailer.
 // mode: "starttls" | "implicit" | "plain" — defaults to "starttls" if empty.
 func New(host string, port int, username, password, from string, mode string, skipVerify bool, caCertFile string) *Mailer {
-	return NewWithClientCert(host, port, username, password, from, mode, skipVerify, caCertFile, "", "")
+	return NewWithClientCert(host, port, username, password, from, "", mode, skipVerify, caCertFile, "", "")
 }
 
 // NewWithClientCert is like New but also accepts a client certificate + key for
-// mutual TLS (required by some Exchange servers).
-func NewWithClientCert(host string, port int, username, password, from string, mode string, skipVerify bool, caCertFile, clientCertFile, clientKeyFile string) *Mailer {
+// mutual TLS (required by some Exchange servers), and an optional display name
+// for the From header (fromName may be empty).
+func NewWithClientCert(host string, port int, username, password, from, fromName string, mode string, skipVerify bool, caCertFile, clientCertFile, clientKeyFile string) *Mailer {
 	m := mode
 	if m == "" {
 		m = string(ModeSTARTTLS)
@@ -64,6 +66,7 @@ func NewWithClientCert(host string, port int, username, password, from string, m
 		username:       username,
 		password:       password,
 		from:           from,
+		fromName:       fromName,
 		mode:           Mode(m),
 		skipVerify:     skipVerify,
 		caCertFile:     caCertFile,
@@ -83,7 +86,7 @@ func (m *Mailer) Send(to, subject, body string) error {
 		return fmt.Errorf("SMTP not configured")
 	}
 	addr := fmt.Sprintf("%s:%d", m.host, m.port)
-	msg := buildMessage(m.from, to, subject, body)
+	msg := buildMessage(m.from, m.fromName, to, subject, body)
 
 	switch m.mode {
 	case ModeImplicit:
@@ -234,10 +237,14 @@ func splitAddrs(s string) []string {
 	return out
 }
 
-func buildMessage(from, to, subject, body string) []byte {
+func buildMessage(from, fromName, to, subject, body string) []byte {
 	now := time.Now().Format(time.RFC1123Z)
+	fromHeader := from
+	if fromName != "" {
+		fromHeader = fromName + " <" + from + ">"
+	}
 	var sb strings.Builder
-	sb.WriteString("From: " + from + "\r\n")
+	sb.WriteString("From: " + fromHeader + "\r\n")
 	sb.WriteString("To: " + to + "\r\n")
 	sb.WriteString("Subject: " + subject + "\r\n")
 	sb.WriteString("Date: " + now + "\r\n")

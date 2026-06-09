@@ -171,6 +171,24 @@ func containerBridgeIface(containerName string) (iface, containerIP string, err 
 	return bridgeIface, containerIPAddr, nil
 }
 
+// containerPID returns the host PID of the container's init process.
+func containerPID(containerName string) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "inspect",
+		"--format", "{{.State.Pid}}", containerName,
+	).Output()
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || pid == 0 {
+		return 0, fmt.Errorf("invalid pid")
+	}
+	return pid, nil
+}
+
+
 // ─── SSE trace stream ─────────────────────────────────────────────────────────
 
 var ipHdrRe = regexp.MustCompile(`IP (\d+\.\d+\.\d+\.\d+)\.(\S+) > (\d+\.\d+\.\d+\.\d+)\.(\S+):`)
@@ -223,11 +241,20 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find bridge interface and container IP.
-	iface, containerIP, err := containerBridgeIface(name)
-	if err != nil {
+	// Find bridge interface and container IP (used for bridge-mode capture / info).
+	iface, containerIP, bridgeErr := containerBridgeIface(name)
+
+	// Try nsenter into the container's network namespace so we capture loopback
+	// traffic too. This is required when services share a container (e.g. a Java
+	// app with an embedded PostgreSQL): those connections use 127.0.0.1 and never
+	// cross the bridge interface.
+	pid, pidErr := containerPID(name)
+	_, nsenterLookErr := exec.LookPath("nsenter")
+	useNsenter := pidErr == nil && nsenterLookErr == nil
+
+	if bridgeErr != nil && !useNsenter {
 		fmt.Fprintf(w, "data: {\"type\":\"error\",\"message\":\"could not find container network: %s — container may use host networking or a non-standard bridge\"}\n\n",
-			strings.ReplaceAll(err.Error(), `"`, `\"`))
+			strings.ReplaceAll(bridgeErr.Error(), `"`, `\"`))
 		flusher.Flush()
 		return
 	}
@@ -276,20 +303,36 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	send(TraceSpan{
-		Type:    TraceInfo,
-		Message: fmt.Sprintf("Tracing %s on %s (IP: %s)", name, iface, containerIP),
-	})
-
 	traceCtx, traceCancel := context.WithCancel(r.Context())
 	defer traceCancel()
 
-	// Run tcpdump on the bridge interface, filtering only this container's IP.
-	// -A: ASCII output; -nn: no name resolution; -s 0: capture full packets.
-	cmd := exec.CommandContext(traceCtx,
-		"tcpdump", "-i", iface, "-l", "-s", "0", "-A", "-nn",
-		"host", containerIP, "and", "tcp",
-	)
+	var cmd *exec.Cmd
+	if useNsenter {
+		// nsenter: captures bridge + loopback (e.g. same-container postgres on 127.0.0.1).
+		infoMsg := fmt.Sprintf("Tracing %s via netns PID %d — bridge + loopback (SQL, Redis, HTTP)", name, pid)
+		if containerIP != "" {
+			infoMsg = fmt.Sprintf("Tracing %s on %s via netns — bridge + loopback (SQL, Redis, HTTP)", name, containerIP)
+		}
+		send(TraceSpan{Type: TraceInfo, Message: infoMsg})
+		cmd = exec.CommandContext(traceCtx,
+			"nsenter", "-t", strconv.Itoa(pid), "-n", "--",
+			"tcpdump", "-i", "any", "-l", "-s", "0", "-A", "-nn",
+			"tcp", "and", "(", "port", "80", "or", "port", "8080", "or",
+			"port", "8443", "or", "port", "443", "or", "port", "5432", "or",
+			"port", "3306", "or", "port", "6379", "or", "port", "27017", "or",
+			"port", "1433", ")",
+		)
+	} else {
+		// Bridge-mode: captures only traffic that crosses the container's bridge veth.
+		send(TraceSpan{
+			Type:    TraceInfo,
+			Message: fmt.Sprintf("Tracing %s on %s (IP: %s)", name, iface, containerIP),
+		})
+		cmd = exec.CommandContext(traceCtx,
+			"tcpdump", "-i", iface, "-l", "-s", "0", "-A", "-nn",
+			"host", containerIP, "and", "tcp",
+		)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		send(TraceSpan{Type: TraceError, Message: "pipe error: " + err.Error()})

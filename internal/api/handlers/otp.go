@@ -63,18 +63,32 @@ func (h *H) OTPRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subject := "OffDock Root Terminal — OTP Code"
-	body := fmt.Sprintf(`Hello %s,
+	h.settingsMu.RLock()
+	otpSubjectTpl := h.smtpSettings.OTPSubject
+	otpBodyTpl := h.smtpSettings.OTPBody
+	h.settingsMu.RUnlock()
+
+	if otpSubjectTpl == "" {
+		otpSubjectTpl = "OffDock Root Terminal — OTP Code"
+	}
+	if otpBodyTpl == "" {
+		otpBodyTpl = `Hello {{username}},
 
 A root terminal session was requested on OffDock.
 
 Your one-time password is:
 
-    %s
+    {{code}}
 
-This code expires in 5 minutes. If you did not request this, ignore this email.
+This code expires in {{expires_minutes}} minutes. If you did not request this, ignore this email.
 
-— OffDock`, user.Username, code)
+— OffDock`
+	}
+	expiresMin := fmt.Sprintf("%d", int(otpTTL.Minutes()))
+	subject := otpSubjectTpl
+	body := strings.ReplaceAll(otpBodyTpl, "{{username}}", user.Username)
+	body = strings.ReplaceAll(body, "{{code}}", code)
+	body = strings.ReplaceAll(body, "{{expires_minutes}}", expiresMin)
 
 	if err := h.mailer.Send(user.Email, subject, body); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not send OTP email: "+err.Error())

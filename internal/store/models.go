@@ -429,6 +429,7 @@ type SMTPSettings struct {
 	Username       string
 	Password       string
 	From           string
+	FromName       string // display name for the From header, e.g. "OffDock Alerts"
 	Mode           string // "starttls" | "implicit" | "plain"
 	StartTLS       bool   // legacy
 	SkipVerify     bool
@@ -436,6 +437,14 @@ type SMTPSettings struct {
 	ClientCertFile string // path to client cert PEM (mutual TLS)
 	ClientKeyFile  string // path to client key PEM (mutual TLS)
 	AdminEmail     string
+
+	// Email templates — {{var}} placeholders. Empty = use built-in default.
+	// OTP: {{username}}, {{code}}, {{expires_minutes}}
+	// DNS: {{record_type}}, {{hostname}}, {{value}}, {{ttl}}, {{notes}}, {{requested_by}}
+	OTPSubject string
+	OTPBody    string
+	DNSSubject string
+	DNSBody    string
 }
 
 // SMTPMode returns the effective connection mode.

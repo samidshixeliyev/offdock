@@ -32,7 +32,16 @@ type Config struct {
 	// Mutual TLS — some Exchange servers require a client certificate.
 	SMTPClientCertFile string `yaml:"smtp_client_cert_file"`
 	SMTPClientKeyFile  string `yaml:"smtp_client_key_file"`
+	SMTPFromName       string `yaml:"smtp_from_name"`       // display name, e.g. "OffDock Alerts"
 	DNSAdminEmail      string `yaml:"dns_admin_email"`
+
+	// Email templates — go-template-style {{var}} substitution.
+	// OTP vars: {{username}}, {{code}}, {{expires_minutes}}
+	// DNS vars: {{record_type}}, {{hostname}}, {{value}}, {{ttl}}, {{notes}}, {{requested_by}}
+	OTPEmailSubject string `yaml:"otp_email_subject"` // default: "OffDock Root Terminal — OTP Code"
+	OTPEmailBody    string `yaml:"otp_email_body"`    // default: built-in multi-line body
+	DNSEmailSubject string `yaml:"dns_email_subject"` // default: "[DNS Request] {{record_type}} {{hostname}} → {{value}}"
+	DNSEmailBody    string `yaml:"dns_email_body"`    // default: built-in structured body
 
 	// OAuth2 / OIDC — AO ID identity provider integration.
 	OAuthEnabled      bool   `yaml:"oauth_enabled"`

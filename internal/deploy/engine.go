@@ -461,6 +461,21 @@ func writeOTelComposeOverride(composePath, overridePath, envContent, projectName
 			}
 		}
 
+		// Inject OTLP transport vars directly into the container env so the agent
+		// actually reaches our backend. Writing them to .env alone doesn't work —
+		// Docker Compose uses .env only for YAML substitution, not container envs.
+		if len(langs) > 0 {
+			envVars = append(envVars,
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://host.docker.internal:7070/v1/traces",
+				"OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf",
+				"OTEL_TRACES_SAMPLER=parentbased_traceidratio",
+				"OTEL_TRACES_SAMPLER_ARG=1.0",
+				"OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production",
+				"OTEL_METRICS_EXPORTER=none",
+				"OTEL_LOGS_EXPORTER=none",
+			)
+		}
+
 		for _, lang := range langs {
 			switch lang {
 			case "java":
@@ -712,8 +727,27 @@ func parseComposeInfo(path string) (composeInfo, error) {
 		if svc != nil {
 			img = svc.Image
 			if svc.Build != nil {
-				// Use dockerfile name + context path as language hint for build: services.
-				buildHint = svc.Build.Dockerfile + " " + svc.Build.Context
+				// Read Dockerfile FROM lines so custom image names (e.g. "localyoutube")
+				// still get correct language detection when they extend openjdk/node/etc.
+				dockerfileName := svc.Build.Dockerfile
+				if dockerfileName == "" {
+					dockerfileName = "Dockerfile"
+				}
+				contextDir := svc.Build.Context
+				if contextDir == "" || contextDir == "." {
+					contextDir = filepath.Dir(path)
+				} else if !filepath.IsAbs(contextDir) {
+					contextDir = filepath.Join(filepath.Dir(path), contextDir)
+				}
+				if dfContent, dfErr := os.ReadFile(filepath.Join(contextDir, dockerfileName)); dfErr == nil {
+					for _, dfLine := range strings.Split(string(dfContent), "\n") {
+						trimmed := strings.TrimSpace(dfLine)
+						if strings.HasPrefix(strings.ToUpper(trimmed), "FROM ") {
+							buildHint += " " + strings.ToLower(trimmed)
+						}
+					}
+				}
+				buildHint += " " + svc.Build.Dockerfile + " " + svc.Build.Context
 			}
 		}
 		services = append(services, serviceInfo{

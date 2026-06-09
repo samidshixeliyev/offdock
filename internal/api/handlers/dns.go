@@ -149,8 +149,21 @@ func (h *H) SendDNSTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body := buildDNSTicketEmail(ticket, req.Template)
-	subject := fmt.Sprintf("[DNS Request] %s %s → %s", ticket.RecordType, ticket.Hostname, ticket.Value)
+	// Per-request template overrides stored template which overrides built-in default.
+	tpl := req.Template
+	if tpl == "" {
+		tpl = h.smtpSettings.DNSBody
+	}
+	body := buildDNSTicketEmail(ticket, tpl)
+
+	subjectTpl := h.smtpSettings.DNSSubject
+	if subjectTpl == "" {
+		subjectTpl = "[DNS Request] {{record_type}} {{hostname}} → {{value}}"
+	}
+	subjectTpl = strings.ReplaceAll(subjectTpl, "{{record_type}}", ticket.RecordType)
+	subjectTpl = strings.ReplaceAll(subjectTpl, "{{hostname}}", ticket.Hostname)
+	subjectTpl = strings.ReplaceAll(subjectTpl, "{{value}}", ticket.Value)
+	subject := subjectTpl
 
 	if err := h.mailer.Send(to, subject, body); err != nil {
 		writeError(w, http.StatusInternalServerError, "send email: "+err.Error())
@@ -181,6 +194,7 @@ func (h *H) GetSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		"username":             s.Username,
 		"password_set":         s.Password != "",
 		"from":                 s.From,
+		"from_name":            s.FromName,
 		"mode":                 s.SMTPMode(),
 		"starttls":             s.StartTLS,
 		"insecure_skip_verify": s.SkipVerify,
@@ -188,6 +202,10 @@ func (h *H) GetSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		"client_cert_file":     s.ClientCertFile,
 		"client_key_file":      s.ClientKeyFile,
 		"dns_admin_email":      s.AdminEmail,
+		"otp_subject":          s.OTPSubject,
+		"otp_body":             s.OTPBody,
+		"dns_subject":          s.DNSSubject,
+		"dns_body":             s.DNSBody,
 		"configured":           h.mailer.Configured(),
 	})
 }
@@ -195,18 +213,23 @@ func (h *H) GetSMTPSettings(w http.ResponseWriter, r *http.Request) {
 // SaveSMTPSettings updates SMTP configuration at runtime and persists to config.yaml.
 func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Host          string `json:"host"`
-		Port          int    `json:"port"`
-		Username      string `json:"username"`
-		Password      string `json:"password"`
-		From          string `json:"from"`
-		Mode          string `json:"mode"`              // "starttls" | "implicit" | "plain"
-		StartTLS      bool   `json:"starttls"`          // legacy
+		Host           string `json:"host"`
+		Port           int    `json:"port"`
+		Username       string `json:"username"`
+		Password       string `json:"password"`
+		From           string `json:"from"`
+		FromName       string `json:"from_name"`
+		Mode           string `json:"mode"`              // "starttls" | "implicit" | "plain"
+		StartTLS       bool   `json:"starttls"`          // legacy
 		SkipVerify     bool   `json:"insecure_skip_verify"`
 		CACertFile     string `json:"ca_cert_file"`
 		ClientCertFile string `json:"client_cert_file"`
 		ClientKeyFile  string `json:"client_key_file"`
 		DNSAdminEmail  string `json:"dns_admin_email"`
+		OTPSubject     string `json:"otp_subject"`
+		OTPBody        string `json:"otp_body"`
+		DNSSubject     string `json:"dns_subject"`
+		DNSBody        string `json:"dns_body"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -244,6 +267,7 @@ func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		Username:       req.Username,
 		Password:       password,
 		From:           req.From,
+		FromName:       req.FromName,
 		Mode:           mode,
 		StartTLS:       req.StartTLS,
 		SkipVerify:     req.SkipVerify,
@@ -251,8 +275,12 @@ func (h *H) SaveSMTPSettings(w http.ResponseWriter, r *http.Request) {
 		ClientCertFile: req.ClientCertFile,
 		ClientKeyFile:  req.ClientKeyFile,
 		AdminEmail:     req.DNSAdminEmail,
+		OTPSubject:     req.OTPSubject,
+		OTPBody:        req.OTPBody,
+		DNSSubject:     req.DNSSubject,
+		DNSBody:        req.DNSBody,
 	}
-	newMailer := mailer.NewWithClientCert(req.Host, req.Port, req.Username, password, req.From, mode, req.SkipVerify, req.CACertFile, req.ClientCertFile, req.ClientKeyFile)
+	newMailer := mailer.NewWithClientCert(req.Host, req.Port, req.Username, password, req.From, req.FromName, mode, req.SkipVerify, req.CACertFile, req.ClientCertFile, req.ClientKeyFile)
 
 	// Persist to config.yaml.
 	if err := updateConfigYAML(newSMTP); err != nil {
@@ -368,6 +396,7 @@ func updateConfigYAML(s store.SMTPSettings) error {
 		"smtp_port":                 fmt.Sprintf("%d", s.Port),
 		"smtp_username":             s.Username,
 		"smtp_from":                 s.From,
+		"smtp_from_name":            s.FromName,
 		"smtp_mode":                 s.Mode,
 		"smtp_starttls":             boolStr(s.StartTLS),
 		"smtp_insecure_skip_verify": boolStr(s.SkipVerify),
@@ -375,6 +404,10 @@ func updateConfigYAML(s store.SMTPSettings) error {
 		"smtp_client_cert_file":     s.ClientCertFile,
 		"smtp_client_key_file":      s.ClientKeyFile,
 		"dns_admin_email":           s.AdminEmail,
+		"otp_email_subject":         s.OTPSubject,
+		"otp_email_body":            s.OTPBody,
+		"dns_email_subject":         s.DNSSubject,
+		"dns_email_body":            s.DNSBody,
 	}
 	if s.Password != "" {
 		updates["smtp_password"] = s.Password
