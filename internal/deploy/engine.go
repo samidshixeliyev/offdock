@@ -650,11 +650,11 @@ func detectServiceLanguages(image string, buildHint ...string) []string {
 		lang     string
 	}
 	checks := []entry{
-		{[]string{"java", "spring", "tomcat", "wildfly", "jboss", "quarkus", "micronaut", "openjdk", "eclipse-temurin", "corretto", "zulu", "graalvm"}, "java"},
-		{[]string{"node", "nodejs"}, "nodejs"},
-		{[]string{"php", "wordpress", "magento", "drupal", "joomla", "laravel"}, "php"},
-		{[]string{"python", "django", "flask", "fastapi", "gunicorn", "uvicorn"}, "python"},
-		{[]string{"ruby", "rails"}, "ruby"},
+		{[]string{"java", "spring", "tomcat", "wildfly", "jboss", "quarkus", "micronaut", "openjdk", "eclipse-temurin", "corretto", "zulu", "graalvm", "keycloak", "sonar", "nexus", "jenkins", "artifactory", "confluence", "jira"}, "java"},
+		{[]string{"node", "nodejs", "next", "nuxt", "remix", "nestjs", "express"}, "nodejs"},
+		{[]string{"php", "wordpress", "magento", "drupal", "joomla", "laravel", "symfony", "nextcloud"}, "php"},
+		{[]string{"python", "django", "flask", "fastapi", "gunicorn", "uvicorn", "celery", "airflow"}, "python"},
+		{[]string{"ruby", "rails", "sinatra", "puma"}, "ruby"},
 	}
 
 	var langs []string
