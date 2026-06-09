@@ -118,6 +118,7 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/projects/{id}/compose", h.GetCompose)
 		r.With(authmw.RequirePermission(deps.DB, store.PermEditCompose)).Post("/api/v1/projects/{id}/compose", h.SaveCompose)
 		r.Get("/api/v1/projects/{id}/compose/history", h.ComposeHistory)
+		r.Get("/api/v1/projects/{id}/compose/services", h.GetComposeServices)
 
 		// Env vars
 		r.Get("/api/v1/projects/{id}/env", h.GetEnv)

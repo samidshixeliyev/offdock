@@ -235,6 +235,13 @@ type DeploySettings struct {
 	// that mounts the Java agent and joins the offdock-otel Docker network so
 	// containers can reach the local Jaeger instance started by install.sh.
 	OTelEnabled bool `json:"otel_enabled,omitempty"`
+
+	// OTelLanguageOverrides lets operators pin the runtime language for a specific
+	// service rather than relying on image-name auto-detection.
+	// Key = service name (from compose), value = "java"|"nodejs"|"php"|"python"|"ruby"|"none".
+	// "none" explicitly disables injection for that service.
+	// Missing keys fall back to auto-detection.
+	OTelLanguageOverrides map[string]string `json:"otel_language_overrides,omitempty"`
 }
 
 func (d DeploySettings) GetID() string { return d.ID }

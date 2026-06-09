@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 
 	"github.com/go-chi/chi/v5"
 
 	authmw "offdock/internal/middleware"
+	"offdock/internal/deploy"
 	"offdock/internal/store"
 )
 
@@ -223,6 +225,24 @@ func (h *H) SaveDeploySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s)
+}
+
+// GetComposeServices parses the project's current compose file and returns
+// per-service metadata: name, image, and auto-detected language runtimes.
+// Used by the Deploy settings page to populate the OTel language picker.
+func (h *H) GetComposeServices(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if _, err := h.db.Projects.FindByID(projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	composePath := filepath.Join(h.projectsDir, projectID, "docker-compose.yml")
+	services, err := deploy.ParseComposeServices(composePath)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"services": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"services": services})
 }
 
 // DeleteDeployment removes a deployment record. Running/pending deployments cannot be deleted.

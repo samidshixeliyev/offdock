@@ -260,7 +260,7 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	otelOverridePath := ""
 	if settings.OTelEnabled {
 		overridePath := filepath.Join(projectDir, ".otel-override.yml")
-		if err := writeOTelComposeOverride(composePath, overridePath, envContent, project.Name, isFile); err != nil {
+		if err := writeOTelComposeOverride(composePath, overridePath, envContent, project.Name, isFile, settings.OTelLanguageOverrides); err != nil {
 			appendLog("  WARNING: could not generate OTel compose override: %v", err)
 		} else {
 			otelOverridePath = overridePath
@@ -424,7 +424,11 @@ func resolveHostIP() string {
 //     NODE_OPTIONS, JAVA_TOOL_OPTIONS) to avoid clobbering them
 //   - injects host.docker.internal so containers can reach OffDock at :7070
 //   - only mounts tracer files that actually exist on the host
-func writeOTelComposeOverride(composePath, overridePath, envContent, projectName string, isFile func(string) bool) error {
+func writeOTelComposeOverride(composePath, overridePath, envContent, projectName string, isFile func(string) bool, langOverrides ...map[string]string) error {
+	overrides := map[string]string{}
+	if len(langOverrides) > 0 && langOverrides[0] != nil {
+		overrides = langOverrides[0]
+	}
 	info, err := parseComposeInfo(composePath)
 	if err != nil {
 		return fmt.Errorf("parse compose: %w", err)
@@ -447,7 +451,17 @@ func writeOTelComposeOverride(composePath, overridePath, envContent, projectName
 		var mounts []vol
 		var envVars []string
 
-		for _, lang := range svc.Languages {
+		// Apply manual language override if set; "none" disables injection entirely.
+		langs := svc.Languages
+		if ov, ok := overrides[svc.Name]; ok {
+			if ov == "none" || ov == "" {
+				langs = nil
+			} else {
+				langs = []string{ov}
+			}
+		}
+
+		for _, lang := range langs {
 			switch lang {
 			case "java":
 				if isFile("/var/offdock/otel/opentelemetry-javaagent.jar") {
@@ -715,6 +729,31 @@ func parseComposeInfo(path string) (composeInfo, error) {
 func parseComposeServiceNames(path string) ([]string, error) {
 	info, err := parseComposeInfo(path)
 	return info.ServiceNames, err
+}
+
+// ServiceLanguageInfo is the public shape returned by ParseComposeServices.
+type ServiceLanguageInfo struct {
+	Name          string   `json:"name"`
+	Image         string   `json:"image"`
+	DetectedLangs []string `json:"detected_langs"` // auto-detected, may be empty
+}
+
+// ParseComposeServices parses the compose file at path and returns per-service
+// metadata including auto-detected languages. Used by the deploy settings UI.
+func ParseComposeServices(path string) ([]ServiceLanguageInfo, error) {
+	info, err := parseComposeInfo(path)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ServiceLanguageInfo, 0, len(info.Services))
+	for _, s := range info.Services {
+		out = append(out, ServiceLanguageInfo{
+			Name:          s.Name,
+			Image:         s.Image,
+			DetectedLangs: s.Languages,
+		})
+	}
+	return out, nil
 }
 
 // composeProjectName converts a project name to a valid Docker Compose project name.

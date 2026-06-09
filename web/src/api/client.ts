@@ -112,6 +112,14 @@ export interface DeploySettings {
   webhook_url?: string
   // OpenTelemetry — one toggle, everything auto-configured (Jaeger started by install.sh)
   otel_enabled?: boolean
+  // Manual language overrides: service name → "java"|"nodejs"|"php"|"python"|"ruby"|"none"
+  otel_language_overrides?: Record<string, string>
+}
+
+export interface ComposeServiceInfo {
+  name: string
+  image: string
+  detected_langs: string[]
 }
 
 // ─── OpenTelemetry / Jaeger types ──────────────────────────────────────────
@@ -720,6 +728,9 @@ export const api = {
     request<DeploySettings>(`/api/v1/projects/${projectId}/deploy-settings`, {
       method: 'PUT', body: JSON.stringify(data),
     }),
+
+  getComposeServices: (projectId: string) =>
+    request<{ services: ComposeServiceInfo[] }>(`/api/v1/projects/${projectId}/compose/services`),
 
   // Containers — per-project
   listContainers: (projectId: string) =>
