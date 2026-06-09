@@ -643,15 +643,25 @@ func detectServiceLanguages(image string, buildHint ...string) []string {
 		img = img[i+1:]
 	}
 
-	// Skip known infra images — injecting tracers into these causes startup errors.
+	// Skip known pure-infra images — injecting tracers into these causes startup errors.
+	// Use exact-match or prefix-only checks for images that have UI/management variants
+	// (e.g. kafka-ui, rabbitmq:management) so those variants still get language detection.
 	infraKeywords := []string{
 		"postgres", "mysql", "mariadb", "redis", "mongo", "nginx", "caddy",
-		"traefik", "rabbitmq", "kafka", "zookeeper", "elasticsearch", "kibana",
+		"traefik", "zookeeper", "kibana",
 		"grafana", "prometheus", "mssql", "sqlserver", "memcached", "nats",
 		"vault", "consul", "etcd", "haproxy",
 	}
 	for _, kw := range infraKeywords {
 		if strings.Contains(img, kw) {
+			return nil
+		}
+	}
+	// These images have UI/management variants (e.g. kafka-ui, rabbitmq:management).
+	// Only skip if the image name IS the infra image, not a derivative.
+	infraExact := []string{"kafka", "rabbitmq", "activemq", "elasticsearch", "logstash"}
+	for _, kw := range infraExact {
+		if img == kw || strings.HasPrefix(img, kw+":") {
 			return nil
 		}
 	}
@@ -664,7 +674,7 @@ func detectServiceLanguages(image string, buildHint ...string) []string {
 		lang     string
 	}
 	checks := []entry{
-		{[]string{"java", "spring", "tomcat", "wildfly", "jboss", "quarkus", "micronaut", "openjdk", "eclipse-temurin", "corretto", "zulu", "graalvm", "keycloak", "sonar", "nexus", "jenkins", "artifactory", "confluence", "jira"}, "java"},
+		{[]string{"java", "spring", "tomcat", "wildfly", "jboss", "quarkus", "micronaut", "openjdk", "eclipse-temurin", "corretto", "zulu", "graalvm", "keycloak", "sonar", "nexus", "jenkins", "artifactory", "confluence", "jira", "kafka", "flink", "spark", "hadoop", "cassandra", "elasticsearch", "logstash", "activemq", "rabbitmq"}, "java"},
 		{[]string{"node", "nodejs", "next", "nuxt", "remix", "nestjs", "express"}, "nodejs"},
 		{[]string{"php", "wordpress", "magento", "drupal", "joomla", "laravel", "symfony", "nextcloud"}, "php"},
 		{[]string{"python", "django", "flask", "fastapi", "gunicorn", "uvicorn", "celery", "airflow"}, "python"},
