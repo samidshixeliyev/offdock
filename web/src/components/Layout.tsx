@@ -1,15 +1,24 @@
 import { useState } from 'react'
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
 import clsx from 'clsx'
 import {
   LayoutDashboard, Boxes, Container, Globe, Network, HardDrive, FolderTree,
   Cpu, TerminalSquare, Activity, ScrollText, Users, LogOut, ChevronRight,
-  MapPin, Settings, Radio, FileText, Menu, Layers,
+  MapPin, Settings, Radio, FileText, Menu, Layers, BookOpen,
   type LucideIcon,
 } from 'lucide-react'
 
-interface NavItem { to: string; label: string; icon: LucideIcon; end?: boolean }
+interface NavItem {
+  to: string
+  label: string
+  icon: LucideIcon
+  end?: boolean
+  perm?: string       // required permission (undefined = visible to all)
+  adminOnly?: boolean // requires admin or superadmin
+  superadminOnly?: boolean
+}
 
 const navMain: NavItem[] = [
   { to: '/',           label: 'Dashboard',     icon: LayoutDashboard, end: true },
@@ -21,16 +30,17 @@ const navMain: NavItem[] = [
   { to: '/files',      label: 'Files',         icon: FolderTree },
 ]
 const navSystem: NavItem[] = [
-  { to: '/system',   label: 'System',    icon: Cpu },
-  { to: '/terminal', label: 'Terminal',  icon: TerminalSquare },
-  { to: '/traffic',  label: 'Traffic',   icon: Activity },
-  { to: '/dns',      label: 'DNS',       icon: MapPin },
-  { to: '/audit',    label: 'Audit Log', icon: ScrollText },
-  { to: '/users',    label: 'Users',     icon: Users },
+  { to: '/system',      label: 'System',      icon: Cpu,           superadminOnly: true },
+  { to: '/terminal',    label: 'Terminal',    icon: TerminalSquare, perm: PERMS.terminal },
+  { to: '/traffic',     label: 'Traffic',     icon: Activity },
+  { to: '/dns',         label: 'DNS',         icon: MapPin },
+  { to: '/audit',       label: 'Audit Log',   icon: ScrollText },
+  { to: '/users',       label: 'Users',       icon: Users,          superadminOnly: true },
   { to: '/tracing',     label: 'Net Traces',  icon: Radio },
   { to: '/otel-traces', label: 'App Traces',  icon: Layers },
   { to: '/app-logs',    label: 'App Logs',    icon: FileText },
-  { to: '/settings',  label: 'Settings',  icon: Settings },
+  { to: '/settings',    label: 'Settings',    icon: Settings,       adminOnly: true },
+  { to: '/help',        label: 'Help',        icon: BookOpen },
 ]
 
 function breadcrumbFor(pathname: string): string {
@@ -94,9 +104,23 @@ function SidebarLink({ item, delay, onNavigate }: { item: NavItem; delay: number
 
 export default function Layout() {
   const { user, logout } = useAuth()
+  const { can, isSuperAdmin, isAdmin } = usePermissions()
   const navigate = useNavigate()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
+
+  const visibleNavMain = navMain.filter(item => {
+    if (item.superadminOnly && !isSuperAdmin) return false
+    if (item.adminOnly && !isAdmin) return false
+    if (item.perm && !can(item.perm)) return false
+    return true
+  })
+  const visibleNavSystem = navSystem.filter(item => {
+    if (item.superadminOnly && !isSuperAdmin) return false
+    if (item.adminOnly && !isAdmin) return false
+    if (item.perm && !can(item.perm)) return false
+    return true
+  })
 
   const handleLogout = async () => {
     await logout()
@@ -142,13 +166,13 @@ export default function Layout() {
           <div>
             <p className="px-3 mb-2 text-[10px] font-semibold text-slate-600 uppercase tracking-widest">Main</p>
             <div className="space-y-1">
-              {navMain.map((item, i) => <SidebarLink key={item.to} item={item} delay={30 + i * 30} onNavigate={closeSidebar} />)}
+              {visibleNavMain.map((item, i) => <SidebarLink key={item.to} item={item} delay={30 + i * 30} onNavigate={closeSidebar} />)}
             </div>
           </div>
           <div>
             <p className="px-3 mb-2 text-[10px] font-semibold text-slate-600 uppercase tracking-widest">System</p>
             <div className="space-y-1">
-              {navSystem.map((item, i) => <SidebarLink key={item.to} item={item} delay={30 + (navMain.length + i) * 30} onNavigate={closeSidebar} />)}
+              {visibleNavSystem.map((item, i) => <SidebarLink key={item.to} item={item} delay={30 + (visibleNavMain.length + i) * 30} onNavigate={closeSidebar} />)}
             </div>
           </div>
         </nav>

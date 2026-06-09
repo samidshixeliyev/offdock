@@ -178,6 +178,38 @@ if [[ "$UPDATE" == "true" ]]; then
     echo "       Check: journalctl -u offdock -n 50" >&2
     exit 1
   fi
+
+  # Refresh OpenTelemetry agent files so new/updated tracers take effect.
+  echo ""
+  echo "=== Refreshing OpenTelemetry agents ==="
+  OTEL_DIR="/var/offdock/otel"
+  mkdir -p "${OTEL_DIR}" "${OTEL_DIR}/node" "${OTEL_DIR}/php" "${OTEL_DIR}/python" "${OTEL_DIR}/ruby"
+  if [[ -f "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" ]]; then
+    cp "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" "${OTEL_DIR}/opentelemetry-javaagent.jar"
+    chmod 644 "${OTEL_DIR}/opentelemetry-javaagent.jar"
+    echo "  Java agent refreshed."
+  fi
+  if [[ -f "${SCRIPT_DIR}/otel/node/tracer.js" ]]; then
+    cp "${SCRIPT_DIR}/otel/node/tracer.js" "${OTEL_DIR}/node/tracer.js"
+    chmod 644 "${OTEL_DIR}/node/tracer.js"
+    echo "  Node.js tracer refreshed."
+  fi
+  if [[ -f "${SCRIPT_DIR}/otel/php/tracer.php" ]]; then
+    cp "${SCRIPT_DIR}/otel/php/tracer.php" "${OTEL_DIR}/php/tracer.php"
+    cp "${SCRIPT_DIR}/otel/php/offdock.ini"  "${OTEL_DIR}/php/offdock.ini"
+    chmod 644 "${OTEL_DIR}/php/tracer.php" "${OTEL_DIR}/php/offdock.ini"
+    echo "  PHP tracer refreshed."
+  fi
+  if [[ -f "${SCRIPT_DIR}/otel/python/sitecustomize.py" ]]; then
+    cp "${SCRIPT_DIR}/otel/python/sitecustomize.py" "${OTEL_DIR}/python/sitecustomize.py"
+    chmod 644 "${OTEL_DIR}/python/sitecustomize.py"
+    echo "  Python tracer refreshed."
+  fi
+  if [[ -f "${SCRIPT_DIR}/otel/ruby/tracer.rb" ]]; then
+    cp "${SCRIPT_DIR}/otel/ruby/tracer.rb" "${OTEL_DIR}/ruby/tracer.rb"
+    chmod 644 "${OTEL_DIR}/ruby/tracer.rb"
+    echo "  Ruby tracer refreshed."
+  fi
   exit 0
 fi
 
@@ -429,7 +461,7 @@ fi
 # INSTALL OPENTELEMETRY AGENTS (for auto-instrumentation of deployed containers)
 # ============================================================================
 OTEL_DIR="/var/offdock/otel"
-mkdir -p "${OTEL_DIR}"
+mkdir -p "${OTEL_DIR}" "${OTEL_DIR}/node" "${OTEL_DIR}/php" "${OTEL_DIR}/python" "${OTEL_DIR}/ruby"
 
 # Java agent
 if [[ -f "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" ]]; then
@@ -442,7 +474,6 @@ else
 fi
 
 # Node.js zero-dependency auto-tracer
-mkdir -p "${OTEL_DIR}/node" "${OTEL_DIR}/php"
 if [[ -f "${SCRIPT_DIR}/otel/node/tracer.js" ]]; then
   cp "${SCRIPT_DIR}/otel/node/tracer.js" "${OTEL_DIR}/node/tracer.js"
   chmod 644 "${OTEL_DIR}/node/tracer.js"
@@ -457,9 +488,21 @@ if [[ -f "${SCRIPT_DIR}/otel/php/tracer.php" ]]; then
   echo "  PHP tracer: ${OTEL_DIR}/php/tracer.php"
 fi
 
+# Python zero-dependency auto-tracer (sitecustomize.py — auto-imported by Python)
+if [[ -f "${SCRIPT_DIR}/otel/python/sitecustomize.py" ]]; then
+  cp "${SCRIPT_DIR}/otel/python/sitecustomize.py" "${OTEL_DIR}/python/sitecustomize.py"
+  chmod 644 "${OTEL_DIR}/python/sitecustomize.py"
+  echo "  Python tracer: ${OTEL_DIR}/python/sitecustomize.py"
+fi
+
+# Ruby zero-dependency auto-tracer
+if [[ -f "${SCRIPT_DIR}/otel/ruby/tracer.rb" ]]; then
+  cp "${SCRIPT_DIR}/otel/ruby/tracer.rb" "${OTEL_DIR}/ruby/tracer.rb"
+  chmod 644 "${OTEL_DIR}/ruby/tracer.rb"
+  echo "  Ruby tracer: ${OTEL_DIR}/ruby/tracer.rb"
+fi
+
 # OffDock itself is the OTLP receiver — no separate collector needed.
-# Traces from instrumented containers are sent to http://host.docker.internal:7070/v1/traces
-# and stored in OffDock's own database, viewable in the App Traces page.
 echo "  OpenTelemetry receiver: built into OffDock at :7070/v1/traces"
 echo "  App Traces page: visible in the OffDock UI → App Traces"
 

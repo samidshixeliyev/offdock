@@ -71,18 +71,33 @@ func (h *H) OAuthLogout(w http.ResponseWriter, r *http.Request) {
 	// Build post-logout redirect URI (back to Offdock login page).
 	postLogoutURI := ""
 	oauthCfgLogout := h.oauthSettingsSnapshot()
-	if oauthCfgLogout.RedirectURI != "" {
-		// Strip /api/v1/auth/oauth/callback suffix to get the base URL.
+	if oauthCfgLogout.PostLogoutRedirectURI != "" {
+		postLogoutURI = oauthCfgLogout.PostLogoutRedirectURI
+	} else if oauthCfgLogout.RedirectURI != "" {
+		// Derive from callback URI: strip /api/v1/auth/oauth/callback suffix.
 		base := strings.TrimSuffix(oauthCfgLogout.RedirectURI, "/api/v1/auth/oauth/callback")
 		base = strings.TrimRight(base, "/")
-		postLogoutURI = base + "/login"
+		postLogoutURI = base + "/login?logged_out=1"
 	}
 
 	oauthCfg2 := h.oauthSettingsSnapshot()
 	if oauthCfg2.Enabled && oauthCfg2.Issuer != "" {
-		logoutURL := buildLogoutURL(strings.TrimRight(oauthCfg2.Issuer, "/"))
+		// AO IDP can only resolve which application's Post Logout Redirect URI
+		// allowlist to validate against if it can resolve a client_id — either
+		// from this query param directly, or by parsing id_token_hint's JWT
+		// `aud` claim. We don't retain the id_token (only access_token), so we
+		// must pass client_id; without it AO IDP always falls through to its
+		// own /login?logged_out=1 instead of honoring post_logout_redirect_uri.
+		q := url.Values{}
+		if oauthCfg2.ClientID != "" {
+			q.Set("client_id", oauthCfg2.ClientID)
+		}
 		if postLogoutURI != "" {
-			logoutURL += "?post_logout_redirect_uri=" + url.QueryEscape(postLogoutURI)
+			q.Set("post_logout_redirect_uri", postLogoutURI)
+		}
+		logoutURL := buildLogoutURL(strings.TrimRight(oauthCfg2.Issuer, "/"))
+		if len(q) > 0 {
+			logoutURL += "?" + q.Encode()
 		}
 		http.Redirect(w, r, logoutURL, http.StatusFound)
 		return
@@ -101,42 +116,38 @@ func (h *H) OAuthLogout(w http.ResponseWriter, r *http.Request) {
 // GetOAuthSettings returns current OAuth2 configuration (secret masked).
 func (h *H) GetOAuthSettings(w http.ResponseWriter, r *http.Request) {
 	s := h.oauthSettingsSnapshot()
-	claimSub, claimEmail, claimUsername, claimName, claimFirst, claimLast := s.EffectiveClaimNames()
+	claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":         s.Enabled,
-		"issuer":          s.Issuer,
-		"client_id":       s.ClientID,
-		"secret_set":      s.ClientSecret != "",
-		"redirect_uri":    s.RedirectURI,
-		"scope":           s.Scope,
-		"claim_sub":       claimSub,
-		"claim_email":     claimEmail,
-		"claim_username":  claimUsername,
-		"claim_name":      claimName,
-		"claim_first":     claimFirst,
-		"claim_last":      claimLast,
-		"ca_cert_file":    s.CACertFile,
-		"tls_skip_verify": s.TLSSkipVerify,
+		"enabled":                   s.Enabled,
+		"issuer":                    s.Issuer,
+		"client_id":                 s.ClientID,
+		"secret_set":                s.ClientSecret != "",
+		"redirect_uri":              s.RedirectURI,
+		"post_logout_redirect_uri":  s.PostLogoutRedirectURI,
+		"scope":                     s.Scope,
+		"claim_email":               claimEmail,
+		"claim_username":            claimUsername,
+		"claim_name":                claimName,
+		"ca_cert_file":              s.CACertFile,
+		"tls_skip_verify":           s.TLSSkipVerify,
 	})
 }
 
 // SaveOAuthSettings persists OAuth2 configuration to config.yaml (superadmin only).
 func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled       bool   `json:"enabled"`
-		Issuer        string `json:"issuer"`
-		ClientID      string `json:"client_id"`
-		ClientSecret  string `json:"client_secret"`
-		RedirectURI   string `json:"redirect_uri"`
-		Scope         string `json:"scope"`
-		ClaimSub      string `json:"claim_sub"`
-		ClaimEmail    string `json:"claim_email"`
-		ClaimUsername string `json:"claim_username"`
-		ClaimName     string `json:"claim_name"`
-		ClaimFirst    string `json:"claim_first"`
-		ClaimLast     string `json:"claim_last"`
-		CACertFile    string `json:"ca_cert_file"`
-		TLSSkipVerify bool   `json:"tls_skip_verify"`
+		Enabled               bool   `json:"enabled"`
+		Issuer                string `json:"issuer"`
+		ClientID              string `json:"client_id"`
+		ClientSecret          string `json:"client_secret"`
+		RedirectURI           string `json:"redirect_uri"`
+		PostLogoutRedirectURI string `json:"post_logout_redirect_uri"`
+		Scope                 string `json:"scope"`
+		ClaimEmail            string `json:"claim_email"`
+		ClaimUsername         string `json:"claim_username"`
+		ClaimName             string `json:"claim_name"`
+		CACertFile            string `json:"ca_cert_file"`
+		TLSSkipVerify         bool   `json:"tls_skip_verify"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -159,20 +170,18 @@ func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newSettings := store.OAuthSettings{
-		Enabled:       req.Enabled,
-		Issuer:        strings.TrimRight(req.Issuer, "/"),
-		ClientID:      req.ClientID,
-		ClientSecret:  secret,
-		RedirectURI:   req.RedirectURI,
-		Scope:         req.Scope,
-		ClaimSub:      req.ClaimSub,
-		ClaimEmail:    req.ClaimEmail,
-		ClaimUsername: req.ClaimUsername,
-		ClaimName:     req.ClaimName,
-		ClaimFirst:    req.ClaimFirst,
-		ClaimLast:     req.ClaimLast,
-		CACertFile:    req.CACertFile,
-		TLSSkipVerify: req.TLSSkipVerify,
+		Enabled:               req.Enabled,
+		Issuer:                strings.TrimRight(req.Issuer, "/"),
+		ClientID:              req.ClientID,
+		ClientSecret:          secret,
+		RedirectURI:           req.RedirectURI,
+		PostLogoutRedirectURI: req.PostLogoutRedirectURI,
+		Scope:                 req.Scope,
+		ClaimEmail:            req.ClaimEmail,
+		ClaimUsername:         req.ClaimUsername,
+		ClaimName:             req.ClaimName,
+		CACertFile:            req.CACertFile,
+		TLSSkipVerify:         req.TLSSkipVerify,
 	}
 
 	if err := updateOAuthConfigYAML(newSettings); err != nil {
@@ -243,6 +252,11 @@ func (h *H) OAuthStart(w http.ResponseWriter, r *http.Request) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(h256[:])
 
 	// Store state+verifier in a signed cookie so we can verify on callback.
+	// MaxAge must outlast the full IdP round trip — login form, AO IDP's
+	// "continue as <user>" account picker, possible consent screens — which
+	// can easily run past 5 minutes for a human typing credentials. A cookie
+	// that expires mid-flow surfaces as a confusing "missing oauth state
+	// cookie" error on callback even though nothing actually went wrong.
 	payload := base64.RawURLEncoding.EncodeToString([]byte(state + "|" + codeVerifier))
 	sig := h.auth.HMACSign(payload)
 	cookieVal := payload + "." + sig
@@ -252,7 +266,7 @@ func (h *H) OAuthStart(w http.ResponseWriter, r *http.Request) {
 		Path:     "/api/v1/auth/oauth/callback",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   300,
+		MaxAge:   900,
 	})
 
 	q := url.Values{}
@@ -322,35 +336,43 @@ func (h *H) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Everything below this point detects the same user-visible failure mode:
+	// the browser didn't carry the OAuth round-trip state back intact (missing
+	// code/state params, expired/absent/tampered state cookie, or a state value
+	// that doesn't match what we issued). Whatever the exact cause, the fix from
+	// the user's side is identical — start the login again — so we report one
+	// clear, actionable message instead of a half-dozen cryptic technical ones.
+	const expiredLoginErr = "/login?error=" + "Login+session+expired+or+was+interrupted+%E2%80%94+please+try+signing+in+again"
+
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
 	if code == "" || state == "" {
-		http.Redirect(w, r, "/login?error=missing+code+or+state", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 
 	// Verify state + recover PKCE verifier from signed cookie.
 	cookie, err := r.Cookie("offdock_oauth_state")
 	if err != nil {
-		http.Redirect(w, r, "/login?error=missing+oauth+state+cookie", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 
 	parts := strings.SplitN(cookie.Value, ".", 2)
 	if len(parts) != 2 || !h.auth.HMACVerify(parts[0], parts[1]) {
-		http.Redirect(w, r, "/login?error=invalid+oauth+state+cookie", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 
 	decoded, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		http.Redirect(w, r, "/login?error=malformed+state+cookie", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 
 	stateParts := strings.SplitN(string(decoded), "|", 2)
 	if len(stateParts) != 2 || stateParts[0] != state {
-		http.Redirect(w, r, "/login?error=state+mismatch", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 	codeVerifier := stateParts[1]
@@ -513,10 +535,12 @@ func (h *H) fetchUserInfo(accessToken string) (*oauthClaims, error) {
 }
 
 // mapClaims converts a raw claims map to oauthClaims using the configured field names.
-// Uses fallback chains for email and display name to handle AO ID LDAP claims
-// (mail/cn/givenName/sn/uid) as well as standard OIDC claims (email/name/preferred_username).
+// AO IDP's /oauth2/userinfo always returns sub/ldap_username/email/display_name (its
+// admin-configured claim mappings only affect the JWT, not this endpoint), so the
+// fallback chains also try those plus standard OIDC names (email/preferred_username)
+// in case Offdock is pointed at a different IdP that passes through raw LDAP attributes.
 func (h *H) mapClaims(raw map[string]interface{}) (*oauthClaims, error) {
-	claimSub, claimEmail, claimUsername, claimName, claimFirst, claimLast := h.oauthSettingsSnapshot().EffectiveClaimNames()
+	claimEmail, claimUsername, claimName := h.oauthSettingsSnapshot().EffectiveClaimNames()
 
 	str := func(key string) string {
 		if v, ok := raw[key]; ok {
@@ -535,20 +559,20 @@ func (h *H) mapClaims(raw map[string]interface{}) (*oauthClaims, error) {
 		return ""
 	}
 
-	sub := str(claimSub)
+	// Subject: always the standard OIDC "sub" claim — mandatory per spec and
+	// always returned by AO IDP. Not admin-configurable; nothing to map here.
+	sub := str("sub")
 
-	// Email: try configured claim → OIDC "email" fallback → sub as last resort.
+	// Email: configured claim → AO IDP/OIDC "email" → sub as last resort.
 	email := firstNonEmpty(str(claimEmail), str("email"), sub)
 
-	// Username: try configured claim → OIDC "preferred_username" → sub.
-	username := firstNonEmpty(str(claimUsername), str("preferred_username"), sub)
+	// Username: configured claim → AO IDP "ldap_username" → OIDC "preferred_username" → sub.
+	// Falling through to sub (a UUID) is the symptom of a claim-name mismatch — it means
+	// none of the expected username claims were present in the userinfo response.
+	username := firstNonEmpty(str(claimUsername), str("ldap_username"), str("preferred_username"), sub)
 
-	// Display name: try full-name claim (cn) → compose from first+last (givenName+sn)
-	// → username claim (uid) → OIDC preferred_username.
-	givenName := str(claimFirst)
-	surname := str(claimLast)
-	composedName := strings.TrimSpace(givenName + " " + surname)
-	displayName := firstNonEmpty(str(claimName), composedName, str(claimUsername), str("preferred_username"))
+	// Full name: configured claim → AO IDP "display_name" → username → preferred_username.
+	displayName := firstNonEmpty(str(claimName), str("display_name"), username, str("preferred_username"))
 
 	c := &oauthClaims{
 		Sub:         sub,
@@ -558,7 +582,7 @@ func (h *H) mapClaims(raw map[string]interface{}) (*oauthClaims, error) {
 		Raw:         raw,
 	}
 	if c.Sub == "" {
-		return nil, fmt.Errorf("'%s' (sub) claim missing in userinfo response", claimSub)
+		return nil, fmt.Errorf("'sub' claim missing in userinfo response")
 	}
 	return c, nil
 }
@@ -640,21 +664,19 @@ func updateOAuthConfigYAML(s store.OAuthSettings) error {
 		return err
 	}
 
-	claimSub, claimEmail, claimUsername, claimName, claimFirst, claimLast := s.EffectiveClaimNames()
+	claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
 	updates := map[string]string{
-		"oauth_enabled":         boolStr(s.Enabled),
-		"oauth_issuer":          s.Issuer,
-		"oauth_client_id":       s.ClientID,
-		"oauth_redirect_uri":    s.RedirectURI,
-		"oauth_scope":           s.Scope,
-		"oauth_claim_sub":       claimSub,
-		"oauth_claim_email":     claimEmail,
-		"oauth_claim_username":  claimUsername,
-		"oauth_claim_name":      claimName,
-		"oauth_claim_first":     claimFirst,
-		"oauth_claim_last":      claimLast,
-		"oauth_ca_cert_file":    s.CACertFile,
-		"oauth_tls_skip_verify": boolStr(s.TLSSkipVerify),
+		"oauth_enabled":                   boolStr(s.Enabled),
+		"oauth_issuer":                    s.Issuer,
+		"oauth_client_id":                 s.ClientID,
+		"oauth_redirect_uri":              s.RedirectURI,
+		"oauth_post_logout_redirect_uri":  s.PostLogoutRedirectURI,
+		"oauth_scope":                     s.Scope,
+		"oauth_claim_email":               claimEmail,
+		"oauth_claim_username":            claimUsername,
+		"oauth_claim_name":                claimName,
+		"oauth_ca_cert_file":              s.CACertFile,
+		"oauth_tls_skip_verify":           boolStr(s.TLSSkipVerify),
 	}
 	if s.ClientSecret != "" {
 		updates["oauth_client_secret"] = s.ClientSecret

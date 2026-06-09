@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   Activity, AlertTriangle, ChevronDown, ChevronRight,
-  RefreshCw, GitBranch, Clock, Layers, Trash2,
+  RefreshCw, GitBranch, Clock, Layers, Trash2, Search, X,
 } from 'lucide-react'
 import {
   api, OTelSpan, OTelTrace, OTelStatus,
@@ -29,9 +29,9 @@ function getServiceForSpan(span: OTelSpan, trace: OTelTrace): string {
   return trace.processes[span.processID]?.serviceName ?? 'unknown'
 }
 
-function getRootSpan(trace: OTelTrace): OTelSpan {
-  const root = trace.spans.find(s => !s.references || s.references.length === 0)
-  return root ?? trace.spans[0]
+function getRootSpan(trace: OTelTrace): OTelSpan | undefined {
+  if (!trace.spans || trace.spans.length === 0) return undefined
+  return trace.spans.find(s => !s.references || s.references.length === 0) ?? trace.spans[0]
 }
 
 function hasError(span: OTelSpan): boolean {
@@ -249,6 +249,7 @@ function TraceRow({ trace, idx }: TraceRowProps) {
 
   if (trace.spans.length === 0) return null
   const root = getRootSpan(trace)
+  if (!root) return null
   const service = getServiceForSpan(root, trace)
   const isErr = traceHasError(trace)
   const colorIdx = serviceColorIdx(service)
@@ -386,8 +387,24 @@ const LANG_EXAMPLES: Array<{ id: string; label: string; code: string }> = [
     id: 'php',
     label: 'PHP (auto)',
     code: `# Nothing needed — offdock-tracer.php auto_prepend_file is injected.
-# Instruments every request + outgoing curl calls.
+# Instruments every incoming HTTP request + outgoing curl calls.
 # PHP_INI_SCAN_DIR=/otel/php  ← set by OffDock`,
+  },
+  {
+    id: 'python',
+    label: 'Python (auto)',
+    code: `# Nothing needed — sitecustomize.py is injected automatically.
+# Instruments outgoing HTTP calls via http.client
+# (covers requests, urllib, urllib3, httpx, and most HTTP libraries).
+# PYTHONPATH=/otel/python  ← prepended by OffDock`,
+  },
+  {
+    id: 'ruby',
+    label: 'Ruby (auto)',
+    code: `# Nothing needed — tracer.rb is injected automatically.
+# Instruments outgoing HTTP/HTTPS calls via Net::HTTP
+# (covers Faraday, HTTParty, open-uri, RestClient, and most HTTP libraries).
+# RUBYOPT=-r /otel/ruby/tracer.rb  ← set by OffDock`,
   },
   {
     id: 'go',
@@ -507,15 +524,31 @@ export default function OTelTracesPage() {
   const [selectedService, setSelectedService] = useState('')
   const [selectedOp, setSelectedOp] = useState('')
   const [limit, setLimit] = useState(20)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [minDurationMs, setMinDurationMs] = useState('')
+  const [timeRange, setTimeRange] = useState('')
 
   const loadRef = useRef(0)
 
-  const loadTraces = useCallback(async (svc: string, op: string, lim: number, isRefresh = false) => {
+  const loadTraces = useCallback(async (
+    svc: string, op: string, lim: number,
+    srch: string, stat: string, minDur: string, tRange: string,
+    isRefresh = false,
+  ) => {
     const id = ++loadRef.current
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
     try {
-      const res = await api.otelTraces({ service: svc || undefined, operation: op || undefined, limit: lim })
+      const res = await api.otelTraces({
+        service: svc || undefined,
+        operation: op || undefined,
+        limit: lim,
+        search: srch || undefined,
+        status: stat || undefined,
+        min_duration_ms: minDur ? Number(minDur) : undefined,
+        time_range: tRange || undefined,
+      })
       if (id === loadRef.current) setTraces(res.data ?? [])
     } catch {
       if (id === loadRef.current) setTraces([])
@@ -528,8 +561,8 @@ export default function OTelTracesPage() {
   useEffect(() => {
     api.otelStatus().then(setStatus).catch(() => setStatus({ available: false }))
     api.otelServices().then(r => setServices(r.data ?? [])).catch(() => {})
-    loadTraces('', '', limit)
-  }, [])
+    loadTraces('', '', limit, '', '', '', '')
+  }, []) // eslint-disable-line
 
   // Service change → load operations
   useEffect(() => {
@@ -540,10 +573,10 @@ export default function OTelTracesPage() {
 
   // Filter/limit change
   useEffect(() => {
-    loadTraces(selectedService, selectedOp, limit)
-  }, [selectedService, selectedOp, limit])
+    loadTraces(selectedService, selectedOp, limit, search, statusFilter, minDurationMs, timeRange)
+  }, [selectedService, selectedOp, limit, search, statusFilter, minDurationMs, timeRange]) // eslint-disable-line
 
-  const refresh = () => loadTraces(selectedService, selectedOp, limit, true)
+  const refresh = () => loadTraces(selectedService, selectedOp, limit, search, statusFilter, minDurationMs, timeRange, true)
 
   const clearAll = async () => {
     if (!confirm('Delete all stored traces? This cannot be undone.')) return
@@ -553,20 +586,17 @@ export default function OTelTracesPage() {
   }
 
   const inputCls = 'bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-slate-500 transition-colors'
+  const hasFilters = search || statusFilter || minDurationMs || timeRange
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      {/* Toolbar */}
+      {/* Toolbar — row 1: title + primary filters */}
       <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-800 bg-slate-900/30">
         <Activity className="w-4 h-4 text-blue-400 shrink-0" />
         <span className="text-sm font-semibold text-slate-200 mr-1">App Traces</span>
 
         {/* Service filter */}
-        <select
-          value={selectedService}
-          onChange={e => setSelectedService(e.target.value)}
-          className={inputCls}
-        >
+        <select value={selectedService} onChange={e => setSelectedService(e.target.value)} className={inputCls}>
           <option value="">All services</option>
           {services.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
@@ -578,6 +608,21 @@ export default function OTelTracesPage() {
             {operations.map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
           </select>
         )}
+
+        {/* Time range */}
+        <select value={timeRange} onChange={e => setTimeRange(e.target.value)} className={inputCls}>
+          <option value="">All time</option>
+          <option value="1h">Last 1h</option>
+          <option value="6h">Last 6h</option>
+          <option value="24h">Last 24h</option>
+          <option value="7d">Last 7d</option>
+        </select>
+
+        {/* Status */}
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className={inputCls}>
+          <option value="">All status</option>
+          <option value="error">Errors only</option>
+        </select>
 
         {/* Limit */}
         <select value={limit} onChange={e => setLimit(Number(e.target.value))} className={inputCls}>
@@ -599,14 +644,52 @@ export default function OTelTracesPage() {
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
-          <button
-            onClick={refresh}
-            disabled={refreshing}
-            className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300 transition-colors"
-          >
+          <button onClick={refresh} disabled={refreshing}
+            className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300 transition-colors">
             <RefreshCw className={clsx('w-3.5 h-3.5', refreshing && 'animate-spin')} />
           </button>
         </div>
+      </div>
+
+      {/* Toolbar — row 2: search + min duration */}
+      <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-2 border-b border-slate-800/60 bg-slate-900/10">
+        <div className="relative flex-1 min-w-[180px] max-w-sm">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search spans, services, attributes…"
+            className="w-full pl-8 pr-7 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500 transition-colors"
+          />
+          {search && (
+            <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <label className="text-[10px] text-slate-500 whitespace-nowrap">Min duration</label>
+          <div className="relative">
+            <input
+              type="number"
+              min="0"
+              value={minDurationMs}
+              onChange={e => setMinDurationMs(e.target.value)}
+              placeholder="0"
+              className="w-20 pl-2 pr-7 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-slate-500 transition-colors"
+            />
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-500">ms</span>
+          </div>
+        </div>
+
+        {hasFilters && (
+          <button
+            onClick={() => { setSearch(''); setStatusFilter(''); setMinDurationMs(''); setTimeRange('') }}
+            className="text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors">
+            <X className="w-3 h-3" /> Clear filters
+          </button>
+        )}
       </div>
 
       {/* Body */}

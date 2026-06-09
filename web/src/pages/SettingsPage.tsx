@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import { api, OAuthSettings } from '../api/client'
+import { api, OAuthSettings, RetentionSettings } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
 import { Page, PageHeader, Panel, Alert } from '../components/ui'
 import { useToast } from '../components/Toast'
 import {
   Settings, ShieldCheck, Save, Eye, EyeOff, Loader2,
-  CheckCircle2, Link2, KeyRound, Tag, Info,
+  CheckCircle2, Link2, KeyRound, Tag, Info, Database,
 } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -90,41 +90,51 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false)
   const [oauth, setOauth] = useState<OAuthSettings | null>(null)
 
-  // Form state
+  // OAuth form state
   const [enabled, setEnabled] = useState(false)
   const [issuer, setIssuer] = useState('')
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
   const [showSecret, setShowSecret] = useState(false)
   const [redirectUri, setRedirectUri] = useState('')
+  const [postLogoutUri, setPostLogoutUri] = useState('')
   const [scope, setScope] = useState('openid profile email')
-  const [claimSub, setClaimSub] = useState('sub')
-  const [claimEmail, setClaimEmail] = useState('mail')
-  const [claimUsername, setClaimUsername] = useState('uid')
-  const [claimName, setClaimName] = useState('cn')
-  const [claimFirst, setClaimFirst] = useState('givenName')
-  const [claimLast, setClaimLast] = useState('sn')
+  const [claimEmail, setClaimEmail] = useState('email')
+  const [claimUsername, setClaimUsername] = useState('ldap_username')
+  const [claimName, setClaimName] = useState('display_name')
   const [caCertFile, setCaCertFile] = useState('')
   const [tlsSkipVerify, setTlsSkipVerify] = useState(false)
 
+  // Retention state
+  const [retention, setRetention] = useState<RetentionSettings>({
+    otel_spans_max_count: 50000,
+    otel_spans_max_age_days: 0,
+    trace_sessions_max_count: 500,
+    trace_sessions_max_age_days: 0,
+    audit_events_max_count: 10000,
+    audit_events_max_age_days: 0,
+    app_logs_max_lines: 0,
+  })
+  const [savingRetention, setSavingRetention] = useState(false)
+
   useEffect(() => {
-    api.getOAuthSettings()
+    const p1 = api.getOAuthSettings()
       .then(s => {
         setOauth(s)
         setEnabled(s.enabled)
         setIssuer(s.issuer ?? '')
         setClientId(s.client_id ?? '')
         setRedirectUri(s.redirect_uri ?? '')
+        setPostLogoutUri(s.post_logout_redirect_uri ?? '')
         setScope(s.scope || 'openid profile email')
-        setClaimSub(s.claim_sub || 'sub')
-        setClaimEmail(s.claim_email || 'mail')
-        setClaimUsername(s.claim_username || 'uid')
-        setClaimName(s.claim_name || 'cn')
-        setClaimFirst(s.claim_first || 'givenName')
-        setClaimLast(s.claim_last || 'sn')
+        setClaimEmail(s.claim_email || 'email')
+        setClaimUsername(s.claim_username || 'ldap_username')
+        setClaimName(s.claim_name || 'display_name')
         setCaCertFile(s.ca_cert_file || '')
         setTlsSkipVerify(s.tls_skip_verify || false)
       })
+    const p2 = api.getRetentionSettings().then(setRetention)
+    Promise.all([p1, p2])
       .catch(() => toast.error('Could not load settings'))
       .finally(() => setLoading(false))
   }, []) // eslint-disable-line
@@ -136,13 +146,12 @@ export default function SettingsPage() {
       await api.saveOAuthSettings({
         enabled, issuer, client_id: clientId,
         client_secret: clientSecret || undefined,
-        redirect_uri: redirectUri, scope,
-        claim_sub: claimSub || undefined,
+        redirect_uri: redirectUri,
+        post_logout_redirect_uri: postLogoutUri || undefined,
+        scope,
         claim_email: claimEmail || undefined,
         claim_username: claimUsername || undefined,
         claim_name: claimName || undefined,
-        claim_first: claimFirst || undefined,
-        claim_last: claimLast || undefined,
         ca_cert_file: caCertFile || undefined,
         tls_skip_verify: tlsSkipVerify,
       })
@@ -151,15 +160,27 @@ export default function SettingsPage() {
         ...prev, enabled, issuer, client_id: clientId,
         redirect_uri: redirectUri, scope,
         secret_set: prev.secret_set || clientSecret !== '',
-        claim_sub: claimSub, claim_email: claimEmail,
-        claim_username: claimUsername, claim_name: claimName,
-        claim_first: claimFirst, claim_last: claimLast,
+        claim_email: claimEmail, claim_username: claimUsername, claim_name: claimName,
       } : prev)
       toast.success('Settings saved')
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Save failed')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSaveRetention = async () => {
+    if (!isSuperAdmin) return
+    setSavingRetention(true)
+    try {
+      const saved = await api.saveRetentionSettings(retention)
+      setRetention(saved)
+      toast.success('Retention settings saved')
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Save failed')
+    } finally {
+      setSavingRetention(false)
     }
   }
 
@@ -300,6 +321,30 @@ export default function SettingsPage() {
               </div>
             </Field>
 
+            <Field
+              label="Post-Logout Redirect URI"
+              hint="Where AO ID redirects after sign-out. Must be registered in AO ID's allowed logout URLs. Leave blank to derive from Redirect URI automatically."
+            >
+              <div className="flex gap-2">
+                <input
+                  className="input flex-1"
+                  value={postLogoutUri}
+                  onChange={e => setPostLogoutUri(e.target.value)}
+                  disabled={!isSuperAdmin}
+                  placeholder="https://offdock.host/login?logged_out=1"
+                />
+                {isSuperAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setPostLogoutUri(window.location.origin + '/login?logged_out=1')}
+                    className="btn-secondary shrink-0 text-xs whitespace-nowrap"
+                  >
+                    Auto-fill
+                  </button>
+                )}
+              </div>
+            </Field>
+
             <Field label="Scopes" hint="Space-separated OAuth2 scopes to request.">
               <input
                 className="input w-full"
@@ -353,17 +398,14 @@ export default function SettingsPage() {
               <span className="text-[11px] font-semibold text-slate-600 uppercase tracking-widest">Claim Mappings</span>
             </div>
             <p className="text-xs text-slate-600 mb-4">
-              Map JWT / UserInfo claim names to OffDock user attributes. Defaults match AO ID LDAP claim names (mail, cn, uid, givenName, sn). Changes take effect immediately without restart.
+              OffDock needs just three things from the IdP's UserInfo response: username, email, and full name. The subject (unique ID) is always the standard OIDC "sub" claim — every IdP returns it, so it isn't configurable. Defaults match AO IDP's fixed /oauth2/userinfo response (ldap_username, email, display_name). Changes take effect immediately without restart.
             </p>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {[
-                { label: 'Subject (unique ID)', placeholder: 'sub', value: claimSub, onChange: setClaimSub },
-                { label: 'Email address', placeholder: 'mail', value: claimEmail, onChange: setClaimEmail },
-                { label: 'Username', placeholder: 'uid', value: claimUsername, onChange: setClaimUsername },
-                { label: 'Full name (cn)', placeholder: 'cn', value: claimName, onChange: setClaimName },
-                { label: 'First name', placeholder: 'givenName', value: claimFirst, onChange: setClaimFirst },
-                { label: 'Last name', placeholder: 'sn', value: claimLast, onChange: setClaimLast },
+                { label: 'Username', placeholder: 'ldap_username', value: claimUsername, onChange: setClaimUsername },
+                { label: 'Email address', placeholder: 'email', value: claimEmail, onChange: setClaimEmail },
+                { label: 'Full name', placeholder: 'display_name', value: claimName, onChange: setClaimName },
               ].map(f => (
                 <div key={f.label} className="bg-slate-950/50 border border-slate-800 rounded-lg p-3">
                   <label className="block text-xs text-slate-500 mb-1.5">{f.label}</label>
@@ -377,6 +419,119 @@ export default function SettingsPage() {
                 </div>
               ))}
             </div>
+          </div>
+        </Panel>
+
+        {/* ── Retention policy ── */}
+        <Panel>
+          <SectionHeader
+            icon={Database}
+            title="Data Retention"
+            description="Configure how long OffDock keeps telemetry, trace sessions, and audit events. Changes take effect on the next hourly prune cycle."
+          />
+          <div className="px-5 pb-4 space-y-5 pt-2">
+            {/* OTel spans */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">OpenTelemetry Spans</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Max span count</label>
+                  <input type="number" min="1000" max="500000"
+                    className="input w-full"
+                    value={retention.otel_spans_max_count}
+                    onChange={e => setRetention(r => ({ ...r, otel_spans_max_count: Number(e.target.value) }))}
+                    disabled={!isSuperAdmin}
+                    placeholder="50000" />
+                  <p className="text-[10px] text-slate-600 mt-1">Oldest spans are deleted first when exceeded</p>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Max age (days)</label>
+                  <input type="number" min="0" max="3650"
+                    className="input w-full"
+                    value={retention.otel_spans_max_age_days}
+                    onChange={e => setRetention(r => ({ ...r, otel_spans_max_age_days: Number(e.target.value) }))}
+                    disabled={!isSuperAdmin}
+                    placeholder="0 = unlimited" />
+                  <p className="text-[10px] text-slate-600 mt-1">0 = keep indefinitely</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Trace sessions */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Container Trace Sessions</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Max session count</label>
+                  <input type="number" min="10" max="10000"
+                    className="input w-full"
+                    value={retention.trace_sessions_max_count}
+                    onChange={e => setRetention(r => ({ ...r, trace_sessions_max_count: Number(e.target.value) }))}
+                    disabled={!isSuperAdmin}
+                    placeholder="500" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Max age (days)</label>
+                  <input type="number" min="0" max="3650"
+                    className="input w-full"
+                    value={retention.trace_sessions_max_age_days}
+                    onChange={e => setRetention(r => ({ ...r, trace_sessions_max_age_days: Number(e.target.value) }))}
+                    disabled={!isSuperAdmin}
+                    placeholder="0 = unlimited" />
+                </div>
+              </div>
+            </div>
+
+            {/* Audit events */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Audit Events</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Max event count</label>
+                  <input type="number" min="100" max="100000"
+                    className="input w-full"
+                    value={retention.audit_events_max_count}
+                    onChange={e => setRetention(r => ({ ...r, audit_events_max_count: Number(e.target.value) }))}
+                    disabled={!isSuperAdmin}
+                    placeholder="10000" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Max age (days)</label>
+                  <input type="number" min="0" max="3650"
+                    className="input w-full"
+                    value={retention.audit_events_max_age_days}
+                    onChange={e => setRetention(r => ({ ...r, audit_events_max_age_days: Number(e.target.value) }))}
+                    disabled={!isSuperAdmin}
+                    placeholder="0 = unlimited" />
+                </div>
+              </div>
+            </div>
+
+            {/* App logs */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">App Logs</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Max log lines</label>
+                  <input type="number" min="0" max="1000000"
+                    className="input w-full"
+                    value={retention.app_logs_max_lines}
+                    onChange={e => setRetention(r => ({ ...r, app_logs_max_lines: Number(e.target.value) }))}
+                    disabled={!isSuperAdmin}
+                    placeholder="0 = unlimited" />
+                  <p className="text-[10px] text-slate-600 mt-1">Oldest lines are trimmed on the 6-hour prune cycle. 0 = unlimited (OS logrotate handles rotation)</p>
+                </div>
+              </div>
+            </div>
+
+            {isSuperAdmin && (
+              <div className="flex justify-end pt-1">
+                <button onClick={handleSaveRetention} disabled={savingRetention} className="btn-primary gap-2">
+                  {savingRetention ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  {savingRetention ? 'Saving…' : 'Save retention settings'}
+                </button>
+              </div>
+            )}
           </div>
         </Panel>
 

@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"time"
+
+	"offdock/internal/store"
 )
 
 // RetentionDefaults are the default keep limits for each collection.
@@ -87,6 +90,12 @@ func (h *H) PruneAll(w http.ResponseWriter, r *http.Request) {
 		if deployDel > 0 {
 			_ = h.db.Deployments.Compact()
 		}
+	}
+
+	// Prune log file if retention is configured.
+	s := store.LoadRetentionSettings(h.dataDir)
+	if s.AppLogsMaxLines > 0 && h.logDir != "" {
+		truncateLogFile(filepath.Join(h.logDir, "offdock.log"), s.AppLogsMaxLines)
 	}
 
 	slog.Info("prune_all",

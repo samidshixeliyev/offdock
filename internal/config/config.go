@@ -42,18 +42,21 @@ type Config struct {
 	OAuthRedirectURI  string `yaml:"oauth_redirect_uri"`  // must match IdP registration
 	OAuthScope        string `yaml:"oauth_scope"`         // default "openid profile email"
 
-	// Claim mapping — names of JWT/userinfo claims for each user attribute.
-	// Defaults match AO ID's LDAP-backed JWT claim names (mail/cn/uid/givenName/sn).
-	OAuthClaimSub      string `yaml:"oauth_claim_sub"`      // default "sub"
-	OAuthClaimEmail    string `yaml:"oauth_claim_email"`    // default "mail"
-	OAuthClaimUsername string `yaml:"oauth_claim_username"` // default "uid"
-	OAuthClaimName     string `yaml:"oauth_claim_name"`     // default "cn"
-	OAuthClaimFirst    string `yaml:"oauth_claim_first"`    // default "givenName"
-	OAuthClaimLast     string `yaml:"oauth_claim_last"`     // default "sn"
+	// Claim mapping — the minimal set OffDock needs: username, email, full name.
+	// "sub" is always the standard OIDC subject claim and isn't configurable —
+	// every compliant IdP, including AO IDP, returns it unconditionally.
+	// Defaults match AO IDP's fixed /oauth2/userinfo response shape.
+	OAuthClaimEmail    string `yaml:"oauth_claim_email"`    // default "email"
+	OAuthClaimUsername string `yaml:"oauth_claim_username"` // default "ldap_username"
+	OAuthClaimName     string `yaml:"oauth_claim_name"`     // default "display_name"
 
 	// OAuth2 TLS — for IdP servers with self-signed / internal CA certificates.
 	OAuthCACertFile    string `yaml:"oauth_ca_cert_file"`         // path to CA cert PEM
 	OAuthTLSSkipVerify bool   `yaml:"oauth_tls_skip_verify"`      // skip TLS verify (not recommended)
+
+	// OAuthPostLogoutRedirectURI is where the IdP redirects after RP-initiated logout.
+	// Must be registered in the IdP's "Allowed logout URLs". If empty, derived from OAuthRedirectURI.
+	OAuthPostLogoutRedirectURI string `yaml:"oauth_post_logout_redirect_uri"`
 }
 
 const defaultConfigPath = "/etc/offdock/config.yaml"

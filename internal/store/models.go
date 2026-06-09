@@ -304,6 +304,7 @@ type OTPChallenge struct {
 	Purpose   string    `json:"purpose" msgpack:"purpose"` // "terminal"
 	ExpiresAt time.Time `json:"expires_at" msgpack:"expires_at"`
 	Used      bool      `json:"used" msgpack:"used"`
+	Attempts  int       `json:"attempts,omitempty" msgpack:"attempts,omitempty"`
 	CreatedAt time.Time `json:"created_at" msgpack:"created_at"`
 }
 
@@ -452,45 +453,51 @@ type OAuthSettings struct {
 	ClientSecret string
 	RedirectURI  string
 	Scope        string
-	// Claim mappings — configurable JWT/userinfo claim names.
-	// Defaults match AO ID's LDAP-backed JWT claim names (mail, cn, uid, givenName, sn).
-	ClaimSub      string // default "sub"
-	ClaimEmail    string // default "mail"
-	ClaimUsername string // default "uid"
-	ClaimName     string // default "cn"
-	ClaimFirst    string // default "givenName" — used when full-name claim is absent
-	ClaimLast     string // default "sn"        — combined with ClaimFirst
+	// Claim mappings — the minimal set OffDock needs from userinfo: username,
+	// email, full name. The subject is always the standard OIDC "sub" claim
+	// and isn't configurable — every compliant IdP returns it unconditionally.
+	// Defaults match AO IDP's fixed /oauth2/userinfo response shape.
+	ClaimEmail    string // default "email"
+	ClaimUsername string // default "ldap_username"
+	ClaimName     string // default "display_name"
 	// TLS
 	CACertFile    string // path to custom CA cert for IdP (self-signed Exchange/internal)
 	TLSSkipVerify bool   // skip TLS verification
+
+	// PostLogoutRedirectURI is sent to the IdP as post_logout_redirect_uri.
+	// Must be registered in the IdP. If empty, derived from RedirectURI automatically.
+	PostLogoutRedirectURI string
 }
 
-// EffectiveClaimNames returns the resolved claim names, applying AO ID LDAP defaults
-// when a field is empty.
-func (s OAuthSettings) EffectiveClaimNames() (sub, email, username, name, first, last string) {
-	sub = s.ClaimSub
-	if sub == "" {
-		sub = "sub"
-	}
+// RetentionSettings configures how long OffDock keeps telemetry and audit data.
+// Zero values for max counts fall back to built-in defaults at prune time.
+// Zero values for max age mean unlimited (age-based pruning disabled).
+type RetentionSettings struct {
+	OTelSpansMaxCount       int `json:"otel_spans_max_count"`        // 0 → default 50 000
+	OTelSpansMaxAgeDays     int `json:"otel_spans_max_age_days"`     // 0 → unlimited
+	TraceSessionsMaxCount   int `json:"trace_sessions_max_count"`    // 0 → default 500
+	TraceSessionsMaxAgeDays int `json:"trace_sessions_max_age_days"` // 0 → unlimited
+	AuditEventsMaxCount     int `json:"audit_events_max_count"`      // 0 → default 10 000
+	AuditEventsMaxAgeDays   int `json:"audit_events_max_age_days"`   // 0 → unlimited
+	AppLogsMaxLines         int `json:"app_logs_max_lines"`          // 0 → unlimited (logrotate handles OS-level rotation)
+}
+
+// EffectiveClaimNames returns the resolved claim names, applying AO IDP /oauth2/userinfo
+// defaults when a field is empty. AO IDP's UserInfoResponse always serializes fixed JSON
+// keys — sub, ldap_username, email, display_name — regardless of its admin-configured
+// claim mappings (those only affect the JWT access token, which Offdock never decodes).
+func (s OAuthSettings) EffectiveClaimNames() (email, username, name string) {
 	email = s.ClaimEmail
 	if email == "" {
-		email = "mail"
+		email = "email"
 	}
 	username = s.ClaimUsername
 	if username == "" {
-		username = "uid"
+		username = "ldap_username"
 	}
 	name = s.ClaimName
 	if name == "" {
-		name = "cn"
-	}
-	first = s.ClaimFirst
-	if first == "" {
-		first = "givenName"
-	}
-	last = s.ClaimLast
-	if last == "" {
-		last = "sn"
+		name = "display_name"
 	}
 	return
 }

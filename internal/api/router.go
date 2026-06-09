@@ -35,6 +35,7 @@ type Deps struct {
 	SSEHub         *sse.Hub
 	ProjectsDir    string
 	DataDir        string
+	LogDir         string
 	DefaultPEMPath string
 	Mailer         *mailer.Mailer
 	SMTPSettings   store.SMTPSettings
@@ -53,7 +54,7 @@ func NewRouter(deps Deps) http.Handler {
 	r.Use(chimiddleware.Recoverer)
 	r.Use(jsonContentType)
 
-	h := handlers.New(deps.DB, deps.Auth, deps.Encryptor, deps.Docker, deps.Deployer, deps.Stats, deps.SSEHub, deps.ProjectsDir, deps.DataDir, deps.DefaultPEMPath, deps.Mailer, deps.SMTPSettings, deps.OAuthSettings)
+	h := handlers.New(deps.DB, deps.Auth, deps.Encryptor, deps.Docker, deps.Deployer, deps.Stats, deps.SSEHub, deps.ProjectsDir, deps.DataDir, deps.LogDir, deps.DefaultPEMPath, deps.Mailer, deps.SMTPSettings, deps.OAuthSettings)
 
 	// --- OTLP receivers (public — no auth, called by OTel agents inside containers) ---
 	r.Post("/v1/traces", h.ReceiveOTLPTraces)   // OTLP JSON traces (Java agent, Node SDK, etc.)
@@ -253,6 +254,10 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/settings/oauth", h.GetOAuthSettings)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/settings/oauth", h.SaveOAuthSettings)
 
+		// Retention settings — any authenticated user can read; superadmin writes.
+		r.Get("/api/v1/settings/retention", h.GetRetentionSettings)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Put("/api/v1/settings/retention", h.SaveRetentionSettings)
+
 		// OpenTelemetry — native receiver (spans stored in OffDock DB).
 		r.Get("/api/v1/otel/status", h.OTelStatus)
 		r.Get("/api/v1/otel/services", h.OTelServices)
@@ -261,9 +266,10 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/otel/traces/{id}", h.OTelTrace)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleAdmin)).Delete("/api/v1/otel/traces", h.OTelDeleteTraces)
 
-		// OffDock application logs (recent lines + live SSE stream) — admin+ only.
+		// OffDock application logs (recent lines + live SSE stream) — admin+ only; clear — superadmin only.
 		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/system/app-logs", h.GetAppLogs)
 		r.With(authmw.RequireRole(store.RoleAdmin)).Get("/api/v1/system/app-logs/stream", h.StreamAppLogs)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Delete("/api/v1/system/app-logs", h.ClearAppLogs)
 
 		// Backup — superadmin only
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Get("/api/v1/system/backup", h.DownloadBackup)
@@ -271,6 +277,9 @@ func NewRouter(deps Deps) http.Handler {
 		// Self-update, rollback, and DB compaction — superadmin only.
 		r.Get("/api/v1/system/update/status", h.GetSystemUpdateStatus)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/update", h.SystemUpdate)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/update/schedule", h.ScheduleSystemUpdate)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Get("/api/v1/system/update/scheduled", h.GetScheduledUpdate)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Delete("/api/v1/system/update/scheduled", h.CancelScheduledUpdate)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/rollback", h.SystemRollback)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/compact", h.CompactDB)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/prune", h.PruneAll)

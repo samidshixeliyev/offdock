@@ -236,30 +236,13 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	if err != nil {
 		return fail(fmt.Errorf("build env file: %w", err))
 	}
-	// Inject OpenTelemetry env vars if auto-instrumentation is enabled.
-	// Only inject JAVA_TOOL_OPTIONS if the agent JAR actually exists on the host —
-	// a missing/directory JAR crashes JVM containers on startup.
-	const otelAgentPath  = "/var/offdock/otel/opentelemetry-javaagent.jar"
-	const otelNodePath   = "/var/offdock/otel/node/tracer.js"
-	const otelPHPIniPath = "/var/offdock/otel/php/offdock.ini"
 	isFile := func(p string) bool {
 		info, err := os.Stat(p)
 		return err == nil && !info.IsDir() && info.Size() > 0
 	}
 	if settings.OTelEnabled {
-		jarOK  := isFile(otelAgentPath)
-		nodeOK := isFile(otelNodePath)
-		phpOK  := isFile(otelPHPIniPath)
-		envContent = appendOTelEnv(envContent, project.Name, jarOK, nodeOK, phpOK)
-		loaders := []string{}
-		if jarOK  { loaders = append(loaders, "Java") }
-		if nodeOK { loaders = append(loaders, "Node.js") }
-		if phpOK  { loaders = append(loaders, "PHP") }
-		if len(loaders) > 0 {
-			appendLog("  OpenTelemetry: OTEL_* vars + auto-tracers for: %s", strings.Join(loaders, ", "))
-		} else {
-			appendLog("  OpenTelemetry: OTEL_* vars injected (tracers not found — run install.sh)")
-		}
+		envContent = appendOTelEnv(envContent, project.Name)
+		appendLog("  OpenTelemetry: OTEL_* vars injected (per-service tracers via compose override)")
 	}
 	if err := atomicWrite(filepath.Join(projectDir, ".env"), []byte(envContent)); err != nil {
 		return fail(fmt.Errorf("write .env: %w", err))
@@ -276,10 +259,8 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	// when auto-instrumentation is enabled.
 	otelOverridePath := ""
 	if settings.OTelEnabled {
-		// Generate the compose override with volume mounts for whichever tracer
-		// files actually exist on the host (prevents bind-mount directory bugs).
 		overridePath := filepath.Join(projectDir, ".otel-override.yml")
-		if err := writeOTelComposeOverride(composePath, overridePath, isFile); err != nil {
+		if err := writeOTelComposeOverride(composePath, overridePath, envContent, project.Name, isFile); err != nil {
 			appendLog("  WARNING: could not generate OTel compose override: %v", err)
 		} else {
 			otelOverridePath = overridePath
@@ -333,7 +314,7 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 
 func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, healthTimeout, stableFor time.Duration, log func(string, ...any)) error {
 	deadline := time.Now().Add(healthTimeout)
-	var firstRunning time.Time
+	firstRunning := make(map[string]time.Time)
 
 	for {
 		if time.Now().After(deadline) {
@@ -362,15 +343,15 @@ func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, h
 			case "healthy":
 				// good
 			case "running":
-				if firstRunning.IsZero() {
-					firstRunning = time.Now()
+				if firstRunning[c.Names].IsZero() {
+					firstRunning[c.Names] = time.Now()
 				}
-				if time.Since(firstRunning) < stableFor {
+				if time.Since(firstRunning[c.Names]) < stableFor {
 					allHealthy = false
 				}
 			default:
 				allHealthy = false
-				firstRunning = time.Time{}
+				delete(firstRunning, c.Names)
 			}
 		}
 
@@ -400,51 +381,23 @@ func (e *Engine) buildEnvFile(set *store.EnvVarSet) (string, error) {
 	return sb.String(), nil
 }
 
-// appendOTelEnv injects OpenTelemetry environment variables into the .env file.
-// The OTLP endpoint points to OffDock itself at the host's LAN IP so containers
-// can reach it via the extra_hosts entry written by writeOTelComposeOverride.
-// No configuration needed — everything is auto-wired.
-// appendOTelEnv injects OpenTelemetry env vars into the .env file.
-//
-// Safety rules (all guarded to prevent container crashes):
-//   jarOK  — only set JAVA_TOOL_OPTIONS if the JAR file really exists on host
-//   nodeOK — only set NODE_OPTIONS     if the Node.js tracer file exists
-//   phpOK  — only set PHP_INI_SCAN_DIR if the PHP ini file exists
-//
-// OTEL_* vars are always safe — every language/runtime ignores unknown env vars.
-// NODE_OPTIONS with a missing --require path kills Node.js at startup.
-// PHP_INI_SCAN_DIR pointing nowhere is harmless (PHP just finds no extra ini).
-func appendOTelEnv(envContent, projectName string, jarOK, nodeOK, phpOK bool) string {
+// appendOTelEnv injects universal OpenTelemetry env vars into the .env file.
+// Only safe, language-agnostic vars go here (OTEL_* are ignored by runtimes
+// that don't use them). Language-specific loader vars (NODE_OPTIONS,
+// JAVA_TOOL_OPTIONS, etc.) are injected per-service in the compose override
+// by writeOTelComposeOverride, so each container only gets what it needs.
+func appendOTelEnv(envContent, projectName string) string {
 	var sb strings.Builder
 	sb.WriteString(envContent)
 	sb.WriteString("\n# OpenTelemetry auto-instrumentation — injected by OffDock (do not edit)\n")
-	// These vars are universal — safe for Java, Node.js, PHP, Go, Delphi, etc.
-	// Per-signal endpoints: point traces directly to /v1/traces (protobuf accepted),
-	// and disable metrics/logs to prevent 404 spam — OffDock doesn't store those.
-	// We use OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (signal-specific, takes precedence)
-	// instead of the generic OTEL_EXPORTER_OTLP_ENDPOINT so there's no path ambiguity.
 	sb.WriteString("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://host.docker.internal:7070/v1/traces\n")
 	sb.WriteString("OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf\n")
 	sb.WriteString("OTEL_SERVICE_NAME=" + projectName + "\n")
 	sb.WriteString("OTEL_TRACES_SAMPLER=parentbased_traceidratio\n")
 	sb.WriteString("OTEL_TRACES_SAMPLER_ARG=1.0\n")
 	sb.WriteString("OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production\n")
-	// Disable metrics and logs — OffDock only stores traces.
 	sb.WriteString("OTEL_METRICS_EXPORTER=none\n")
 	sb.WriteString("OTEL_LOGS_EXPORTER=none\n")
-	// Language-specific loaders — only set when the file is confirmed on the host.
-	if jarOK {
-		// Java: activates the OTel agent JAR (picked up by all JVM processes).
-		sb.WriteString("JAVA_TOOL_OPTIONS=-javaagent:/otel/opentelemetry-javaagent.jar\n")
-	}
-	if nodeOK {
-		// Node.js: zero-dep auto-tracer, instruments http/https/fetch.
-		sb.WriteString("NODE_OPTIONS=--require /otel/node/tracer.js\n")
-	}
-	if phpOK {
-		// PHP: auto_prepend_file injects the tracer on every request.
-		sb.WriteString("PHP_INI_SCAN_DIR=/otel/php\n")
-	}
 	return sb.String()
 }
 
@@ -464,16 +417,14 @@ func resolveHostIP() string {
 	return "localhost"
 }
 
-// writeOTelComposeOverride parses the service names from composePath and writes
-// a docker-compose override file that:
-//   - mounts /var/offdock/otel/opentelemetry-javaagent.jar into every service
-//   - joins every service to the offdock-otel Docker network so they can reach Jaeger
 // writeOTelComposeOverride generates a docker-compose override that:
-//   - bind-mounts only the tracer files that ACTUALLY exist on the host (isFile check)
+//   - injects per-service tracer mounts and language-specific env vars based on
+//     detected language from the service's image name
+//   - merges language loader flags with any existing user-set env vars (e.g.
+//     NODE_OPTIONS, JAVA_TOOL_OPTIONS) to avoid clobbering them
 //   - injects host.docker.internal so containers can reach OffDock at :7070
-//
-// isFile is passed in so the caller's stat results are reused consistently.
-func writeOTelComposeOverride(composePath, overridePath string, isFile func(string) bool) error {
+//   - only mounts tracer files that actually exist on the host
+func writeOTelComposeOverride(composePath, overridePath, envContent, projectName string, isFile func(string) bool) error {
 	info, err := parseComposeInfo(composePath)
 	if err != nil {
 		return fmt.Errorf("parse compose: %w", err)
@@ -484,37 +435,85 @@ func writeOTelComposeOverride(composePath, overridePath string, isFile func(stri
 
 	hostIP := resolveHostIP()
 
-	// Build the list of volumes to mount — only for files that exist.
 	type vol struct{ host, container string }
-	var mounts []vol
-	candidates := []vol{
-		{"/var/offdock/otel/opentelemetry-javaagent.jar", "/otel/opentelemetry-javaagent.jar"},
-		{"/var/offdock/otel/node/tracer.js",              "/otel/node/tracer.js"},
-		{"/var/offdock/otel/php/tracer.php",              "/otel/php/tracer.php"},
-		{"/var/offdock/otel/php/offdock.ini",             "/otel/php/offdock.ini"},
-	}
-	for _, c := range candidates {
-		if isFile(c.host) {
-			mounts = append(mounts, c)
-		}
-	}
 
 	var sb strings.Builder
 	sb.WriteString("# Auto-generated by OffDock OTel injection — do not edit\n")
 	sb.WriteString("services:\n")
-	for _, svc := range info.ServiceNames {
-		sb.WriteString("  " + svc + ":\n")
+
+	for _, svc := range info.Services {
+		sb.WriteString("  " + svc.Name + ":\n")
+
+		var mounts []vol
+		var envVars []string
+
+		for _, lang := range svc.Languages {
+			switch lang {
+			case "java":
+				if isFile("/var/offdock/otel/opentelemetry-javaagent.jar") {
+					mounts = append(mounts, vol{"/var/offdock/otel/opentelemetry-javaagent.jar", "/otel/opentelemetry-javaagent.jar"})
+					agent := "-javaagent:/otel/opentelemetry-javaagent.jar"
+					if existing := parseEnvValue(envContent, "JAVA_TOOL_OPTIONS"); existing != "" {
+						envVars = append(envVars, "JAVA_TOOL_OPTIONS="+agent+" "+existing)
+					} else {
+						envVars = append(envVars, "JAVA_TOOL_OPTIONS="+agent)
+					}
+				}
+			case "nodejs":
+				if isFile("/var/offdock/otel/node/tracer.js") {
+					mounts = append(mounts, vol{"/var/offdock/otel/node/tracer.js", "/otel/node/tracer.js"})
+					flag := "--require /otel/node/tracer.js"
+					if existing := parseEnvValue(envContent, "NODE_OPTIONS"); existing != "" {
+						envVars = append(envVars, "NODE_OPTIONS="+flag+" "+existing)
+					} else {
+						envVars = append(envVars, "NODE_OPTIONS="+flag)
+					}
+				}
+			case "php":
+				if isFile("/var/offdock/otel/php/offdock.ini") {
+					mounts = append(mounts, vol{"/var/offdock/otel/php/tracer.php", "/otel/php/tracer.php"})
+					mounts = append(mounts, vol{"/var/offdock/otel/php/offdock.ini", "/otel/php/offdock.ini"})
+					envVars = append(envVars, "PHP_INI_SCAN_DIR=/otel/php")
+				}
+			case "python":
+				if isFile("/var/offdock/otel/python/sitecustomize.py") {
+					mounts = append(mounts, vol{"/var/offdock/otel/python/sitecustomize.py", "/otel/python/sitecustomize.py"})
+					if existing := parseEnvValue(envContent, "PYTHONPATH"); existing != "" {
+						envVars = append(envVars, "PYTHONPATH=/otel/python:"+existing)
+					} else {
+						envVars = append(envVars, "PYTHONPATH=/otel/python")
+					}
+				}
+			case "ruby":
+				if isFile("/var/offdock/otel/ruby/tracer.rb") {
+					mounts = append(mounts, vol{"/var/offdock/otel/ruby/tracer.rb", "/otel/ruby/tracer.rb"})
+					flag := "-r /otel/ruby/tracer.rb"
+					if existing := parseEnvValue(envContent, "RUBYOPT"); existing != "" {
+						envVars = append(envVars, "RUBYOPT="+flag+" "+existing)
+					} else {
+						envVars = append(envVars, "RUBYOPT="+flag)
+					}
+				}
+			}
+		}
+
+		// Per-service service name overrides the project-level default in .env.
+		envVars = append(envVars, "OTEL_SERVICE_NAME="+projectName+"-"+svc.Name)
+
 		if len(mounts) > 0 {
 			sb.WriteString("    volumes:\n")
 			for _, m := range mounts {
 				sb.WriteString("      - " + m.host + ":" + m.container + ":ro\n")
 			}
 		}
-		// host.docker.internal → host IP so containers reach OffDock at :7070
+		if len(envVars) > 0 {
+			sb.WriteString("    environment:\n")
+			for _, e := range envVars {
+				sb.WriteString("      - " + e + "\n")
+			}
+		}
 		sb.WriteString("    extra_hosts:\n")
 		sb.WriteString("      - \"host.docker.internal:" + hostIP + "\"\n")
-		// Preserve external networks so compose up doesn't disconnect the container
-		// from networks it was previously joined to (e.g. kafka-cluster_default).
 		if len(info.ExternalNetworks) > 0 {
 			sb.WriteString("    networks:\n")
 			sb.WriteString("      - default\n")
@@ -523,7 +522,7 @@ func writeOTelComposeOverride(composePath, overridePath string, isFile func(stri
 			}
 		}
 	}
-	// Re-declare external networks at the top level so docker compose resolves them.
+
 	if len(info.ExternalNetworks) > 0 {
 		sb.WriteString("networks:\n")
 		for _, net := range info.ExternalNetworks {
@@ -535,17 +534,139 @@ func writeOTelComposeOverride(composePath, overridePath string, isFile func(stri
 	return atomicWrite(overridePath, []byte(sb.String()))
 }
 
+// parseEnvValue finds the value of key in an env file string (KEY=value lines).
+// Returns "" if not found. Strips surrounding single/double quotes.
+func parseEnvValue(content, key string) string {
+	prefix := key + "="
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) == 0 || line[0] == '#' {
+			continue
+		}
+		if strings.HasPrefix(line, prefix) {
+			v := strings.TrimPrefix(line, prefix)
+			if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+				v = v[1 : len(v)-1]
+			}
+			return v
+		}
+	}
+	return ""
+}
+
+// composeBuild handles both the string form (build: .) and the map form
+// (build: {context: ., dockerfile: Dockerfile}).
+type composeBuild struct {
+	Context    string
+	Dockerfile string
+}
+
+func (b *composeBuild) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		b.Context = value.Value
+		return nil
+	}
+	type plain struct {
+		Context    string `yaml:"context"`
+		Dockerfile string `yaml:"dockerfile"`
+	}
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	b.Context = p.Context
+	b.Dockerfile = p.Dockerfile
+	return nil
+}
+
+// composeService holds the fields we need from a docker-compose service definition.
+type composeService struct {
+	Image string        `yaml:"image"`
+	Build *composeBuild `yaml:"build"`
+}
+
 // composeFile parses docker-compose.yml to extract service names and external networks.
 type composeFile struct {
-	Services map[string]interface{} `yaml:"services"`
+	Services map[string]*composeService `yaml:"services"`
 	Networks map[string]struct {
 		External bool `yaml:"external"`
 	} `yaml:"networks"`
 }
 
+// serviceInfo holds per-service metadata used for per-container OTel injection.
+type serviceInfo struct {
+	Name      string
+	Image     string
+	Languages []string // detected: "java", "nodejs", "php", "python", "ruby"
+}
+
 type composeInfo struct {
+	Services         []serviceInfo
 	ServiceNames     []string
-	ExternalNetworks []string // network names declared as external: true
+	ExternalNetworks []string
+}
+
+// detectServiceLanguages infers which language runtimes a container image runs
+// from its image name and optional build context hint (Dockerfile or context path).
+// Returns nil for infrastructure images (postgres, redis, etc.) that should not
+// receive tracer injection.
+func detectServiceLanguages(image string, buildHint ...string) []string {
+	hint := ""
+	if len(buildHint) > 0 {
+		hint = strings.ToLower(buildHint[0])
+	}
+	// When there's no image name and no useful build hint, skip injection.
+	if image == "" && hint == "" {
+		return nil
+	}
+	img := strings.ToLower(image)
+	// Strip tag (last colon after the last slash).
+	if i := strings.LastIndex(img, ":"); i > strings.LastIndex(img, "/") {
+		img = img[:i]
+	}
+	// Use only the image name, not registry/org prefix.
+	if i := strings.LastIndex(img, "/"); i >= 0 {
+		img = img[i+1:]
+	}
+
+	// Skip known infra images — injecting tracers into these causes startup errors.
+	infraKeywords := []string{
+		"postgres", "mysql", "mariadb", "redis", "mongo", "nginx", "caddy",
+		"traefik", "rabbitmq", "kafka", "zookeeper", "elasticsearch", "kibana",
+		"grafana", "prometheus", "mssql", "sqlserver", "memcached", "nats",
+		"vault", "consul", "etcd", "haproxy",
+	}
+	for _, kw := range infraKeywords {
+		if strings.Contains(img, kw) {
+			return nil
+		}
+	}
+
+	// combined is what we search — image name + any build context hint (dockerfile/context path).
+	combined := img + " " + hint
+
+	type entry struct {
+		keywords []string
+		lang     string
+	}
+	checks := []entry{
+		{[]string{"java", "spring", "tomcat", "wildfly", "jboss", "quarkus", "micronaut", "openjdk", "eclipse-temurin", "corretto", "zulu", "graalvm"}, "java"},
+		{[]string{"node", "nodejs"}, "nodejs"},
+		{[]string{"php", "wordpress", "magento", "drupal", "joomla", "laravel"}, "php"},
+		{[]string{"python", "django", "flask", "fastapi", "gunicorn", "uvicorn"}, "python"},
+		{[]string{"ruby", "rails"}, "ruby"},
+	}
+
+	var langs []string
+	for _, c := range checks {
+		for _, kw := range c.keywords {
+			if strings.Contains(combined, kw) {
+				langs = append(langs, c.lang)
+				break
+			}
+		}
+	}
+	return langs
 }
 
 func parseComposeInfo(path string) (composeInfo, error) {
@@ -557,11 +678,28 @@ func parseComposeInfo(path string) (composeInfo, error) {
 	if err := yaml.Unmarshal(data, &cf); err != nil {
 		return composeInfo{}, err
 	}
+
+	services := make([]serviceInfo, 0, len(cf.Services))
 	names := make([]string, 0, len(cf.Services))
-	for k := range cf.Services {
+	for k, svc := range cf.Services {
 		names = append(names, k)
+		img := ""
+		buildHint := ""
+		if svc != nil {
+			img = svc.Image
+			if svc.Build != nil {
+				// Use dockerfile name + context path as language hint for build: services.
+				buildHint = svc.Build.Dockerfile + " " + svc.Build.Context
+			}
+		}
+		services = append(services, serviceInfo{
+			Name:      k,
+			Image:     img,
+			Languages: detectServiceLanguages(img, buildHint),
+		})
 	}
 	sort.Strings(names)
+	sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
 
 	var extNets []string
 	for netName, netCfg := range cf.Networks {
@@ -571,7 +709,7 @@ func parseComposeInfo(path string) (composeInfo, error) {
 	}
 	sort.Strings(extNets)
 
-	return composeInfo{ServiceNames: names, ExternalNetworks: extNets}, nil
+	return composeInfo{Services: services, ServiceNames: names, ExternalNetworks: extNets}, nil
 }
 
 func parseComposeServiceNames(path string) ([]string, error) {

@@ -469,15 +469,23 @@ export interface OAuthSettings {
   client_id: string
   secret_set: boolean
   redirect_uri: string
+  post_logout_redirect_uri: string
   scope: string
-  claim_sub: string
   claim_email: string
   claim_username: string
   claim_name: string
-  claim_first: string
-  claim_last: string
   ca_cert_file: string
   tls_skip_verify: boolean
+}
+
+export interface RetentionSettings {
+  otel_spans_max_count: number
+  otel_spans_max_age_days: number
+  trace_sessions_max_count: number
+  trace_sessions_max_age_days: number
+  audit_events_max_count: number
+  audit_events_max_age_days: number
+  app_logs_max_lines: number
 }
 
 class ApiError extends Error {
@@ -880,15 +888,31 @@ export const api = {
   otelServices: () => request<{ data: string[] }>('/api/v1/otel/services'),
   otelOperations: (service: string) =>
     request<{ data: Array<{ name: string; spanKind: string }> }>(`/api/v1/otel/operations?service=${encodeURIComponent(service)}`),
-  otelTraces: (params: { service?: string; limit?: number; operation?: string } = {}) => {
+  otelTraces: (params: {
+    service?: string; limit?: number; operation?: string
+    search?: string; status?: string; min_duration_ms?: number; time_range?: string
+  } = {}) => {
     const q = new URLSearchParams()
     if (params.service) q.set('service', params.service)
     if (params.limit) q.set('limit', String(params.limit))
     if (params.operation) q.set('operation', params.operation)
+    if (params.search) q.set('search', params.search)
+    if (params.status) q.set('status', params.status)
+    if (params.min_duration_ms) q.set('min_duration_ms', String(params.min_duration_ms))
+    if (params.time_range) q.set('time_range', params.time_range)
     return request<{ data: OTelTrace[] }>(`/api/v1/otel/traces?${q}`)
   },
   otelTrace: (id: string) => request<{ data: OTelTrace[] }>(`/api/v1/otel/traces/${id}`),
   otelDeleteTraces: () => request<{ deleted: number }>('/api/v1/otel/traces', { method: 'DELETE' }),
+
+  // Retention settings
+  getRetentionSettings: () => request<RetentionSettings>('/api/v1/settings/retention'),
+  saveRetentionSettings: (s: RetentionSettings) => request<RetentionSettings>('/api/v1/settings/retention', {
+    method: 'PUT', body: JSON.stringify(s),
+  }),
+
+  // App log management
+  clearAppLogs: () => request<{ status: string }>('/api/v1/system/app-logs', { method: 'DELETE' }),
 
   // Docker disk usage + image prune
   getSystemDf: () => request<{ rows: DiskUsageRow[] }>('/api/v1/system/df'),
@@ -905,6 +929,21 @@ export const api = {
   getUpdateStatus: () => request<{ can_update: boolean; can_rollback: boolean; install_path: string; backup_path: string }>('/api/v1/system/update/status'),
   systemUpdateUrl: () => '/api/v1/system/update',
   systemRollbackUrl: () => '/api/v1/system/rollback',
+
+  // Scheduled self-update — upload now, install automatically at a chosen time.
+  scheduleUpdateUrl: () => '/api/v1/system/update/schedule',
+  getScheduledUpdate: () => request<{
+    scheduled: boolean
+    run_at?: string
+    filename?: string
+    version?: string
+    uploaded_by?: string
+    uploaded_at?: string
+    active: boolean
+    last_result?: string
+    last_log?: string
+  }>('/api/v1/system/update/scheduled'),
+  cancelScheduledUpdate: () => request<{ status: string }>('/api/v1/system/update/scheduled', { method: 'DELETE' }),
   compactDB: () => request<{ status: string; bytes_before: number; bytes_after: number; bytes_freed: number }>('/api/v1/system/compact', { method: 'POST', body: '{}' }),
   pruneAll: (params?: { sessions?: number; otel_spans?: number; audit?: number; deployments?: number }) => {
     const q = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v]) => v !== undefined).map(([k,v]) => [k, String(v)])).toString() : ''

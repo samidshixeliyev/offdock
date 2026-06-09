@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -140,6 +142,39 @@ func (h *H) StreamAppLogs(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// ClearAppLogs truncates the OffDock log file to zero bytes.
+// Superadmin only (enforced by router middleware).
+func (h *H) ClearAppLogs(w http.ResponseWriter, r *http.Request) {
+	logPath := filepath.Join(h.logDir, "offdock.log")
+	if err := os.Truncate(logPath, 0); err != nil && !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, "clear log: "+err.Error())
+		return
+	}
+	h.logAudit(r, "clear_app_logs", "system", "", "", "")
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+}
+
+// truncateLogFile keeps the last maxLines lines of the named file.
+// If maxLines == 0 the file is cleared entirely.
+// Called during scheduled retention pruning.
+func truncateLogFile(path string, maxLines int) {
+	if maxLines == 0 {
+		_ = os.Truncate(path, 0)
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return
+	}
+	raw := strings.TrimRight(string(data), "\n")
+	lines := strings.Split(raw, "\n")
+	if len(lines) <= maxLines {
+		return
+	}
+	kept := strings.Join(lines[len(lines)-maxLines:], "\n") + "\n"
+	_ = os.WriteFile(path, []byte(kept), 0o600)
 }
 
 func splitLines(s string) []string {

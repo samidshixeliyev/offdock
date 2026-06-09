@@ -382,13 +382,17 @@ oauth_client_id: ""
 oauth_client_secret: ""
 oauth_redirect_uri: ""
 oauth_scope: "openid profile email"
-# Claim mapping (AO ID LDAP defaults)
-oauth_claim_sub: sub
-oauth_claim_email: mail
-oauth_claim_username: uid
-oauth_claim_name: cn
-oauth_claim_first: givenName
-oauth_claim_last: sn
+# Claim mapping — OffDock needs exactly three things from userinfo: username,
+# email, full name. The subject is always the standard OIDC "sub" claim and
+# isn't configurable (every compliant IdP, including AO IDP, returns it
+# unconditionally). Defaults below match AO IDP's fixed /oauth2/userinfo
+# response shape (UserInfoResponse: sub, ldap_username, email, display_name).
+# AO IDP's admin-side claim mappings only affect its JWT access token, not this
+# endpoint, so these names are effectively constants for AO ID — only override
+# for a different IdP.
+oauth_claim_email: email
+oauth_claim_username: ldap_username
+oauth_claim_name: display_name
 oauth_tls_skip_verify: false
 ```
 

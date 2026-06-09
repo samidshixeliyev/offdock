@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
-import { RefreshCw, Play, Square, Download, FileText, WifiOff } from 'lucide-react'
+import { useAuth } from '../hooks/useAuth'
+import { RefreshCw, Play, Square, Download, FileText, WifiOff, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 
 type LogLine = { raw: string; level: string }
@@ -23,6 +24,8 @@ function lineColor(level: string): string {
 }
 
 export default function AppLogsPage() {
+  const { user } = useAuth()
+  const isSuperAdmin = user?.role === 'superadmin'
   const [lines, setLines] = useState<LogLine[]>([])
   const [source, setSource] = useState<string>('')
   const [loading, setLoading] = useState(true)
@@ -30,6 +33,7 @@ export default function AppLogsPage() {
   const [streamStatus, setStreamStatus] = useState<'idle' | 'live' | 'error'>('idle')
   const [filter, setFilter] = useState('')
   const [autoScroll, setAutoScroll] = useState(true)
+  const [clearing, setClearing] = useState(false)
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -89,6 +93,17 @@ export default function AppLogsPage() {
   }
 
   useEffect(() => () => { esRef.current?.close() }, [])
+
+  const clearLogs = async () => {
+    if (!confirm('Clear the OffDock log file? This cannot be undone.')) return
+    setClearing(true)
+    try {
+      await api.clearAppLogs()
+      setLines([])
+    } catch { /* ignore */ } finally {
+      setClearing(false)
+    }
+  }
 
   const downloadLogs = () => {
     const text = lines.map(l => l.raw).join('\n')
@@ -203,6 +218,18 @@ export default function AppLogsPage() {
           >
             <Download className="w-3.5 h-3.5" />
           </button>
+
+          {/* Clear (superadmin only) */}
+          {isSuperAdmin && (
+            <button
+              onClick={clearLogs}
+              disabled={clearing}
+              title="Clear log file"
+              className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400 transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 

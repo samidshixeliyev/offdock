@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -79,10 +80,21 @@ func main() {
 	}
 	defer db.Close()
 
-	// Enforce retention limits on startup to reclaim space from previous runs.
+	// Background retention pruner: runs at startup and every 6 hours.
 	go func() {
-		db.PruneTraceSessions(500)
-		db.PruneOTelSpans(50_000)
+		for {
+			s := store.LoadRetentionSettings(cfg.DataDir)
+			db.PruneOTelSpans(s.OTelSpansMaxCount)
+			db.PruneOTelSpansByAge(s.OTelSpansMaxAgeDays)
+			db.PruneTraceSessions(s.TraceSessionsMaxCount)
+			db.PruneTraceSessionsByAge(s.TraceSessionsMaxAgeDays)
+			db.PruneAuditEvents(s.AuditEventsMaxCount)
+			db.PruneAuditEventsByAge(s.AuditEventsMaxAgeDays)
+			if s.AppLogsMaxLines > 0 && cfg.LogDir != "" {
+				pruneLogFile(filepath.Join(cfg.LogDir, "offdock.log"), s.AppLogsMaxLines)
+			}
+			time.Sleep(6 * time.Hour)
+		}
 	}()
 
 	enc, err := crypto.NewFromMachineID()
@@ -148,20 +160,18 @@ func main() {
 	}
 
 	oauthSettings := store.OAuthSettings{
-		Enabled:       cfg.OAuthEnabled,
-		Issuer:        cfg.OAuthIssuer,
-		ClientID:      cfg.OAuthClientID,
-		ClientSecret:  cfg.OAuthClientSecret,
-		RedirectURI:   cfg.OAuthRedirectURI,
-		Scope:         cfg.OAuthScope,
-		ClaimSub:      cfg.OAuthClaimSub,
-		ClaimEmail:    cfg.OAuthClaimEmail,
-		ClaimUsername: cfg.OAuthClaimUsername,
-		ClaimName:     cfg.OAuthClaimName,
-		ClaimFirst:    cfg.OAuthClaimFirst,
-		ClaimLast:     cfg.OAuthClaimLast,
-		CACertFile:    cfg.OAuthCACertFile,
-		TLSSkipVerify: cfg.OAuthTLSSkipVerify,
+		Enabled:               cfg.OAuthEnabled,
+		Issuer:                cfg.OAuthIssuer,
+		ClientID:              cfg.OAuthClientID,
+		ClientSecret:          cfg.OAuthClientSecret,
+		RedirectURI:           cfg.OAuthRedirectURI,
+		Scope:                 cfg.OAuthScope,
+		ClaimEmail:            cfg.OAuthClaimEmail,
+		ClaimUsername:         cfg.OAuthClaimUsername,
+		ClaimName:             cfg.OAuthClaimName,
+		CACertFile:            cfg.OAuthCACertFile,
+		TLSSkipVerify:         cfg.OAuthTLSSkipVerify,
+		PostLogoutRedirectURI: cfg.OAuthPostLogoutRedirectURI,
 	}
 	if oauthSettings.Scope == "" {
 		oauthSettings.Scope = "openid profile email"
@@ -177,6 +187,7 @@ func main() {
 		SSEHub:         hub,
 		ProjectsDir:    projectsDir,
 		DataDir:        cfg.DataDir,
+		LogDir:         cfg.LogDir,
 		DefaultPEMPath: cfg.DefaultPEMPath,
 		Mailer:         m,
 		SMTPSettings:   smtpSettings,
@@ -211,6 +222,22 @@ func main() {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutCtx)
+}
+
+// pruneLogFile trims the named log file to at most maxLines lines (keeping the newest).
+func pruneLogFile(path string, maxLines int) {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return
+	}
+	// Split into lines, preserving trailing newline behaviour.
+	raw := strings.TrimRight(string(data), "\n")
+	lines := strings.Split(raw, "\n")
+	if len(lines) <= maxLines {
+		return
+	}
+	kept := strings.Join(lines[len(lines)-maxLines:], "\n") + "\n"
+	_ = os.WriteFile(path, []byte(kept), 0o600)
 }
 
 // newHandler routes /api/ to the API router and everything else to the

@@ -108,6 +108,16 @@ echo "=== Copying installer files ==="
 cp "${SCRIPT_DIR}/install.sh"       "${OUTPUT_DIR}/"
 cp "${SCRIPT_DIR}/offdock.service"  "${OUTPUT_DIR}/"
 
+# --- Copy OTel tracer agents ------------------------------------------------
+echo ""
+echo "=== Copying OpenTelemetry tracer agents ==="
+if [[ -d "${SCRIPT_DIR}/otel" ]]; then
+  cp -r "${SCRIPT_DIR}/otel" "${OUTPUT_DIR}/otel"
+  echo "  Copied otel/ directory (Java agent + Node.js/PHP/Python/Ruby tracers)"
+else
+  echo "WARNING: otel/ directory not found — OTel auto-instrumentation will not work" >&2
+fi
+
 # --- Summary ----------------------------------------------------------------
 echo ""
 echo "============================================================"
