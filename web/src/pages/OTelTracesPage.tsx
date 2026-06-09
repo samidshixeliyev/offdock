@@ -161,7 +161,12 @@ function CopyBtn2({ text }: { text: string }) {
   )
 }
 
-function SpanDetailPanel({ span }: { span: OTelSpan }) {
+function fmtTimeUs(us: number): string {
+  return new Date(us / 1000).toISOString().replace('T', ' ').replace('Z', ' UTC')
+}
+
+function SpanDetailPanel({ span, trace }: { span: OTelSpan; trace: OTelTrace }) {
+  const process = trace.processes[span.processID]
   const httpMethod  = tagVal(span, 'http.method') || tagVal(span, 'http.request.method')
   const httpUrl     = tagVal(span, 'http.url') || tagVal(span, 'http.target') || tagVal(span, 'url.full')
   const httpStatus  = tagVal(span, 'http.status_code') || tagVal(span, 'http.response.status_code')
@@ -345,6 +350,116 @@ function SpanDetailPanel({ span }: { span: OTelSpan }) {
           ))}
         </div>
       )}
+
+      {/* Span events (exception stack traces, custom events) */}
+      {span.logs && span.logs.length > 0 && (
+        <div className="rounded-lg border border-rose-500/20 bg-rose-950/8 px-3 py-2 space-y-2">
+          <div className="flex items-center gap-1.5 mb-1">
+            <AlertTriangle className="w-3 h-3 text-rose-400" />
+            <span className="text-[9px] uppercase tracking-wider text-rose-400 font-semibold">
+              Span Events ({span.logs.length})
+            </span>
+          </div>
+          {span.logs.map((log, i) => {
+            const eventName = log.fields.find(f => f.key === 'event')?.value ?? 'event'
+            const exType  = log.fields.find(f => f.key === 'exception.type')?.value
+            const exMsg   = log.fields.find(f => f.key === 'exception.message')?.value
+            const exStack = log.fields.find(f => f.key === 'exception.stacktrace')?.value
+            const otherFields = log.fields.filter(f =>
+              !['event','exception.type','exception.message','exception.stacktrace'].includes(f.key)
+            )
+            return (
+              <div key={i} className="border border-rose-500/15 rounded-lg px-2.5 py-2 bg-rose-950/15 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-[9px] font-bold text-rose-300 uppercase">{String(eventName)}</span>
+                  <span className="text-[9px] text-slate-600">{fmtTimeUs(log.timestamp)}</span>
+                </div>
+                {exType && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-600 w-20 shrink-0">type</span>
+                    <span className="text-red-300 font-bold">{String(exType)}</span>
+                  </div>
+                )}
+                {exMsg && (
+                  <div className="flex items-start gap-2">
+                    <span className="text-slate-600 w-20 shrink-0">message</span>
+                    <span className="text-red-200/90 break-all">{String(exMsg)}</span>
+                  </div>
+                )}
+                {exStack && (
+                  <div>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-slate-600">stacktrace</span>
+                      <CopyBtn2 text={String(exStack)} />
+                    </div>
+                    <pre className="text-[10px] text-rose-200/80 font-mono whitespace-pre-wrap break-all leading-relaxed rounded px-2 py-1.5 bg-rose-950/30 max-h-48 overflow-y-auto">
+                      {String(exStack)}
+                    </pre>
+                  </div>
+                )}
+                {otherFields.map((f, j) => (
+                  <div key={j} className="flex gap-2">
+                    <span className="text-slate-600 w-20 shrink-0">{f.key}</span>
+                    <span className="text-slate-300 break-all">{String(f.value)}</span>
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* Resource / process info */}
+      {process && (process.tags?.length > 0 || span.scopeName) && (
+        <div className="rounded-lg border border-slate-700/40 bg-slate-900/30 px-3 py-2 space-y-0.5">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Layers className="w-3 h-3 text-slate-600" />
+            <span className="text-[9px] uppercase tracking-wider text-slate-600 font-semibold">
+              Resource · {process.serviceName}
+            </span>
+          </div>
+          {span.scopeName && (
+            <div className="flex gap-2">
+              <span className="text-slate-600 w-28 shrink-0">instrumented by</span>
+              <span className="text-slate-400">
+                {span.scopeName}{span.scopeVersion ? ` v${span.scopeVersion}` : ''}
+              </span>
+            </div>
+          )}
+          {process.tags?.filter(t => t.key !== 'service.name').map((t, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="text-slate-600 shrink-0 w-28 truncate">{t.key}</span>
+              <span className="text-slate-400 break-all">{String(t.value)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Timing summary */}
+      <div className="rounded-lg border border-slate-700/40 bg-slate-900/30 px-3 py-2 space-y-0.5">
+        <div className="flex items-center gap-1.5 mb-1">
+          <Clock className="w-3 h-3 text-slate-600" />
+          <span className="text-[9px] uppercase tracking-wider text-slate-600 font-semibold">Timing</span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-slate-600 w-16 shrink-0">start</span>
+          <span className="text-slate-400 font-mono">{fmtTimeUs(span.startTime)}</span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-slate-600 w-16 shrink-0">duration</span>
+          <span className="text-slate-200 font-mono font-semibold">{fmtDuration(span.duration)}</span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-slate-600 w-16 shrink-0">span id</span>
+          <span className="text-slate-500 font-mono text-[9px]">{span.spanID}</span>
+          <CopyBtn2 text={span.spanID} />
+        </div>
+        <div className="flex gap-2">
+          <span className="text-slate-600 w-16 shrink-0">trace id</span>
+          <span className="text-slate-500 font-mono text-[9px] truncate">{span.traceID}</span>
+          <CopyBtn2 text={span.traceID} />
+        </div>
+      </div>
     </div>
   )
 }
@@ -356,9 +471,10 @@ interface SpanRowProps {
   traceStart: number
   traceDuration: number
   colorIdx: number
+  trace: OTelTrace
 }
 
-function SpanRow({ node, traceStart, traceDuration, colorIdx }: SpanRowProps) {
+function SpanRow({ node, traceStart, traceDuration, colorIdx, trace }: SpanRowProps) {
   const [open, setOpen] = useState(false)
   const { span, depth, service } = node
   const isErr = hasError(span)
@@ -462,7 +578,7 @@ function SpanRow({ node, traceStart, traceDuration, colorIdx }: SpanRowProps) {
 
       {/* Structured span detail */}
       {open && (
-        <SpanDetailPanel span={span} />
+        <SpanDetailPanel span={span} trace={trace} />
       )}
     </>
   )
@@ -589,6 +705,7 @@ function TraceRow({ trace, idx }: TraceRowProps) {
                   traceStart={traceStart}
                   traceDuration={traceDuration}
                   colorIdx={colorIdx}
+                  trace={displayTrace}
                 />
               ))}
             </div>

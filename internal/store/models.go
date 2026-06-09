@@ -387,23 +387,35 @@ func (t TraceSession) GetID() string { return t.ID }
 
 // --- OTelSpan ----------------------------------------------------------------
 
+// SpanEvent is a timestamped event attached to a span (e.g. exception stack trace).
+type SpanEvent struct {
+	TimeUs int64             `json:"time_us"`         // epoch microseconds
+	Name   string            `json:"name"`            // e.g. "exception", "message"
+	Attrs  map[string]string `json:"attrs,omitempty"` // e.g. exception.type, exception.stacktrace
+}
+
 // OTelSpan stores a single span received via the OTLP HTTP endpoint.
 // Spans are grouped into traces by TraceID at query time.
 type OTelSpan struct {
-	ID           string            `json:"id"`            // OffDock internal ULID
-	TraceID      string            `json:"trace_id"`
-	SpanID       string            `json:"span_id"`
-	ParentSpanID string            `json:"parent_span_id,omitempty"`
-	Service      string            `json:"service"`
-	Name         string            `json:"name"`
-	Kind         string            `json:"kind"`          // server|client|internal|producer|consumer
-	StartTimeUs  int64             `json:"start_us"`      // epoch microseconds
-	EndTimeUs    int64             `json:"end_us"`
-	DurationUs   int64             `json:"duration_us"`
-	StatusCode   string            `json:"status_code"`   // ok|error|unset
-	StatusMsg    string            `json:"status_msg,omitempty"`
-	Attributes   map[string]string `json:"attributes,omitempty"`
-	ReceivedAt   time.Time         `json:"received_at"`
+	ID              string            `json:"id"`                    // OffDock internal ULID
+	TraceID         string            `json:"trace_id"`
+	SpanID          string            `json:"span_id"`
+	ParentSpanID    string            `json:"parent_span_id,omitempty"`
+	Service         string            `json:"service"`
+	ServiceVersion  string            `json:"service_version,omitempty"`
+	Name            string            `json:"name"`
+	Kind            string            `json:"kind"`                  // server|client|internal|producer|consumer
+	StartTimeUs     int64             `json:"start_us"`              // epoch microseconds
+	EndTimeUs       int64             `json:"end_us"`
+	DurationUs      int64             `json:"duration_us"`
+	StatusCode      string            `json:"status_code"`           // ok|error|unset
+	StatusMsg       string            `json:"status_msg,omitempty"`
+	Attributes      map[string]string `json:"attributes,omitempty"`
+	ResourceAttrs   map[string]string `json:"resource_attrs,omitempty"` // service.version, host.name, etc.
+	Events          []SpanEvent       `json:"events,omitempty"`         // span events (exception traces, logs)
+	ScopeName       string            `json:"scope_name,omitempty"`     // instrumentation library name
+	ScopeVersion    string            `json:"scope_version,omitempty"`
+	ReceivedAt      time.Time         `json:"received_at"`
 }
 
 func (s OTelSpan) GetID() string { return s.ID }

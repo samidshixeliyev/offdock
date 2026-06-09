@@ -195,16 +195,23 @@ type otlpScope struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
 }
-type otlpSpan struct {
-	TraceID      string    `json:"traceId"`
-	SpanID       string    `json:"spanId"`
-	ParentSpanID string    `json:"parentSpanId"`
+type otlpEvent struct {
+	TimeUnixNano otlpNanos `json:"timeUnixNano"`
 	Name         string    `json:"name"`
-	Kind         int       `json:"kind"`
-	StartTime    otlpNanos `json:"startTimeUnixNano"`
-	EndTime      otlpNanos `json:"endTimeUnixNano"`
 	Attributes   []otlpKV  `json:"attributes"`
-	Status       otlpStatus `json:"status"`
+}
+
+type otlpSpan struct {
+	TraceID      string      `json:"traceId"`
+	SpanID       string      `json:"spanId"`
+	ParentSpanID string      `json:"parentSpanId"`
+	Name         string      `json:"name"`
+	Kind         int         `json:"kind"`
+	StartTime    otlpNanos   `json:"startTimeUnixNano"`
+	EndTime      otlpNanos   `json:"endTimeUnixNano"`
+	Attributes   []otlpKV    `json:"attributes"`
+	Events       []otlpEvent `json:"events"`
+	Status       otlpStatus  `json:"status"`
 }
 
 // otlpNanos handles OTLP time fields that are either JSON strings or numbers.
@@ -342,16 +349,55 @@ func (h *H) saveProtoSpans(rss []*tracev1.ResourceSpans) int {
 	saved := 0
 	for _, rs := range rss {
 		service := "unknown"
+		serviceVersion := ""
+		resourceAttrs := make(map[string]string)
 		if rs.Resource != nil {
-			service = protoAttrStr(rs.Resource.Attributes, "service.name", service)
+			for _, kv := range rs.Resource.Attributes {
+				if kv.Value != nil {
+					val := protoAnyValueStr(kv.Value)
+					resourceAttrs[kv.Key] = val
+					if kv.Key == "service.name" {
+						service = val
+					} else if kv.Key == "service.version" {
+						serviceVersion = val
+					}
+				}
+			}
+		}
+		if len(resourceAttrs) == 0 {
+			resourceAttrs = nil
 		}
 		for _, ss := range rs.ScopeSpans {
+			scopeName := ""
+			scopeVersion := ""
+			if ss.Scope != nil {
+				scopeName = ss.Scope.Name
+				scopeVersion = ss.Scope.Version
+			}
 			for _, sp := range ss.Spans {
 				attrs := make(map[string]string, len(sp.Attributes))
 				for _, kv := range sp.Attributes {
 					if kv.Value != nil {
 						attrs[kv.Key] = protoAnyValueStr(kv.Value)
 					}
+				}
+				// Capture span events (exception stack traces, custom log points).
+				var events []store.SpanEvent
+				for _, ev := range sp.Events {
+					evAttrs := make(map[string]string, len(ev.Attributes))
+					for _, kv := range ev.Attributes {
+						if kv.Value != nil {
+							evAttrs[kv.Key] = protoAnyValueStr(kv.Value)
+						}
+					}
+					if len(evAttrs) == 0 {
+						evAttrs = nil
+					}
+					events = append(events, store.SpanEvent{
+						TimeUs: int64(ev.TimeUnixNano) / 1000,
+						Name:   ev.Name,
+						Attrs:  evAttrs,
+					})
 				}
 				startUs := int64(sp.StartTimeUnixNano) / 1000
 				endUs := int64(sp.EndTimeUnixNano) / 1000
@@ -366,20 +412,25 @@ func (h *H) saveProtoSpans(rss []*tracev1.ResourceSpans) int {
 					statusMsg = sp.Status.Message
 				}
 				ospan := store.OTelSpan{
-					ID:           store.NewULID(),
-					TraceID:      hex.EncodeToString(sp.TraceId),
-					SpanID:       hex.EncodeToString(sp.SpanId),
-					ParentSpanID: hex.EncodeToString(sp.ParentSpanId),
-					Service:      service,
-					Name:         sp.Name,
-					Kind:         protoSpanKind(sp.Kind),
-					StartTimeUs:  startUs,
-					EndTimeUs:    endUs,
-					DurationUs:   durUs,
-					StatusCode:   statusCode,
-					StatusMsg:    statusMsg,
-					Attributes:   attrs,
-					ReceivedAt:   now,
+					ID:             store.NewULID(),
+					TraceID:        hex.EncodeToString(sp.TraceId),
+					SpanID:         hex.EncodeToString(sp.SpanId),
+					ParentSpanID:   hex.EncodeToString(sp.ParentSpanId),
+					Service:        service,
+					ServiceVersion: serviceVersion,
+					Name:           sp.Name,
+					Kind:           protoSpanKind(sp.Kind),
+					StartTimeUs:    startUs,
+					EndTimeUs:      endUs,
+					DurationUs:     durUs,
+					StatusCode:     statusCode,
+					StatusMsg:      statusMsg,
+					Attributes:     attrs,
+					ResourceAttrs:  resourceAttrs,
+					Events:         events,
+					ScopeName:      scopeName,
+					ScopeVersion:   scopeVersion,
+					ReceivedAt:     now,
 				}
 				if h.db.OTelSpans.Save(ospan) == nil {
 					saved++
@@ -396,10 +447,20 @@ func (h *H) saveJSONSpans(rss []otlpResourceSpans) int {
 	saved := 0
 	for _, rs := range rss {
 		service := "unknown"
+		serviceVersion := ""
+		resourceAttrs := make(map[string]string)
 		for _, kv := range rs.Resource.Attributes {
-			if kv.Key == "service.name" && kv.Value.StringValue != nil {
-				service = *kv.Value.StringValue
+			if v := kvToString(kv.Value); v != "" {
+				resourceAttrs[kv.Key] = v
+				if kv.Key == "service.name" {
+					service = v
+				} else if kv.Key == "service.version" {
+					serviceVersion = v
+				}
 			}
+		}
+		if len(resourceAttrs) == 0 {
+			resourceAttrs = nil
 		}
 		for _, ss := range rs.ScopeSpans {
 			for _, sp := range ss.Spans {
@@ -409,6 +470,23 @@ func (h *H) saveJSONSpans(rss []otlpResourceSpans) int {
 						attrs[kv.Key] = v
 					}
 				}
+				var events []store.SpanEvent
+				for _, ev := range sp.Events {
+					evAttrs := make(map[string]string, len(ev.Attributes))
+					for _, kv := range ev.Attributes {
+						if v := kvToString(kv.Value); v != "" {
+							evAttrs[kv.Key] = v
+						}
+					}
+					if len(evAttrs) == 0 {
+						evAttrs = nil
+					}
+					events = append(events, store.SpanEvent{
+						TimeUs: int64(ev.TimeUnixNano) / 1000,
+						Name:   ev.Name,
+						Attrs:  evAttrs,
+					})
+				}
 				startUs := int64(sp.StartTime) / 1000
 				endUs := int64(sp.EndTime) / 1000
 				durUs := endUs - startUs
@@ -416,20 +494,25 @@ func (h *H) saveJSONSpans(rss []otlpResourceSpans) int {
 					durUs = 0
 				}
 				ospan := store.OTelSpan{
-					ID:           store.NewULID(),
-					TraceID:      sp.TraceID,
-					SpanID:       sp.SpanID,
-					ParentSpanID: sp.ParentSpanID,
-					Service:      service,
-					Name:         sp.Name,
-					Kind:         spanKindName(sp.Kind),
-					StartTimeUs:  startUs,
-					EndTimeUs:    endUs,
-					DurationUs:   durUs,
-					StatusCode:   statusCodeName(sp.Status.Code),
-					StatusMsg:    sp.Status.Message,
-					Attributes:   attrs,
-					ReceivedAt:   now,
+					ID:             store.NewULID(),
+					TraceID:        sp.TraceID,
+					SpanID:         sp.SpanID,
+					ParentSpanID:   sp.ParentSpanID,
+					Service:        service,
+					ServiceVersion: serviceVersion,
+					Name:           sp.Name,
+					Kind:           spanKindName(sp.Kind),
+					StartTimeUs:    startUs,
+					EndTimeUs:      endUs,
+					DurationUs:     durUs,
+					StatusCode:     statusCodeName(sp.Status.Code),
+					StatusMsg:      sp.Status.Message,
+					Attributes:     attrs,
+					ResourceAttrs:  resourceAttrs,
+					Events:         events,
+					ScopeName:      ss.Scope.Name,
+					ScopeVersion:   ss.Scope.Version,
+					ReceivedAt:     now,
 				}
 				if h.db.OTelSpans.Save(ospan) == nil {
 					saved++
@@ -544,6 +627,12 @@ func (h *H) OTelOperations(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": ops})
 }
 
+// jaegerLog represents a span event in Jaeger format.
+type jaegerLog struct {
+	Timestamp int64       `json:"timestamp"` // microseconds epoch
+	Fields    []jaegerTag `json:"fields"`
+}
+
 // jaegerSpan mirrors the Jaeger HTTP API span format the frontend expects.
 type jaegerSpan struct {
 	TraceID       string         `json:"traceID"`
@@ -553,8 +642,12 @@ type jaegerSpan struct {
 	StartTime     int64          `json:"startTime"`   // microseconds epoch
 	Duration      int64          `json:"duration"`    // microseconds
 	Tags          []jaegerTag    `json:"tags"`
+	Logs          []jaegerLog    `json:"logs"`
 	ProcessID     string         `json:"processID"`
 	Warnings      []string       `json:"warnings"`
+	// Extra fields exposed for richer frontend display
+	ScopeName    string `json:"scopeName,omitempty"`
+	ScopeVersion string `json:"scopeVersion,omitempty"`
 }
 type jaegerRef struct {
 	RefType string `json:"refType"`
@@ -581,20 +674,30 @@ type jaegerTrace struct {
 func toJaegerTrace(traceID string, spans []store.OTelSpan) jaegerTrace {
 	processes := make(map[string]jaegerProcess)
 	pidMap := make(map[string]string) // service → processID
+	// Track resource attrs per service (use first span seen for that service).
+	resAttrsBySvc := make(map[string]map[string]string)
 
-	getPID := func(service string) string {
-		if pid, ok := pidMap[service]; ok {
+	getPID := func(sp store.OTelSpan) string {
+		if pid, ok := pidMap[sp.Service]; ok {
 			return pid
 		}
 		pid := fmt.Sprintf("p%d", len(pidMap)+1)
-		pidMap[service] = pid
-		processes[pid] = jaegerProcess{ServiceName: service}
+		pidMap[sp.Service] = pid
+		// Build process tags from resource attributes.
+		var procTags []jaegerTag
+		if ra := sp.ResourceAttrs; len(ra) > 0 {
+			resAttrsBySvc[sp.Service] = ra
+			for k, v := range ra {
+				procTags = append(procTags, jaegerTag{Key: k, Type: "string", Value: v})
+			}
+		}
+		processes[pid] = jaegerProcess{ServiceName: sp.Service, Tags: procTags}
 		return pid
 	}
 
 	jspans := make([]jaegerSpan, 0, len(spans))
 	for _, sp := range spans {
-		pid := getPID(sp.Service)
+		pid := getPID(sp)
 		var refs []jaegerRef
 		if sp.ParentSpanID != "" {
 			refs = append(refs, jaegerRef{
@@ -603,13 +706,28 @@ func toJaegerTrace(traceID string, spans []store.OTelSpan) jaegerTrace {
 				SpanID:  sp.ParentSpanID,
 			})
 		}
-		tags := make([]jaegerTag, 0, len(sp.Attributes)+2)
+		tags := make([]jaegerTag, 0, len(sp.Attributes)+4)
 		tags = append(tags, jaegerTag{Key: "span.kind", Type: "string", Value: sp.Kind})
 		if sp.StatusCode != "unset" {
 			tags = append(tags, jaegerTag{Key: "otel.status_code", Type: "string", Value: sp.StatusCode})
 		}
+		if sp.StatusMsg != "" {
+			tags = append(tags, jaegerTag{Key: "otel.status_description", Type: "string", Value: sp.StatusMsg})
+		}
+		if sp.ServiceVersion != "" {
+			tags = append(tags, jaegerTag{Key: "service.version", Type: "string", Value: sp.ServiceVersion})
+		}
 		for k, v := range sp.Attributes {
 			tags = append(tags, jaegerTag{Key: k, Type: "string", Value: v})
+		}
+		// Convert span events to Jaeger logs.
+		var logs []jaegerLog
+		for _, ev := range sp.Events {
+			fields := []jaegerTag{{Key: "event", Type: "string", Value: ev.Name}}
+			for k, v := range ev.Attrs {
+				fields = append(fields, jaegerTag{Key: k, Type: "string", Value: v})
+			}
+			logs = append(logs, jaegerLog{Timestamp: ev.TimeUs, Fields: fields})
 		}
 		jspans = append(jspans, jaegerSpan{
 			TraceID:       sp.TraceID,
@@ -619,8 +737,11 @@ func toJaegerTrace(traceID string, spans []store.OTelSpan) jaegerTrace {
 			StartTime:     sp.StartTimeUs,
 			Duration:      sp.DurationUs,
 			Tags:          tags,
+			Logs:          logs,
 			ProcessID:     pid,
 			Warnings:      []string{},
+			ScopeName:     sp.ScopeName,
+			ScopeVersion:  sp.ScopeVersion,
 		})
 	}
 

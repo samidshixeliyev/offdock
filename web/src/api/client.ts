@@ -136,6 +136,11 @@ export interface OTelSpanRef {
   spanID: string
 }
 
+export interface OTelSpanLog {
+  timestamp: number    // microseconds since epoch
+  fields: OTelTag[]
+}
+
 export interface OTelSpan {
   traceID: string
   spanID: string
@@ -144,8 +149,11 @@ export interface OTelSpan {
   startTime: number    // microseconds since epoch
   duration: number     // microseconds
   tags: OTelTag[]
+  logs: OTelSpanLog[] | null   // span events (exception stack traces, custom events)
   processID: string
   warnings: string[] | null
+  scopeName?: string
+  scopeVersion?: string
 }
 
 export interface OTelProcess {
