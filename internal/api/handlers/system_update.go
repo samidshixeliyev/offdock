@@ -82,8 +82,8 @@ func (h *H) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 
 	send("info", "Receiving update archive…")
 
-	// Parse multipart form (max 500 MB).
-	if err := r.ParseMultipartForm(500 << 20); err != nil {
+	// Parse multipart form (32 MB in-memory; larger files spill to disk temp files).
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		send("error", "Failed to parse upload: "+err.Error())
 		return
 	}
@@ -185,26 +185,28 @@ func (h *H) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 	slog.Info("system_update", "install_path", installPath, "file", header.Filename, "user", claims.Username)
 	h.logAudit(r, "system_update", "system", "", header.Filename, claims.Username)
 
-	// Schedule the restart in a fully detached child process so the restart
-	// survives after systemd kills this offdock process. We use a shell
-	// one-liner with `setsid` (new session, no controlling terminal) and
-	// `nohup` to ensure the child is not killed when the parent process group
-	// is terminated by systemd during restart.
+	// Schedule the restart in a detached process that survives after systemd
+	// kills this offdock process. systemd-run creates a new transient unit in
+	// its own cgroup, so it is not killed when the offdock cgroup is torn down
+	// during restart. Fall back to setsid if systemd-run is unavailable.
 	//
 	// Sleep 2s first so the SSE success message has time to reach the browser.
 	restartScript := `sleep 2 && systemctl daemon-reload 2>/dev/null; systemctl restart offdock`
-	cmd := exec.Command("setsid", "sh", "-c", restartScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true, // detach from current process group
-	}
+	cmd := exec.Command("systemd-run", "--no-block", "--collect", "sh", "-c", restartScript)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
 	if err := cmd.Start(); err != nil {
-		// Fallback: use at(1) if available, or a background subshell
-		fallback := exec.Command("sh", "-c",
-			`(sleep 2; systemctl daemon-reload 2>/dev/null; systemctl restart offdock) &`)
-		fallback.Start() //nolint:errcheck
+		// systemd-run not available — fall back to setsid-detached shell
+		cmd2 := exec.Command("sh", "-c", restartScript)
+		cmd2.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		cmd2.Stdout = nil
+		cmd2.Stderr = nil
+		cmd2.Stdin = nil
+		if err2 := cmd2.Start(); err2 != nil {
+			exec.Command("sh", "-c", //nolint:errcheck
+				`(sleep 2; systemctl daemon-reload 2>/dev/null; systemctl restart offdock) &`).Start()
+		}
 	}
 
 	send("success", "Update complete — service restarting in ~2 seconds. Reconnect shortly.")
@@ -422,15 +424,20 @@ func (h *H) SystemRollback(w http.ResponseWriter, r *http.Request) {
 	send("info", "Binary restored — scheduling restart…")
 
 	restartScript := `sleep 2 && systemctl daemon-reload 2>/dev/null; systemctl restart offdock`
-	cmd := exec.Command("setsid", "sh", "-c", restartScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd := exec.Command("systemd-run", "--no-block", "--collect", "sh", "-c", restartScript)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	cmd.Stdin = nil
 	if err := cmd.Start(); err != nil {
-		fallback := exec.Command("sh", "-c",
-			`(sleep 2; systemctl daemon-reload 2>/dev/null; systemctl restart offdock) &`)
-		fallback.Start() //nolint:errcheck
+		cmd2 := exec.Command("sh", "-c", restartScript)
+		cmd2.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		cmd2.Stdout = nil
+		cmd2.Stderr = nil
+		cmd2.Stdin = nil
+		if err2 := cmd2.Start(); err2 != nil {
+			exec.Command("sh", "-c", //nolint:errcheck
+				`(sleep 2; systemctl daemon-reload 2>/dev/null; systemctl restart offdock) &`).Start()
+		}
 	}
 
 	send("success", "Rollback complete — service restarting in ~2 seconds. Reconnect shortly.")
@@ -569,7 +576,7 @@ func (h *H) ScheduleSystemUpdate(w http.ResponseWriter, r *http.Request) {
 
 	send("info", "Receiving update archive…")
 
-	if err := r.ParseMultipartForm(500 << 20); err != nil {
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		send("error", "Failed to parse upload: "+err.Error())
 		return
 	}

@@ -86,7 +86,12 @@ const XTerminal = forwardRef<XTerminalHandle, Props>(({ wsUrl, onClose, classNam
 
     const cols = term.cols
     const rows = term.rows
-    const wsBase = wsUrl.startsWith('ws') ? wsUrl : wsUrl.replace(/^http/, 'ws')
+    const wsBase = (() => {
+      if (wsUrl.startsWith('ws://') || wsUrl.startsWith('wss://')) return wsUrl
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const path = wsUrl.startsWith('/') ? wsUrl : '/' + wsUrl
+      return `${proto}//${window.location.host}${path}`
+    })()
     const sep = wsBase.includes('?') ? '&' : '?'
     const fullUrl = `${wsBase}${sep}cols=${cols}&rows=${rows}`
 
