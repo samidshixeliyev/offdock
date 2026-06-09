@@ -36,6 +36,10 @@ func (h *H) GetEnv(w http.ResponseWriter, r *http.Request) {
 // the user can save without re-entering secrets they haven't changed.
 func (h *H) SaveEnv(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
+	if _, err := h.db.Projects.FindByID(projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
 	claims := authmw.ClaimsFromContext(r.Context())
 
 	var req struct {
@@ -112,6 +116,7 @@ func (h *H) SaveEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save env vars")
 		return
 	}
+	h.logAudit(r, "save_env", "project", projectID, "", "v"+strconv.Itoa(version))
 	writeJSON(w, http.StatusCreated, h.marshalEnvSet(set))
 }
 

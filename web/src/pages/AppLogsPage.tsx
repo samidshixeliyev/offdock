@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
-import { RefreshCw, Play, Square, Download, FileText, WifiOff, Trash2 } from 'lucide-react'
+import { RefreshCw, Play, Square, Download, FileText, WifiOff, Trash2, Search, X } from 'lucide-react'
 import clsx from 'clsx'
 
 type LogLine = { raw: string; level: string }
@@ -23,6 +23,9 @@ function lineColor(level: string): string {
   }
 }
 
+type Level = 'error' | 'warn' | 'info' | 'debug'
+const ALL_LEVELS: Level[] = ['error', 'warn', 'info', 'debug']
+
 export default function AppLogsPage() {
   const { user } = useAuth()
   const isSuperAdmin = user?.role === 'superadmin'
@@ -31,7 +34,8 @@ export default function AppLogsPage() {
   const [loading, setLoading] = useState(true)
   const [streaming, setStreaming] = useState(false)
   const [streamStatus, setStreamStatus] = useState<'idle' | 'live' | 'error'>('idle')
-  const [filter, setFilter] = useState('')
+  const [search, setSearch] = useState('')
+  const [hiddenLevels, setHiddenLevels] = useState<Set<Level>>(new Set())
   const [autoScroll, setAutoScroll] = useState(true)
   const [clearing, setClearing] = useState(false)
 
@@ -116,51 +120,92 @@ export default function AppLogsPage() {
     URL.revokeObjectURL(url)
   }
 
-  const errorCount = lines.filter(l => l.level === 'error').length
+  const levelCounts = {
+    error: lines.filter(l => l.level === 'error').length,
+    warn:  lines.filter(l => l.level === 'warn').length,
+    info:  lines.filter(l => l.level === 'info').length,
+    debug: lines.filter(l => l.level === 'debug').length,
+  }
 
-  const [errorsOnly, setErrorsOnly] = useState(false)
+  const toggleLevel = (level: Level) =>
+    setHiddenLevels(prev => {
+      const next = new Set(prev)
+      next.has(level) ? next.delete(level) : next.add(level)
+      return next
+    })
+
+  const searchLower = search.toLowerCase()
   const filtered = lines.filter(l => {
-    if (errorsOnly && l.level !== 'error') return false
-    if (filter && !l.raw.toLowerCase().includes(filter.toLowerCase())) return false
+    if (hiddenLevels.has(l.level as Level)) return false
+    if (searchLower && !l.raw.toLowerCase().includes(searchLower)) return false
     return true
   })
+
+  const highlightSearch = (text: string) => {
+    if (!search) return text
+    const idx = text.toLowerCase().indexOf(searchLower)
+    if (idx === -1) return text
+    return (
+      <>
+        {text.slice(0, idx)}
+        <mark className="bg-amber-400/30 text-amber-200 rounded-sm">{text.slice(idx, idx + search.length)}</mark>
+        {text.slice(idx + search.length)}
+      </>
+    )
+  }
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
       {/* Toolbar */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-800 shrink-0 bg-slate-900/30">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-800 shrink-0 bg-slate-900/30">
         <FileText className="w-4 h-4 text-blue-400 shrink-0" />
         <span className="text-sm font-semibold text-slate-200">OffDock App Logs</span>
         {source && (
           <span className="text-[10px] text-slate-600 uppercase tracking-wider">
-            source: {source}
+            {source}
           </span>
         )}
 
-        <div className="flex items-center gap-1.5 ml-auto">
-          {/* Error count badge + quick filter */}
-          {errorCount > 0 && (
-            <button
-              onClick={() => setErrorsOnly(v => !v)}
-              className={clsx(
-                'flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold transition-colors',
-                errorsOnly
-                  ? 'bg-red-500/20 border border-red-500/40 text-red-400'
-                  : 'bg-red-500/10 border border-red-500/20 text-red-400 hover:bg-red-500/20',
-              )}
-            >
-              {errorCount} error{errorCount !== 1 ? 's' : ''}
-            </button>
-          )}
+        {/* Level filter pills */}
+        <div className="flex items-center gap-1">
+          {ALL_LEVELS.map(lv => {
+            const count = levelCounts[lv]
+            const active = !hiddenLevels.has(lv)
+            const colors: Record<Level, string> = {
+              error: active ? 'bg-red-500/20 border-red-500/40 text-red-400' : 'bg-slate-900 border-slate-800 text-slate-600',
+              warn:  active ? 'bg-amber-500/20 border-amber-500/40 text-amber-400' : 'bg-slate-900 border-slate-800 text-slate-600',
+              info:  active ? 'bg-slate-700/50 border-slate-600 text-slate-300' : 'bg-slate-900 border-slate-800 text-slate-600',
+              debug: active ? 'bg-slate-800 border-slate-700 text-slate-500' : 'bg-slate-900 border-slate-800 text-slate-600',
+            }
+            return (
+              <button
+                key={lv}
+                onClick={() => toggleLevel(lv)}
+                className={clsx('px-2 py-0.5 rounded text-[10px] font-semibold border transition-colors', colors[lv])}
+                title={`${active ? 'Hide' : 'Show'} ${lv} lines`}
+              >
+                {lv} {count > 0 && <span className="ml-0.5 opacity-70">{count}</span>}
+              </button>
+            )
+          })}
+        </div>
 
-          {/* Filter */}
+        {/* Search */}
+        <div className="relative flex-1 min-w-[140px] max-w-xs">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-600 pointer-events-none" />
           <input
             type="text"
-            placeholder="Filter…"
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
-            className="h-7 px-2.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500 w-40"
+            placeholder="Search logs…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="h-7 w-full pl-7 pr-6 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500"
           />
+          {search && (
+            <button onClick={() => setSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300">
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
 
           {/* Auto-scroll */}
           <label className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer select-none">
@@ -230,14 +275,27 @@ export default function AppLogsPage() {
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
-        </div>
       </div>
 
       {/* Count bar */}
       <div className="px-4 py-1.5 border-b border-slate-800/50 shrink-0 text-[10px] text-slate-600 flex items-center gap-3">
-        <span>{filtered.length} {filtered.length !== lines.length ? `/ ${lines.length} total` : 'lines'}</span>
-        {errorsOnly && <span className="text-red-400/70">errors only</span>}
-        {filter && <span className="text-amber-400/70">filtered by "{filter}"</span>}
+        <span>
+          {filtered.length}{filtered.length !== lines.length ? ` / ${lines.length} total` : ' lines'}
+        </span>
+        {hiddenLevels.size > 0 && (
+          <span className="text-slate-500">hiding: {[...hiddenLevels].join(', ')}</span>
+        )}
+        {search && (
+          <span className="text-amber-400/70">matching "{search}"</span>
+        )}
+        {(hiddenLevels.size > 0 || search) && (
+          <button
+            onClick={() => { setHiddenLevels(new Set()); setSearch('') }}
+            className="text-slate-600 hover:text-slate-400 underline"
+          >
+            clear filters
+          </button>
+        )}
       </div>
 
       {/* Log content */}
@@ -263,7 +321,7 @@ export default function AppLogsPage() {
                   l.level === 'warn'  && 'border-l-2 border-amber-500/40 pl-3',
                 )}
               >
-                {l.raw}
+                {highlightSearch(l.raw)}
               </div>
             ))}
           </div>

@@ -18,6 +18,8 @@ const (
 	recordTypeDeleted = byte(1)
 	// headerSize = 4 (payload len) + 1 (type) + 4 (CRC32) = 9 bytes
 	headerSize = 9
+	// maxPayloadLen guards against corrupted length fields causing huge allocations.
+	maxPayloadLen = 64 << 20 // 64 MB
 )
 
 // ErrNotFound is returned when an entity does not exist in the collection.
@@ -160,6 +162,10 @@ func (c *Collection[T]) load() error {
 		}
 
 		payloadLen := binary.LittleEndian.Uint32(header[0:4])
+		if payloadLen > maxPayloadLen {
+			// Corrupted length field — stop replaying to avoid OOM.
+			break
+		}
 		recordType := header[4]
 		expectedCRC := binary.LittleEndian.Uint32(header[5:9])
 
@@ -248,6 +254,9 @@ func (c *Collection[T]) Compact() error {
 }
 
 func (c *Collection[T]) appendRecord(recordType byte, entity T) error {
+	if c.f == nil {
+		return fmt.Errorf("collection %s: file handle is nil (compact may have failed)", c.path)
+	}
 	payload, err := json.Marshal(entity)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)

@@ -17,8 +17,11 @@ const http  = require('http');
 const https = require('https');
 
 const ENDPOINT = (() => {
-  const base = (process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://host.docker.internal:7070')
-    .replace(/\/v1\/traces$/, '');
+  const base = (
+    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ||
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT ||
+    'http://host.docker.internal:7070'
+  ).replace(/\/v1\/traces$/, '');
   return base + '/v1/span';
 })();
 const SERVICE = process.env.OTEL_SERVICE_NAME || process.env.npm_package_name || 'node-service';

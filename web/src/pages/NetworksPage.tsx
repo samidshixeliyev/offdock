@@ -5,6 +5,8 @@ import { Modal } from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 import { useToast } from '../components/Toast'
 import clsx from 'clsx'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 import {
   Network, Plus, RefreshCw, Trash2, Plug, Unplug, ChevronDown, Info,
 } from 'lucide-react'
@@ -163,6 +165,7 @@ function CreateNetworkModal({ onCreated, onClose }: { onCreated: () => void; onC
 
 export default function NetworksPage() {
   const toast = useToast()
+  const { can } = usePermissions()
   const [nets, setNets] = useState<DockerNetwork[]>([])
   const [containers, setContainers] = useState<ContainerInfo[]>([])
   const [loading, setLoading] = useState(true)
@@ -215,10 +218,11 @@ export default function NetworksPage() {
 
   return (
     <Page>
+      {!can(PERMS.manageNetwork) && <ReadOnlyBanner message="You don't have permission to manage networks. Viewing in read-only mode." />}
       <PageHeader title="Networks" subtitle="Connect containers to Docker networks" icon={Network}
         actions={<>
           <button onClick={load} className="btn-secondary"><RefreshCw className="w-4 h-4" /> Refresh</button>
-          <button onClick={() => setShowCreate(true)} className="btn-primary"><Plus className="w-4 h-4" /> Create Network</button>
+          {can(PERMS.manageNetwork) && <button onClick={() => setShowCreate(true)} className="btn-primary"><Plus className="w-4 h-4" /> Create Network</button>}
         </>} />
 
       {showCreate && <CreateNetworkModal onCreated={load} onClose={() => setShowCreate(false)} />}

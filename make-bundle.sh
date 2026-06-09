@@ -14,6 +14,7 @@
 #     install.sh       ← full offline installer
 #     uninstall.sh
 #     INSTALL.md
+#     otel/            ← OpenTelemetry agents (java agent jar, node + php tracers)
 #     debs/            ← only in --full bundles
 #       docker/*.deb
 #       nginx/*.deb
@@ -80,6 +81,16 @@ cp "${SCRIPT_DIR}/uninstall.sh"    "$BUNDLE_DIR/"
 [[ -f "${SCRIPT_DIR}/nginx-setup.sh" ]]           && cp "${SCRIPT_DIR}/nginx-setup.sh" "$BUNDLE_DIR/"
 [[ -f "${SCRIPT_DIR}/OFFLINE_INSTALL_GUIDE.md" ]] && cp "${SCRIPT_DIR}/OFFLINE_INSTALL_GUIDE.md" "$BUNDLE_DIR/INSTALL.md"
 echo "  ✓ install.sh, offdock.service, uninstall.sh"
+
+# ── OpenTelemetry agents (Java/Node/PHP auto-instrumentation) ────────────────
+# install.sh copies these from "${SCRIPT_DIR}/otel/..." — without them here it
+# silently warns and skips, leaving tracing broken on the target machine.
+if [[ -d "${SCRIPT_DIR}/otel" ]]; then
+  cp -r "${SCRIPT_DIR}/otel" "$BUNDLE_DIR/otel"
+  echo "  ✓ otel agents  ($(du -sh "${SCRIPT_DIR}/otel" | cut -f1): java agent jar, node + php tracers)"
+else
+  echo "  WARNING: otel/ directory not found — bundle will not include tracing agents." >&2
+fi
 
 # ── Optional: deb packages (--full only) ─────────────────────────────────────
 if [[ $INCLUDE_DEBS -eq 1 ]]; then

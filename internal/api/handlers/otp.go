@@ -128,6 +128,14 @@ func (h *H) OTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hashOTP(req.Code) != challenge.CodeHash {
+		challenge.Attempts++
+		h.db.OTPChallenges.Save(challenge) //nolint:errcheck
+		if challenge.Attempts >= 5 {
+			challenge.Used = true
+			h.db.OTPChallenges.Save(challenge) //nolint:errcheck
+			writeError(w, http.StatusUnprocessableEntity, "too many incorrect attempts — request a new OTP")
+			return
+		}
 		writeError(w, http.StatusUnprocessableEntity, "incorrect OTP code")
 		return
 	}
@@ -136,8 +144,12 @@ func (h *H) OTPVerify(w http.ResponseWriter, r *http.Request) {
 	challenge.Used = true
 	h.db.OTPChallenges.Save(challenge) //nolint:errcheck
 
-	// Issue a short-lived terminal token (signed JWT with 10-min expiry, stored in DB).
-	token := generateTerminalToken()
+	// Issue a short-lived terminal token (32-byte random token, stored as hash in DB).
+	token, err := generateTerminalToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not generate terminal token")
+		return
+	}
 	termChallenge := store.OTPChallenge{
 		ID:        store.NewULID(),
 		UserID:    user.ID,
@@ -189,10 +201,12 @@ func generateOTPCode() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
-func generateTerminalToken() string {
+func generateTerminalToken() (string, error) {
 	b := make([]byte, 32)
-	rand.Read(b) //nolint:errcheck
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate terminal token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func hashOTP(code string) string {

@@ -24,6 +24,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [info, setInfo] = useState('')
   const [loading, setLoading] = useState(false)
   const [oauthReady, setOauthReady] = useState(false)
 
@@ -42,11 +43,12 @@ export default function LoginPage() {
       .catch(() => setOauthReady(false))
   }, [])
 
-  // Surface IdP error messages redirected back from the callback
+  // Surface IdP error messages and logout confirmation from URL params
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const err = params.get('error')
     if (err) setError(decodeURIComponent(err))
+    if (params.get('logged_out') === '1') setInfo('You have been signed out.')
   }, [])
 
   const handleSubmit = async (e: FormEvent) => {
@@ -115,6 +117,11 @@ export default function LoginPage() {
                 />
               </div>
             </div>
+            {info && !error && (
+              <div className="px-3 py-2 rounded-lg bg-green-500/10 border border-green-500/30 text-green-400 text-sm animate-fadeIn">
+                {info}
+              </div>
+            )}
             {error && (
               <div className="px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-sm animate-fadeIn">
                 {error}

@@ -136,7 +136,12 @@ func (h *H) ReceiveSimpleSpan(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.OTelSpans.Save(ospan); err != nil {
 		slog.Warn("simple span: save", "err", err)
 	} else {
-		go h.db.PruneOTelSpans(50_000)
+		if h.spanPruneMu.TryLock() {
+		go func() {
+			defer h.spanPruneMu.Unlock()
+			h.db.PruneOTelSpans(50_000)
+		}()
+	}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"trace_id":%q,"span_id":%q}`, ospan.TraceID, ospan.SpanID)
@@ -158,7 +163,12 @@ func (h *H) ReceiveSimpleSpans(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if saved > 0 {
-		go h.db.PruneOTelSpans(50_000)
+		if h.spanPruneMu.TryLock() {
+		go func() {
+			defer h.spanPruneMu.Unlock()
+			h.db.PruneOTelSpans(50_000)
+		}()
+	}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprintf(w, `{"saved":%d}`, saved)
@@ -315,7 +325,12 @@ func (h *H) ReceiveOTLPTraces(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if saved > 0 {
-		go h.db.PruneOTelSpans(50_000)
+		if h.spanPruneMu.TryLock() {
+		go func() {
+			defer h.spanPruneMu.Unlock()
+			h.db.PruneOTelSpans(50_000)
+		}()
+	}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	fmt.Fprint(w, `{"partialSuccess":{}}`)
@@ -618,11 +633,31 @@ func toJaegerTrace(traceID string, spans []store.OTelSpan) jaegerTrace {
 }
 
 // OTelTraces returns recent traces in Jaeger-compatible format.
-// Accepts: service, limit, operation query params.
+// Accepts: service, operation, limit, search, status, min_duration_ms, time_range query params.
 func (h *H) OTelTraces(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	svc := q.Get("service")
 	op := q.Get("operation")
+	search := strings.ToLower(strings.TrimSpace(q.Get("search")))
+	statusFilter := q.Get("status") // "error" or ""
+	minDurMs := 0
+	if d, err := strconv.Atoi(q.Get("min_duration_ms")); err == nil && d > 0 {
+		minDurMs = d
+	}
+
+	// time_range: "1h" | "6h" | "24h" | "7d" → compute sinceTime
+	var sinceTime time.Time
+	switch q.Get("time_range") {
+	case "1h":
+		sinceTime = time.Now().Add(-time.Hour)
+	case "6h":
+		sinceTime = time.Now().Add(-6 * time.Hour)
+	case "24h":
+		sinceTime = time.Now().Add(-24 * time.Hour)
+	case "7d":
+		sinceTime = time.Now().AddDate(0, 0, -7)
+	}
+
 	limit := 20
 	if l, err := strconv.Atoi(q.Get("limit")); err == nil && l > 0 {
 		limit = l
@@ -635,6 +670,25 @@ func (h *H) OTelTraces(w http.ResponseWriter, r *http.Request) {
 		if op != "" && s.Name != op {
 			return false
 		}
+		if !sinceTime.IsZero() && s.ReceivedAt.Before(sinceTime) {
+			return false
+		}
+		if search != "" {
+			if !strings.Contains(strings.ToLower(s.Name), search) &&
+				!strings.Contains(strings.ToLower(s.Service), search) {
+				found := false
+				for k, v := range s.Attributes {
+					if strings.Contains(strings.ToLower(k), search) ||
+						strings.Contains(strings.ToLower(v), search) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return false
+				}
+			}
+		}
 		return true
 	})
 
@@ -644,7 +698,7 @@ func (h *H) OTelTraces(w http.ResponseWriter, r *http.Request) {
 		byTrace[s.TraceID] = append(byTrace[s.TraceID], s)
 	}
 
-	// Sort traces newest-first (by earliest span start time).
+	// Build summaries, applying per-trace filters (status, min_duration_ms).
 	type traceSummary struct {
 		id    string
 		start int64
@@ -652,9 +706,26 @@ func (h *H) OTelTraces(w http.ResponseWriter, r *http.Request) {
 	var summaries []traceSummary
 	for tid, tspans := range byTrace {
 		minStart := tspans[0].StartTimeUs
-		for _, s := range tspans[1:] {
+		maxEnd := tspans[0].EndTimeUs
+		hasError := false
+		for _, s := range tspans {
 			if s.StartTimeUs < minStart {
 				minStart = s.StartTimeUs
+			}
+			if s.EndTimeUs > maxEnd {
+				maxEnd = s.EndTimeUs
+			}
+			if s.StatusCode == "error" {
+				hasError = true
+			}
+		}
+		if statusFilter == "error" && !hasError {
+			continue
+		}
+		if minDurMs > 0 {
+			traceDurMs := (maxEnd - minStart) / 1000
+			if traceDurMs < int64(minDurMs) {
+				continue
 			}
 		}
 		summaries = append(summaries, traceSummary{id: tid, start: minStart})

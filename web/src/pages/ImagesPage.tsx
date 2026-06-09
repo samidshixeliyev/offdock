@@ -10,6 +10,8 @@ import {
   Boxes, Upload, RefreshCw, RotateCw, Trash2, FileArchive, HardDriveUpload,
   Loader2, CheckCircle2,
 } from 'lucide-react'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 
 type UploadTab = 'computer' | 'server'
 
@@ -119,6 +121,7 @@ function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => v
 
 export default function ImagesPage() {
   const toast = useToast()
+  const { can } = usePermissions()
   const [images, setImages] = useState<DockerImage[]>([])
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -155,15 +158,16 @@ export default function ImagesPage() {
 
   return (
     <Page>
+      {!can(PERMS.manageImages) && <ReadOnlyBanner message="You don't have permission to manage images. Viewing in read-only mode." />}
       <PageHeader title="Images" subtitle={`${images.length} tracked image${images.length !== 1 ? 's' : ''}`} icon={Boxes}
         actions={<>
-          <button onClick={() => handlePrune(false)} disabled={pruning} title="Remove dangling (unused) images" className="btn-secondary">
+          {can(PERMS.manageImages) && <button onClick={() => handlePrune(false)} disabled={pruning} title="Remove dangling (unused) images" className="btn-secondary">
             {pruning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />} Prune
-          </button>
+          </button>}
           <button onClick={handleSync} disabled={syncing} className="btn-secondary">
             {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCw className="w-4 h-4" />} Sync from Docker
           </button>
-          <button onClick={() => setShowUpload(true)} className="btn-primary"><Upload className="w-4 h-4" /> Add Image (.tar)</button>
+          {can(PERMS.manageImages) && <button onClick={() => setShowUpload(true)} className="btn-primary"><Upload className="w-4 h-4" /> Add Image (.tar)</button>}
         </>} />
 
       {/* Docker disk usage summary */}
@@ -212,7 +216,7 @@ export default function ImagesPage() {
                     <td className="px-4 py-3 text-xs font-mono text-slate-500">{(img.docker_image_id ?? '').replace('sha256:', '').slice(0, 12)}</td>
                     <td className="px-4 py-3 text-xs text-slate-400 tabular-nums">{img.size_bytes ? formatBytes(img.size_bytes) : '—'}</td>
                     <td className="px-4 py-3 text-xs text-slate-500">{formatDateTime(img.loaded_at)}</td>
-                    <td className="px-4 py-3 text-right"><IconButton icon={Trash2} tone="danger" title="Delete" onClick={() => setConfirmDelete(img)} /></td>
+                    <td className="px-4 py-3 text-right"><IconButton icon={Trash2} tone="danger" title={can(PERMS.manageImages) ? "Delete" : "Delete (no permission)"} disabled={!can(PERMS.manageImages)} onClick={() => can(PERMS.manageImages) && setConfirmDelete(img)} /></td>
                   </tr>
                 ))}
               </tbody>

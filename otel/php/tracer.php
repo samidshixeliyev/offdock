@@ -14,7 +14,7 @@
 
 defined('_OFFDOCK_TRACER') or define('_OFFDOCK_TRACER', true);
 
-$_OTEL_BASE    = rtrim(getenv('OTEL_EXPORTER_OTLP_ENDPOINT') ?: 'http://host.docker.internal:7070', '/');
+$_OTEL_BASE    = rtrim(getenv('OTEL_EXPORTER_OTLP_TRACES_ENDPOINT') ?: getenv('OTEL_EXPORTER_OTLP_ENDPOINT') ?: 'http://host.docker.internal:7070', '/');
 $_OTEL_BASE    = preg_replace('#/v1/traces$#', '', $_OTEL_BASE);
 $_OTEL_ENDPOINT = $_OTEL_BASE . '/v1/span';
 // Use OTEL_SERVICE_NAME, then hostname — never HTTP_HOST (attacker-controlled).
@@ -51,32 +51,9 @@ function _offdock_send_span(array $span): void {
     }
 }
 
-// Hook curl to capture outgoing HTTP calls.
-if (function_exists('curl_init')) {
-    if (!function_exists('_offdock_curl_exec')) {
-        function _offdock_curl_exec($ch) {
-            global $_OTEL_TRACE_ID, $_OTEL_SPAN_ID, $_OTEL_SERVICE;
-            $start   = microtime(true);
-            $childId = bin2hex(random_bytes(8));
-            $result  = curl_exec($ch);
-            $end     = microtime(true);
-            $url     = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL) ?: '?';
-            $status  = (int)(curl_getinfo($ch, CURLINFO_HTTP_CODE) ?: 0);
-            _offdock_send_span([
-                'trace_id'  => $_OTEL_TRACE_ID,
-                'span_id'   => $childId,
-                'parent_id' => $_OTEL_SPAN_ID,
-                'service'   => $_OTEL_SERVICE,
-                'name'      => 'curl ' . parse_url($url, PHP_URL_PATH),
-                'start_ms'  => (int)($start * 1000),
-                'end_ms'    => (int)($end * 1000),
-                'status'    => ($status >= 400 || $status === 0) ? 'error' : 'ok',
-                'tags'      => ['http.url' => $url, 'http.status_code' => (string)$status],
-            ]);
-            return $result;
-        }
-    }
-}
+// Note: curl calls are traced at the network layer by OffDock's tcpdump-based
+// container tracing (Tracing page). PHP built-in functions cannot be overridden
+// without the runkit7/uopz extension, so curl is not intercepted here.
 
 // Capture the full request span on shutdown.
 register_shutdown_function(function () {

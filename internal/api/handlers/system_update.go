@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	authmw "offdock/internal/middleware"
 )
@@ -433,4 +434,325 @@ func (h *H) SystemRollback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	send("success", "Rollback complete — service restarting in ~2 seconds. Reconnect shortly.")
+}
+
+// ─── Scheduled updates ───────────────────────────────────────────────────────
+//
+// A scheduled update runs the exact same binary swap as the immediate
+// SystemUpdate above — same validation pipeline, same atomic .bak/.new/rename
+// sequence — just deferred to a chosen time. The deferral is handed off to a
+// transient systemd timer unit (owned by PID 1), so it fires reliably even if
+// the offdock process restarts or crashes between now and then. The uploaded
+// binary and a small metadata file are staged under dataDir/pending-update so
+// status survives process restarts too; systemd owns only the "when".
+
+const scheduledUpdateUnit = "offdock-scheduled-update"
+
+// ScheduledUpdateMeta persists the details of a pending scheduled update.
+type ScheduledUpdateMeta struct {
+	RunAt      string `json:"run_at"` // RFC3339 — when the swap will run
+	Filename   string `json:"filename"`
+	Version    string `json:"version,omitempty"`
+	UploadedBy string `json:"uploaded_by"`
+	UploadedAt string `json:"uploaded_at"` // RFC3339
+}
+
+// ScheduledUpdateInfo is the response to GET /api/v1/system/update/scheduled.
+type ScheduledUpdateInfo struct {
+	Scheduled  bool   `json:"scheduled"`
+	RunAt      string `json:"run_at,omitempty"`
+	Filename   string `json:"filename,omitempty"`
+	Version    string `json:"version,omitempty"`
+	UploadedBy string `json:"uploaded_by,omitempty"`
+	UploadedAt string `json:"uploaded_at,omitempty"`
+	Active     bool   `json:"active"`                // timer still armed in systemd
+	LastResult string `json:"last_result,omitempty"` // "ok" | "error" | "" (none yet)
+	LastLog    string `json:"last_log,omitempty"`
+}
+
+func (h *H) pendingUpdateDir() string      { return filepath.Join(h.dataDir, "pending-update") }
+func (h *H) pendingUpdateMetaPath() string { return filepath.Join(h.pendingUpdateDir(), "meta.json") }
+func (h *H) lastScheduledUpdateLogPath() string {
+	return filepath.Join(h.dataDir, "last-scheduled-update.log")
+}
+
+// cancelScheduledUpdateUnit stops and fully removes the transient timer if one
+// is armed. Safe to call when nothing is scheduled — systemctl just reports
+// the unit as not found and we ignore the error.
+func cancelScheduledUpdateUnit() {
+	exec.Command("systemctl", "stop", scheduledUpdateUnit+".timer").Run() //nolint:errcheck
+}
+
+// scheduledUpdateUnitActive reports whether the transient timer is still armed
+// (i.e. the scheduled update hasn't fired or been cancelled yet). Transient
+// units are garbage-collected by systemd once they finish, so "not found"
+// after a scheduled time has passed simply means it already ran.
+func scheduledUpdateUnitActive() bool {
+	out, err := exec.Command("systemctl", "show", scheduledUpdateUnit+".timer", "--property=ActiveState", "--value").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "active"
+}
+
+// buildScheduledApplyScript renders the POSIX sh script the timer will run
+// when it fires. It mirrors the atomic .bak/.new/rename swap used by the
+// immediate SystemUpdate, then restarts the service. All paths are baked in
+// at scheduling time (from the currently-running process), so the swap
+// targets the right binary regardless of what else changes before it fires.
+//
+// It also writes a short result log — by the time this runs, the SSE stream
+// from the original request is long gone, so this is the only way the admin
+// can later see whether the scheduled install actually succeeded.
+func buildScheduledApplyScript(installPath, stagedBinary, pendingDir, logPath string) string {
+	bakPath := installPath + ".bak"
+	newPath := installPath + ".new"
+	return fmt.Sprintf(`#!/bin/sh
+INSTALL_PATH="%s"
+STAGED="%s"
+BAK="%s"
+NEW="%s"
+PENDING_DIR="%s"
+LOGFILE="%s"
+
+apply() {
+  echo "=== OffDock scheduled update - $(date -u '+%%Y-%%m-%%dT%%H:%%M:%%SZ') ==="
+  if [ -f "$INSTALL_PATH" ]; then
+    cp -f "$INSTALL_PATH" "$BAK" || { echo "ERROR: backup failed"; return 1; }
+    echo "backed up current binary to $BAK"
+  fi
+  cp -f "$STAGED" "$NEW" || { echo "ERROR: staging copy failed"; return 1; }
+  chmod 0755 "$NEW"
+  mv -f "$NEW" "$INSTALL_PATH" || { echo "ERROR: swap failed"; return 1; }
+  echo "binary replaced at $INSTALL_PATH"
+}
+
+if apply > "$LOGFILE" 2>&1; then
+  echo "RESULT=ok" >> "$LOGFILE"
+else
+  echo "RESULT=error" >> "$LOGFILE"
+fi
+
+rm -rf "$PENDING_DIR"
+systemctl daemon-reload 2>/dev/null
+systemctl restart offdock
+`, installPath, stagedBinary, bakPath, newPath, pendingDir, logPath)
+}
+
+// ScheduleSystemUpdate accepts a tar.gz upload plus a "run_at" RFC3339
+// timestamp, runs it through the exact same extract/find/validate pipeline as
+// the immediate SystemUpdate, stages the binary persistently, and arms a
+// transient systemd timer to perform the swap + restart at that time. Only
+// one scheduled update can be pending at a time — uploading a new one cancels
+// and replaces any existing one. Streams progress via SSE.
+func (h *H) ScheduleSystemUpdate(w http.ResponseWriter, r *http.Request) {
+	claims := authmw.ClaimsFromContext(r.Context())
+	if claims == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	send := func(status, msg string) {
+		b, _ := json.Marshal(map[string]string{"status": status, "message": msg})
+		fmt.Fprintf(w, "data: %s\n\n", b)
+		flusher.Flush()
+	}
+
+	send("info", "Receiving update archive…")
+
+	if err := r.ParseMultipartForm(500 << 20); err != nil {
+		send("error", "Failed to parse upload: "+err.Error())
+		return
+	}
+
+	runAtStr := strings.TrimSpace(r.FormValue("run_at"))
+	if runAtStr == "" {
+		send("error", "Missing run_at (scheduled time)")
+		return
+	}
+	runAt, err := time.Parse(time.RFC3339, runAtStr)
+	if err != nil {
+		send("error", "Invalid run_at — expected an RFC3339 timestamp: "+err.Error())
+		return
+	}
+	if runAt.Before(time.Now().Add(2 * time.Minute)) {
+		send("error", "Scheduled time must be at least 2 minutes from now (uploading and staging takes a moment).")
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		send("error", "No file in request: "+err.Error())
+		return
+	}
+	defer file.Close()
+
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".tar.gz") &&
+		!strings.HasSuffix(strings.ToLower(header.Filename), ".tgz") {
+		send("error", "File must be a .tar.gz archive")
+		return
+	}
+
+	send("info", fmt.Sprintf("Received %s (%.1f MB) — extracting…", header.Filename, float64(header.Size)/1e6))
+
+	tmpDir, err := os.MkdirTemp("", "offdock-update-*")
+	if err != nil {
+		send("error", "Cannot create temp dir: "+err.Error())
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := extractTarGz(file, tmpDir); err != nil {
+		send("error", "Extract failed: "+err.Error())
+		return
+	}
+
+	binaryPath, err := findBinary(tmpDir, "offdock")
+	if err != nil {
+		send("error", "offdock binary not found in archive: "+err.Error())
+		return
+	}
+
+	versionInfo := ""
+	if vdata, err := os.ReadFile(filepath.Join(tmpDir, "VERSION")); err == nil {
+		versionInfo = strings.TrimSpace(string(vdata))
+	}
+	if versionInfo != "" {
+		send("info", fmt.Sprintf("Found binary (version: %s) — validating…", versionInfo))
+	} else {
+		send("info", "Found binary — validating…")
+	}
+
+	if err := validateBinary(binaryPath); err != nil {
+		send("error", "Invalid binary: "+err.Error())
+		return
+	}
+
+	send("info", "Binary validated — staging for scheduled install…")
+
+	// Replace any previously-scheduled update: cancel its timer and clear
+	// its staged files before laying down the new ones.
+	cancelScheduledUpdateUnit()
+	pendingDir := h.pendingUpdateDir()
+	os.RemoveAll(pendingDir)
+	if err := os.MkdirAll(pendingDir, 0o755); err != nil {
+		send("error", "Cannot create staging directory: "+err.Error())
+		return
+	}
+
+	stagedBinary := filepath.Join(pendingDir, "offdock.new")
+	if err := copyBinary(binaryPath, stagedBinary); err != nil {
+		os.RemoveAll(pendingDir)
+		send("error", "Cannot stage binary: "+err.Error())
+		return
+	}
+	os.Chmod(stagedBinary, 0o755) //nolint:errcheck
+
+	meta := ScheduledUpdateMeta{
+		RunAt:      runAt.UTC().Format(time.RFC3339),
+		Filename:   header.Filename,
+		Version:    versionInfo,
+		UploadedBy: claims.Username,
+		UploadedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(h.pendingUpdateMetaPath(), metaBytes, 0o644); err != nil {
+		os.RemoveAll(pendingDir)
+		send("error", "Cannot write metadata: "+err.Error())
+		return
+	}
+
+	installPath := currentBinaryPath()
+	scriptPath := filepath.Join(pendingDir, "apply.sh")
+	script := buildScheduledApplyScript(installPath, stagedBinary, pendingDir, h.lastScheduledUpdateLogPath())
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		os.RemoveAll(pendingDir)
+		send("error", "Cannot write apply script: "+err.Error())
+		return
+	}
+
+	// systemd calendar specs use a space-separated "YYYY-MM-DD HH:MM:SS TZ"
+	// form (no numeric UTC offsets) — normalise to UTC so it's unambiguous.
+	calSpec := runAt.UTC().Format("2006-01-02 15:04:05") + " UTC"
+	cmd := exec.Command("systemd-run",
+		"--on-calendar="+calSpec,
+		"--unit="+scheduledUpdateUnit,
+		"--description=OffDock scheduled self-update",
+		"/bin/sh", scriptPath,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		os.RemoveAll(pendingDir)
+		send("error", fmt.Sprintf("Failed to schedule job: %s — %s", err.Error(), strings.TrimSpace(string(out))))
+		return
+	}
+
+	when := runAt.UTC().Format("Jan 2, 2006 15:04 UTC")
+	slog.Info("system_update_scheduled", "install_path", installPath, "file", header.Filename, "run_at", meta.RunAt, "user", claims.Username)
+	h.logAudit(r, "system_update_scheduled", "system", "", fmt.Sprintf("%s @ %s", header.Filename, meta.RunAt), claims.Username)
+
+	send("success", fmt.Sprintf("Scheduled — OffDock will install this update automatically on %s and restart.", when))
+}
+
+// GetScheduledUpdate reports the currently pending scheduled update (if any)
+// plus the result of the most recently completed one, read from the staged
+// metadata and result log respectively — both of which survive process
+// restarts since systemd (not offdock) owns the actual timing.
+func (h *H) GetScheduledUpdate(w http.ResponseWriter, r *http.Request) {
+	info := ScheduledUpdateInfo{}
+
+	if data, err := os.ReadFile(h.pendingUpdateMetaPath()); err == nil {
+		var meta ScheduledUpdateMeta
+		if err := json.Unmarshal(data, &meta); err == nil {
+			info.Scheduled = true
+			info.RunAt = meta.RunAt
+			info.Filename = meta.Filename
+			info.Version = meta.Version
+			info.UploadedBy = meta.UploadedBy
+			info.UploadedAt = meta.UploadedAt
+			info.Active = scheduledUpdateUnitActive()
+		}
+	}
+
+	if data, err := os.ReadFile(h.lastScheduledUpdateLogPath()); err == nil {
+		log := string(data)
+		info.LastLog = log
+		switch {
+		case strings.Contains(log, "RESULT=ok"):
+			info.LastResult = "ok"
+		case strings.Contains(log, "RESULT=error"):
+			info.LastResult = "error"
+		}
+	}
+
+	writeJSON(w, http.StatusOK, info)
+}
+
+// CancelScheduledUpdate stops the pending update's timer (if armed) and clears
+// its staged files. Returns 200 even if nothing was scheduled, so the UI can
+// call it idempotently.
+func (h *H) CancelScheduledUpdate(w http.ResponseWriter, r *http.Request) {
+	claims := authmw.ClaimsFromContext(r.Context())
+	if claims == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	_, hadPending := os.Stat(h.pendingUpdateMetaPath())
+	cancelScheduledUpdateUnit()
+	os.RemoveAll(h.pendingUpdateDir())
+
+	if hadPending == nil {
+		h.logAudit(r, "system_update_schedule_cancelled", "system", "", "", claims.Username)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }

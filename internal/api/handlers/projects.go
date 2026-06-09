@@ -85,6 +85,7 @@ func (h *H) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update project")
 		return
 	}
+	h.logAudit(r, "update_project", "project", p.ID, p.Name, "")
 	writeJSON(w, http.StatusOK, p)
 }
 

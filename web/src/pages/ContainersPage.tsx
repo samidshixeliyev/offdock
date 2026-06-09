@@ -10,6 +10,8 @@ import {
   Container as ContainerIcon, RefreshCw, Search, ScrollText, TerminalSquare,
   RotateCw, Square, Play, Trash2, Download, Maximize2, Minimize2, X,
 } from 'lucide-react'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 
 // ─── Live Logs Modal ──────────────────────────────────────────────────────────
 function LogsModal({ name, onClose }: { name: string; onClose: () => void }) {
@@ -190,6 +192,7 @@ type StateFilter = 'all' | 'running' | 'restarting' | 'exited'
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function ContainersPage() {
   const toast = useToast()
+  const { can } = usePermissions()
   const [containers, setContainers] = useState<ContainerInfo[]>([])
   const [stats, setStats] = useState<Record<string, ContainerStats>>({})
   const [loading, setLoading] = useState(true)
@@ -267,8 +270,9 @@ export default function ContainersPage() {
 
   return (
     <Page>
+      {!can(PERMS.containerOps) && <ReadOnlyBanner message="You don't have permission to manage containers. Viewing in read-only mode." />}
       {logsFor && <LogsModal name={logsFor} onClose={() => setLogsFor(null)} />}
-      {execFor && <ExecModal name={execFor} onClose={() => setExecFor(null)} />}
+      {execFor && can(PERMS.terminal) && <ExecModal name={execFor} onClose={() => setExecFor(null)} />}
       {deleteFor && (
         <ConfirmModal title="Delete container?" danger confirmLabel="Delete"
           message={`This force-removes ${deleteFor}. Unsaved data inside the container will be lost.`}
@@ -300,7 +304,7 @@ export default function ContainersPage() {
               ))}
             </div>
           </div>
-          {selected.size > 0 && (
+          {selected.size > 0 && can(PERMS.containerOps) && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-500">{selected.size} selected</span>
               <button onClick={() => doBulk('start')} className="text-xs px-2 py-1 rounded border border-slate-700 text-emerald-400 hover:bg-emerald-500/10">Start</button>
@@ -351,12 +355,12 @@ export default function ContainersPage() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-0.5 justify-end">
                           <IconButton icon={ScrollText} title="Logs" onClick={() => setLogsFor(c.Names)} />
-                          {isRunning && <IconButton icon={TerminalSquare} title="Exec shell" onClick={() => setExecFor(c.Names)} />}
-                          <IconButton icon={RotateCw} title="Restart" disabled={isBusy} onClick={() => doAction(c.Names, 'restart')} />
+                          {isRunning && can(PERMS.terminal) && <IconButton icon={TerminalSquare} title="Exec shell" onClick={() => setExecFor(c.Names)} />}
+                          <IconButton icon={RotateCw} title={can(PERMS.containerOps) ? "Restart" : "Restart (no permission)"} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && doAction(c.Names, 'restart')} />
                           {isRunning
-                            ? <IconButton icon={Square} title="Stop" disabled={isBusy} onClick={() => doAction(c.Names, 'stop')} />
-                            : <IconButton icon={Play} tone="success" title="Start" disabled={isBusy} onClick={() => doAction(c.Names, 'start')} />}
-                          <IconButton icon={Trash2} tone="danger" title="Delete" disabled={isBusy} onClick={() => setDeleteFor(c.Names)} />
+                            ? <IconButton icon={Square} title={can(PERMS.containerOps) ? "Stop" : "Stop (no permission)"} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && doAction(c.Names, 'stop')} />
+                            : <IconButton icon={Play} tone="success" title={can(PERMS.containerOps) ? "Start" : "Start (no permission)"} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && doAction(c.Names, 'start')} />}
+                          <IconButton icon={Trash2} tone="danger" title={can(PERMS.containerOps) ? "Delete" : "Delete (no permission)"} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && setDeleteFor(c.Names)} />
                         </div>
                       </td>
                     </tr>

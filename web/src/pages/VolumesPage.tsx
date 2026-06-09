@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, DockerVolume } from '../api/client'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 
 function fmtDate(s: string) {
   if (!s) return '—'
@@ -107,6 +109,7 @@ function CreateVolumeModal({ onCreated, onClose }: { onCreated: () => void; onCl
 }
 
 export default function VolumesPage() {
+  const { can } = usePermissions()
   const [volumes, setVolumes] = useState<DockerVolume[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState('')
@@ -153,6 +156,7 @@ export default function VolumesPage() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {!can(PERMS.manageNetwork) && <ReadOnlyBanner message="You don't have permission to manage volumes. Viewing in read-only mode." />}
 
       {/* Header */}
       <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-slate-800 bg-slate-950">
@@ -163,10 +167,10 @@ export default function VolumesPage() {
           </span>
         )}
         <button onClick={load} className="btn-ghost text-xs px-2">↻</button>
-        <button onClick={prune} disabled={pruning} className="btn-ghost text-xs">
+        {can(PERMS.manageNetwork) && <button onClick={prune} disabled={pruning} className="btn-ghost text-xs">
           {pruning ? 'Pruning…' : 'Prune unused'}
-        </button>
-        <button onClick={() => setShowCreate(true)} className="btn-primary text-xs">+ Create</button>
+        </button>}
+        {can(PERMS.manageNetwork) && <button onClick={() => setShowCreate(true)} className="btn-primary text-xs">+ Create</button>}
       </div>
 
       {showCreate && <CreateVolumeModal onCreated={load} onClose={() => setShowCreate(false)} />}

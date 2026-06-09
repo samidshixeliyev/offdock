@@ -168,12 +168,17 @@ func Generate(cfg store.NginxConfig) (string, error) {
 
 	maxBody := strings.TrimSpace(cfg.ClientMaxBodySize)
 	if maxBody == "" {
-		maxBody = "1m"
+		maxBody = "100m"
 	}
 
-	// Build server_name string.
+	// Build server_name string — sanitize aliases to prevent template injection.
 	serverNames := []string{cfg.Domain}
-	serverNames = append(serverNames, cfg.Aliases...)
+	for _, a := range cfg.Aliases {
+		a = SanitizeDomain(a)
+		if a != "" {
+			serverNames = append(serverNames, a)
+		}
+	}
 	allServerNames := strings.Join(serverNames, " ")
 
 	// Build access_log directive.
@@ -238,7 +243,7 @@ func GenerateProxyHost(h store.ProxyHost) (string, error) {
 
 	maxBody := strings.TrimSpace(cfg.ClientMaxBodySize)
 	if maxBody == "" {
-		maxBody = "1m"
+		maxBody = "100m"
 	}
 
 	serverNames := []string{cfg.Domain}
@@ -397,14 +402,17 @@ func validate(cfg store.NginxConfig) error {
 	if strings.TrimSpace(cfg.Domain) == "" {
 		return fmt.Errorf("domain is required")
 	}
-	if strings.ContainsAny(cfg.Domain, ":/\\") {
-		return fmt.Errorf("domain %q must not contain protocol or path — enter only the hostname, e.g. app.example.com", cfg.Domain)
+	if strings.ContainsAny(cfg.Domain, ":/\\ \t\n;{}") {
+		return fmt.Errorf("domain %q must not contain special characters — enter only the hostname, e.g. app.example.com", cfg.Domain)
 	}
 	if cfg.UpstreamPort < 1 || cfg.UpstreamPort > 65535 {
 		return fmt.Errorf("upstream_port must be 1–65535, got %d", cfg.UpstreamPort)
 	}
 	if strings.TrimSpace(cfg.UpstreamHost) == "" {
 		return fmt.Errorf("upstream_host is required")
+	}
+	if strings.ContainsAny(cfg.UpstreamHost, "\n;{}") {
+		return fmt.Errorf("upstream_host %q contains invalid characters", cfg.UpstreamHost)
 	}
 	if cfg.SSLEnabled {
 		cert, key := resolveSSLPaths(cfg.SSLPEMPath, cfg.SSLCertPath, cfg.SSLKeyPath)

@@ -6,6 +6,8 @@ import { Modal } from '../components/Modal'
 import { useToast } from '../components/Toast'
 import { timeAgo } from '../lib/format'
 import clsx from 'clsx'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 import {
   KeyRound, Plus, Save, Trash2, Eye, EyeOff, Search, FileUp, History,
   RotateCcw, GitCompare, Lock, Loader2,
@@ -138,6 +140,7 @@ function HistoryModal({ projectId, current, onRestore, onClose }: {
 export default function EnvPage() {
   const { id } = useParams<{ id: string }>()
   const toast = useToast()
+  const { can } = usePermissions()
   const [vars, setVars] = useState<EditableVar[]>([])
   const [version, setVersion] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
@@ -190,12 +193,13 @@ export default function EnvPage() {
 
   return (
     <Page>
+      {!can(PERMS.editEnv) && <ReadOnlyBanner message="You don't have permission to edit environment variables. Viewing in read-only mode." />}
       <PageHeader title="Environment Variables" icon={KeyRound}
         subtitle={`${vars.length} variable${vars.length !== 1 ? 's' : ''}${secretCount ? ` · ${secretCount} secret` : ''}${version ? ` · v${version}` : ''}${dirty ? ' · unsaved changes' : ''}`}
         actions={<>
           <button onClick={() => setShowHistory(true)} className="btn-secondary"><History className="w-4 h-4" /> History</button>
-          <button onClick={() => setShowImport(true)} className="btn-secondary"><FileUp className="w-4 h-4" /> Import</button>
-          <button onClick={save} disabled={saving || !dirty} className="btn-primary">{saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : <><Save className="w-4 h-4" /> Save Version</>}</button>
+          {can(PERMS.editEnv) && <button onClick={() => setShowImport(true)} className="btn-secondary"><FileUp className="w-4 h-4" /> Import</button>}
+          <button onClick={save} disabled={saving || !dirty || !can(PERMS.editEnv)} title={!can(PERMS.editEnv) ? 'No permission to edit env vars' : undefined} className="btn-primary">{saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : <><Save className="w-4 h-4" /> Save Version</>}</button>
         </>} />
 
       {showImport && <ImportModal onImport={onImport} onClose={() => setShowImport(false)} />}

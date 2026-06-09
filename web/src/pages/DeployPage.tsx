@@ -154,6 +154,9 @@ export default function DeployPage() {
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [composeServices, setComposeServices] = useState<ComposeServiceInfo[]>([])
   const [langOverrides, setLangOverrides] = useState<Record<string, string>>({})
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualName, setManualName] = useState('')
+  const [manualLang, setManualLang] = useState('java')
 
   const [log, setLog] = useState<string[]>([])
   const [deploying, setDeploying] = useState(false)
@@ -741,18 +744,36 @@ export default function DeployPage() {
             </div>
           </div>
 
-          {settingsDraft.otel_enabled && (
+          {settingsDraft.otel_enabled && (() => {
+            const composeNames = new Set(composeServices.map(s => s.name))
+            // Manual overrides = entries in langOverrides whose key isn't a known compose service.
+            const manualNames = Object.keys(langOverrides).filter(n => !composeNames.has(n)).sort()
+            const addManual = () => {
+              const name = manualName.trim()
+              if (!name) return
+              setLangOverrides(prev => ({ ...prev, [name]: manualLang }))
+              setManualName('')
+              setManualLang('java')
+              setManualOpen(false)
+            }
+            const removeOverride = (name: string) => {
+              setLangOverrides(prev => {
+                const next = { ...prev }
+                delete next[name]
+                return next
+              })
+            }
+            return (
             <div className="border-t border-slate-800 px-4 pb-4 pt-3">
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
                 Service Language Overrides
               </p>
               <p className="text-[11px] text-slate-600 mb-3">
-                OffDock auto-detects languages from image names. Override here when detection is wrong or the image name gives no hint (e.g. <code className="text-slate-400">keycloak</code>, custom builds).
+                OffDock auto-detects languages from image names. Override here when detection is wrong or the image name gives no hint (e.g. <code className="text-slate-400">keycloak</code>, custom builds). You can also add a service by name manually if it isn't in the compose file yet.
               </p>
-              {composeServices.length === 0 ? (
-                <p className="text-[11px] text-slate-600 italic">No compose services found — save a compose file first, then return here to set language overrides.</p>
-              ) : (
+
               <div className="space-y-2">
+                {/* Auto-detected compose services */}
                 {composeServices.map(svc => {
                   const detected = (svc.detected_langs ?? []).length > 0 ? (svc.detected_langs ?? []).join(', ') : 'none detected'
                   const override = langOverrides[svc.name] ?? ''
@@ -793,10 +814,104 @@ export default function DeployPage() {
                     </div>
                   )
                 })}
+
+                {/* Manual overrides — services not present in the compose file */}
+                {manualNames.map(name => {
+                  const override = langOverrides[name] ?? ''
+                  return (
+                    <div key={name} className="flex items-center gap-3 text-sm">
+                      <div className="flex-1 min-w-0">
+                        <span className="font-mono text-slate-200 text-xs">{name}</span>
+                        <span className="ml-2 text-[10px] text-amber-500/80 font-semibold shrink-0">manual</span>
+                      </div>
+                      <select
+                        value={override}
+                        onChange={e => {
+                          const v = e.target.value
+                          setLangOverrides(prev => ({ ...prev, [name]: v }))
+                        }}
+                        className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
+                      >
+                        <option value="java">Java</option>
+                        <option value="nodejs">Node.js</option>
+                        <option value="php">PHP</option>
+                        <option value="python">Python</option>
+                        <option value="ruby">Ruby</option>
+                        <option value="none">Disabled (skip)</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => removeOverride(name)}
+                        className="text-[10px] text-slate-500 hover:text-red-400 shrink-0 px-1"
+                        title="Remove override"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )
+                })}
+
+                {composeServices.length === 0 && manualNames.length === 0 && (
+                  <p className="text-[11px] text-slate-600 italic">No compose services detected. Use “Add manual override” below to map a service name to a language.</p>
+                )}
               </div>
-              )}
+
+              {/* Add manual override */}
+              <div className="mt-3 pt-3 border-t border-slate-800/60">
+                {manualOpen ? (
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <input
+                      type="text"
+                      autoFocus
+                      placeholder="service name (e.g. keycloak)"
+                      value={manualName}
+                      onChange={e => setManualName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManual() } }}
+                      className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+                    />
+                    <select
+                      value={manualLang}
+                      onChange={e => setManualLang(e.target.value)}
+                      className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
+                    >
+                      <option value="java">Java</option>
+                      <option value="nodejs">Node.js</option>
+                      <option value="php">PHP</option>
+                      <option value="python">Python</option>
+                      <option value="ruby">Ruby</option>
+                      <option value="none">Disabled (skip)</option>
+                    </select>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={addManual}
+                        disabled={!manualName.trim()}
+                        className="text-xs rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-3 py-1"
+                      >
+                        Add
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setManualOpen(false); setManualName(''); setManualLang('java') }}
+                        className="text-xs text-slate-500 hover:text-slate-300 px-1"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setManualOpen(true)}
+                    className="text-xs text-blue-400 hover:text-blue-300 font-medium"
+                  >
+                    + Add manual override
+                  </button>
+                )}
+              </div>
             </div>
-          )}
+            )
+          })()}
         </div>
 
         <div className="flex items-center gap-3 mt-4">
