@@ -119,7 +119,7 @@ export interface DeploySettings {
 export interface ComposeServiceInfo {
   name: string
   image: string
-  detected_langs: string[]
+  detected_langs: string[] | null
 }
 
 // ─── OpenTelemetry / Jaeger types ──────────────────────────────────────────

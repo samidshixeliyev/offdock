@@ -754,7 +754,7 @@ export default function DeployPage() {
               ) : (
               <div className="space-y-2">
                 {composeServices.map(svc => {
-                  const detected = svc.detected_langs.length > 0 ? svc.detected_langs.join(', ') : 'none detected'
+                  const detected = (svc.detected_langs ?? []).length > 0 ? (svc.detected_langs ?? []).join(', ') : 'none detected'
                   const override = langOverrides[svc.name] ?? ''
                   return (
                     <div key={svc.name} className="flex items-center gap-3 text-sm">

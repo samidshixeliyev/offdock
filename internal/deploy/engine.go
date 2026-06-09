@@ -747,10 +747,14 @@ func ParseComposeServices(path string) ([]ServiceLanguageInfo, error) {
 	}
 	out := make([]ServiceLanguageInfo, 0, len(info.Services))
 	for _, s := range info.Services {
+		langs := s.Languages
+		if langs == nil {
+			langs = []string{}
+		}
 		out = append(out, ServiceLanguageInfo{
 			Name:          s.Name,
 			Image:         s.Image,
-			DetectedLangs: s.Languages,
+			DetectedLangs: langs,
 		})
 	}
 	return out, nil
