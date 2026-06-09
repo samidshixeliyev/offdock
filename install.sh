@@ -179,6 +179,20 @@ if [[ "$UPDATE" == "true" ]]; then
     exit 1
   fi
 
+  # Install any bundled deb packages that are not yet present on the system.
+  # This handles tcpdump (tracing), docker (container runtime), nginx (reverse proxy)
+  # — _install_debs_safe skips packages already at the same or newer version.
+  echo ""
+  echo "=== Installing bundled packages (if missing) ==="
+  for _component in docker nginx tcpdump; do
+    if [[ -d "${SCRIPT_DIR}/debs/${_component}" ]] && ls "${SCRIPT_DIR}/debs/${_component}"/*.deb &>/dev/null 2>&1; then
+      _install_debs_safe "${SCRIPT_DIR}/debs/${_component}" "${_component}"
+    fi
+  done
+  # Ensure docker and nginx services are running if they were just installed.
+  command -v docker &>/dev/null && { systemctl enable docker 2>/dev/null || true; systemctl start docker 2>/dev/null || true; }
+  command -v nginx  &>/dev/null && { systemctl enable nginx  2>/dev/null || true; systemctl start nginx  2>/dev/null || true; }
+
   # Refresh OpenTelemetry agent files so new/updated tracers take effect.
   echo ""
   echo "=== Refreshing OpenTelemetry agents ==="
