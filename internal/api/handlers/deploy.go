@@ -216,6 +216,15 @@ func (h *H) SaveDeploySettings(w http.ResponseWriter, r *http.Request) {
 	if s.HealthTimeoutSecs <= 0 { s.HealthTimeoutSecs = 120 }
 	if s.DeployTimeoutSecs <= 0 { s.DeployTimeoutSecs = 300 }
 	if s.HealthStableSecs <= 0 { s.HealthStableSecs = 5 }
+	// The overall deploy timeout must leave room for the health check, otherwise
+	// the deploy context cancels mid-health and a healthy stack is reported as
+	// cancelled. Require a 30s buffer above the health timeout.
+	if s.DeployTimeoutSecs < s.HealthTimeoutSecs+30 {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("deploy_timeout_secs (%d) must be at least 30s greater than health_timeout_secs (%d)",
+				s.DeployTimeoutSecs, s.HealthTimeoutSecs))
+		return
+	}
 	s.ID = projectID
 	s.ProjectID = projectID
 	if err := h.db.DeploySettings.Save(s); err != nil {

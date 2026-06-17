@@ -478,8 +478,8 @@ export default function SystemPage() {
               <pre className="bg-slate-950 border border-slate-800 rounded p-2.5 mt-2 text-xs text-slate-500 font-mono">
 sudo apt-get install nginx
               </pre>
-              For air-gapped servers, use bundled debs via <code className="text-slate-400">prepare-usb.sh</code> on an
-              internet-connected machine.
+              For air-gapped servers, build a bundle with <code className="text-slate-400">bash install.sh --bundle</code> on an
+              internet-connected machine, then <code className="text-slate-400">sudo bash install.sh --full</code> on the target.
             </div>
           )}
         </div>
@@ -510,9 +510,326 @@ sudo apt-get install nginx
         </div>
       </section>
 
+      {/* Maintenance: reconcile + memory optimize */}
+      <MaintenanceSection />
+
+      {/* Host package safety */}
+      <PackagesSection />
+
+      {/* Full backup / restore / schedule */}
+      <BackupsSection />
+
+      {/* Terminal command policy */}
+      <TerminalPolicySection />
+
       {/* Self-update section */}
       <SystemUpdateSection />
     </div>
+  )
+}
+
+// ─── Maintenance (reconcile + optimize) ───────────────────────────────────────
+
+function MaintenanceSection() {
+  const [busy, setBusy] = useState<'' | 'reconcile' | 'optimize'>('')
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [dockerPrune, setDockerPrune] = useState(false)
+
+  async function runReconcile() {
+    setBusy('reconcile'); setMsg(null)
+    try {
+      const r = await api.reconcile()
+      setMsg({ kind: 'ok', text: `Reconcile done — docker ${r.docker_ready ? 'up' : 'DOWN'}, ${r.projects_up.length} project(s) up, ${r.nginx_applied.length} nginx vhost(s) applied. Errors: ${r.project_errors.length + r.nginx_errors.length}` })
+    } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) } finally { setBusy('') }
+  }
+
+  async function runOptimize() {
+    setBusy('optimize'); setMsg(null)
+    try {
+      const r = await api.optimize({ compact: true, drop_caches: true, docker_prune: dockerPrune })
+      setMsg({ kind: 'ok', text: `Optimized — RAM freed ${fmtBytes(Math.max(0, r.ram_freed_bytes))}, disk reclaimed ${fmtBytes(r.disk_reclaimed_bytes)}${r.errors?.length ? ` (${r.errors.length} warnings)` : ''}` })
+    } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) } finally { setBusy('') }
+  }
+
+  return (
+    <section className="mt-6">
+      <p className="section-heading mb-3">Maintenance</p>
+      <div className="card space-y-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-slate-200 mb-1">Self-heal (reconcile)</p>
+            <p className="text-xs text-slate-500">Ensure Docker is up, bring every running project back, and re-apply all nginx vhosts from the database. Run this after a host reboot, Docker reinstall, or nginx purge.</p>
+          </div>
+          <button onClick={runReconcile} disabled={busy !== ''} className="btn-ghost text-xs disabled:opacity-50">
+            {busy === 'reconcile' ? 'Reconciling…' : 'Run Reconcile'}
+          </button>
+        </div>
+        <div className="border-t border-slate-800 pt-3 flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-slate-200 mb-1">Memory &amp; disk optimize</p>
+            <p className="text-xs text-slate-500">Compact the append-log database (drops tombstones &amp; old versions), drop kernel page cache, and optionally prune unused Docker images/build cache (never volumes).</p>
+            <label className="inline-flex items-center gap-2 mt-2 text-xs text-slate-400">
+              <input type="checkbox" checked={dockerPrune} onChange={e => setDockerPrune(e.target.checked)} />
+              Also run <code className="font-mono">docker system prune</code>
+            </label>
+          </div>
+          <button onClick={runOptimize} disabled={busy !== ''} className="btn-primary text-xs disabled:opacity-50">
+            {busy === 'optimize' ? 'Optimizing…' : 'Optimize Now'}
+          </button>
+        </div>
+        {msg && (
+          <div className={clsx('text-xs px-3 py-2 rounded border', msg.kind === 'ok' ? 'bg-green-900/20 border-green-900 text-green-400' : 'bg-red-900/20 border-red-900 text-red-400')}>
+            {msg.text}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+// ─── Host packages ────────────────────────────────────────────────────────────
+
+function PackagesSection() {
+  const [held, setHeld] = useState<string[]>([])
+  const [paths, setPaths] = useState('')
+  const [out, setOut] = useState<string>('')
+  const [busy, setBusy] = useState(false)
+  const [blocked, setBlocked] = useState<string[] | null>(null)
+
+  useEffect(() => { api.packageStatus().then(s => setHeld(s.held)).catch(() => {}) }, [])
+
+  async function install(force = false) {
+    const list = paths.split('\n').map(s => s.trim()).filter(Boolean)
+    if (list.length === 0) { setOut('Enter one .deb path per line.'); return }
+    setBusy(true); setBlocked(null); setOut('')
+    try {
+      const r = await api.installPackages(list, force)
+      if (r.error && r.protected) { setBlocked(r.protected); setOut(r.error) }
+      else setOut(r.output ?? 'done')
+    } catch (e) { setOut((e as Error).message) } finally { setBusy(false) }
+  }
+
+  async function fixBroken(force = false) {
+    setBusy(true); setBlocked(null); setOut('')
+    try {
+      const r = await api.fixBroken(force)
+      if (r.error && r.protected) { setBlocked(r.protected); setOut(r.error) }
+      else setOut(r.output ?? 'done')
+    } catch (e) { setOut((e as Error).message) } finally { setBusy(false) }
+  }
+
+  return (
+    <section className="mt-6">
+      <p className="section-heading mb-3">Host Packages</p>
+      <div className="card space-y-4">
+        <div>
+          <p className="text-sm font-medium text-slate-200 mb-1">Protected packages</p>
+          <p className="text-xs text-slate-500 mb-2">These are held so <code className="font-mono">apt --fix-broken install</code> can never remove Docker or nginx and take containers down.</p>
+          <div className="flex flex-wrap gap-1.5">
+            {held.length === 0 ? <span className="text-xs text-slate-600">none held yet</span> :
+              held.map(p => <span key={p} className="px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-300 font-mono">{p}</span>)}
+          </div>
+          <button onClick={() => api.ensurePackageHolds().then(r => setHeld(r.held))} className="btn-ghost text-xs mt-2">Re-assert holds</button>
+        </div>
+        <div className="border-t border-slate-800 pt-3">
+          <p className="text-sm font-medium text-slate-200 mb-1">Install .deb files safely</p>
+          <p className="text-xs text-slate-500 mb-2">Simulated first; aborts if a protected package would be removed. One absolute path per line (or filename in <code className="font-mono">/var/offdock/uploads</code>).</p>
+          <textarea value={paths} onChange={e => setPaths(e.target.value)} rows={3}
+            placeholder="/var/offdock/uploads/myapp.deb"
+            className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-slate-700" />
+          <div className="flex items-center gap-2 mt-2">
+            <button onClick={() => install(false)} disabled={busy} className="btn-primary text-xs disabled:opacity-50">{busy ? 'Working…' : 'Install'}</button>
+            <button onClick={() => fixBroken(false)} disabled={busy} className="btn-ghost text-xs disabled:opacity-50">Fix Broken</button>
+          </div>
+        </div>
+        {blocked && (
+          <div className="text-xs px-3 py-2 rounded border bg-red-900/20 border-red-900 text-red-400">
+            Refused — would remove protected packages: <span className="font-mono">{blocked.join(', ')}</span>.
+            <button onClick={() => install(true)} className="ml-2 underline">Force anyway</button>
+          </div>
+        )}
+        {out && <pre className="bg-slate-950 border border-slate-800 rounded p-3 text-xs text-slate-400 overflow-x-auto max-h-48 whitespace-pre-wrap">{out}</pre>}
+      </div>
+    </section>
+  )
+}
+
+// ─── Backups ──────────────────────────────────────────────────────────────────
+
+function BackupsSection() {
+  const [list, setList] = useState<import('../api/client').BackupRecord[]>([])
+  const [sched, setSched] = useState<import('../api/client').BackupSchedule | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [opts, setOpts] = useState({ scope: 'full', include_volumes: true, include_config: false, encrypt: true })
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  const reload = () => api.listBackups().then(setList).catch(() => {})
+  useEffect(() => { reload(); api.getBackupSchedule().then(setSched).catch(() => {}) }, [])
+
+  async function create() {
+    setCreating(true); setMsg(null)
+    try {
+      const r = await api.createBackup(opts)
+      setMsg({ kind: 'ok', text: `Backup created (${r.status}) — ${fmtBytes(r.size_bytes)}, volumes: ${r.volumes.length}` })
+      reload()
+    } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) } finally { setCreating(false) }
+  }
+
+  async function restore(id: string) {
+    const plan = await api.inspectBackup(id)
+    const summary = `Restore will overwrite:\n- ${plan.projects.length} project dir(s)\n- ${plan.volumes.length} volume(s): ${plan.volumes.join(', ') || 'none'}\n- config: ${plan.has_config}\n- database: ${plan.has_db}\n\nProceed? (volumes + projects + config; DB needs a restart)`
+    if (!window.confirm(summary)) return
+    try {
+      const r = await api.restoreBackup(id, { volumes: true, projects: true, config: plan.has_config, nginx: true, certs: true })
+      setMsg({ kind: 'ok', text: `Restored: ${r.result.restored_volumes.length} volume(s), ${r.result.restored_projects.length} project(s).${r.warning ? ' ' + r.warning : ''}` })
+    } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) }
+  }
+
+  async function saveSchedule() {
+    if (!sched) return
+    try { const s = await api.saveBackupSchedule(sched); setSched(s); setMsg({ kind: 'ok', text: 'Schedule saved' }) }
+    catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) }
+  }
+
+  return (
+    <section className="mt-6">
+      <p className="section-heading mb-3">Backups</p>
+      <div className="card space-y-4">
+        {/* Create */}
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Scope</label>
+            <select value={opts.scope} onChange={e => setOpts({ ...opts, scope: e.target.value })}
+              className="bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-sm text-slate-200">
+              <option value="full">Full (db + projects + certs + nginx)</option>
+              <option value="db">Database + projects</option>
+              <option value="config">Config only</option>
+            </select>
+          </div>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={opts.include_volumes} onChange={e => setOpts({ ...opts, include_volumes: e.target.checked })} />Volume data</label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={opts.include_config} onChange={e => setOpts({ ...opts, include_config: e.target.checked })} />config.yaml</label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={opts.encrypt} onChange={e => setOpts({ ...opts, encrypt: e.target.checked })} />Encrypt config</label>
+          <button onClick={create} disabled={creating} className="btn-primary text-xs disabled:opacity-50">{creating ? 'Creating…' : 'Create Backup'}</button>
+        </div>
+
+        {msg && <div className={clsx('text-xs px-3 py-2 rounded border', msg.kind === 'ok' ? 'bg-green-900/20 border-green-900 text-green-400' : 'bg-red-900/20 border-red-900 text-red-400')}>{msg.text}</div>}
+
+        {/* List */}
+        {list.length > 0 && (
+          <div className="border-t border-slate-800 pt-3 overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead><tr className="text-slate-500 text-left">
+                <th className="py-1.5 pr-3">Created</th><th className="pr-3">Scope</th><th className="pr-3">Size</th><th className="pr-3">Volumes</th><th className="pr-3">Status</th><th></th>
+              </tr></thead>
+              <tbody>
+                {list.map(b => (
+                  <tr key={b.id} className="border-t border-slate-800/50">
+                    <td className="py-1.5 pr-3 text-slate-400">{new Date(b.created_at).toLocaleString()}</td>
+                    <td className="pr-3 text-slate-400">{b.scope}{b.sensitive && <span title="contains config.yaml" className="ml-1 text-amber-500">●</span>}</td>
+                    <td className="pr-3 text-slate-400 tabular-nums">{fmtBytes(b.size_bytes)}</td>
+                    <td className="pr-3 text-slate-500">{b.volumes.length}</td>
+                    <td className="pr-3"><span className={clsx(b.status === 'ok' ? 'text-emerald-400' : 'text-amber-400')}>{b.status}</span></td>
+                    <td className="text-right whitespace-nowrap">
+                      <a href={api.downloadBackupURL(b.id)} className="btn-ghost text-xs">Download</a>
+                      <button onClick={() => restore(b.id)} className="btn-ghost text-xs ml-1">Restore</button>
+                      <button onClick={() => api.deleteBackup(b.id).then(reload)} className="btn-ghost text-xs ml-1 text-red-400">Delete</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Schedule */}
+        {sched && (
+          <div className="border-t border-slate-800 pt-3">
+            <p className="text-sm font-medium text-slate-200 mb-2">Daily schedule</p>
+            <div className="flex flex-wrap items-end gap-3">
+              <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={sched.enabled} onChange={e => setSched({ ...sched, enabled: e.target.checked })} />Enabled</label>
+              <div><label className="block text-xs text-slate-500 mb-1">Time (24h)</label>
+                <input type="time" value={sched.time_of_day} onChange={e => setSched({ ...sched, time_of_day: e.target.value })}
+                  className="bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-sm text-slate-200" /></div>
+              <div><label className="block text-xs text-slate-500 mb-1">Keep last</label>
+                <input type="number" value={sched.retention} onChange={e => setSched({ ...sched, retention: parseInt(e.target.value, 10) || 0 })}
+                  className="w-20 bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-sm text-slate-200" /></div>
+              <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={sched.include_volumes} onChange={e => setSched({ ...sched, include_volumes: e.target.checked })} />Volumes</label>
+              <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={sched.include_config} onChange={e => setSched({ ...sched, include_config: e.target.checked })} />config.yaml</label>
+              <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={sched.encrypt} onChange={e => setSched({ ...sched, encrypt: e.target.checked })} />Encrypt</label>
+              <div className="flex-1 min-w-[180px]"><label className="block text-xs text-slate-500 mb-1">Off-box copy dir (optional)</label>
+                <input type="text" value={sched.dest_path} onChange={e => setSched({ ...sched, dest_path: e.target.value })} placeholder="/mnt/usb/backups"
+                  className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-sm text-slate-200" /></div>
+              <button onClick={saveSchedule} className="btn-ghost text-xs">Save Schedule</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+// ─── Terminal command policy ──────────────────────────────────────────────────
+
+function TerminalPolicySection() {
+  const [policy, setPolicy] = useState<import('../api/client').TerminalPolicy | null>(null)
+  const [defaults, setDefaults] = useState<string[]>([])
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  useEffect(() => {
+    api.getTerminalPolicy().then(setPolicy).catch(() => {})
+    api.getTerminalPolicyDefaults().then(d => setDefaults(d.default_deny)).catch(() => {})
+  }, [])
+
+  function lines(s: string): string[] { return s.split('\n').map(x => x.trim()).filter(Boolean) }
+
+  async function save() {
+    if (!policy) return
+    try { const p = await api.saveTerminalPolicy(policy); setPolicy(p); setMsg({ kind: 'ok', text: 'Policy saved' }) }
+    catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) }
+  }
+
+  if (!policy) return null
+  return (
+    <section className="mt-6">
+      <p className="section-heading mb-3">Terminal Command Policy</p>
+      <div className="card space-y-4">
+        <p className="text-xs text-slate-500">Applied to the non-interactive terminal exec endpoint. Built-in dangerous-command rules (package removal, <code className="font-mono">rm -rf /</code>, fork bombs, disk writes) are always enforced; the lists below are additive.</p>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">Mode</label>
+          <select value={policy.mode} onChange={e => setPolicy({ ...policy, mode: e.target.value })}
+            className="bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-sm text-slate-200">
+            <option value="denylist">Denylist (block matches)</option>
+            <option value="allowlist">Allowlist (only allow matches)</option>
+          </select>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Extra deny (regex, one per line)</label>
+            <textarea rows={4} value={(policy.deny ?? []).join('\n')} onChange={e => setPolicy({ ...policy, deny: lines(e.target.value) })}
+              className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-xs font-mono text-slate-200" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Allowlist (regex, one per line)</label>
+            <textarea rows={4} value={(policy.allow ?? []).join('\n')} onChange={e => setPolicy({ ...policy, allow: lines(e.target.value) })}
+              className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-xs font-mono text-slate-200" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Restricted paths (one per line)</label>
+            <textarea rows={4} value={(policy.restricted_paths ?? []).join('\n')} onChange={e => setPolicy({ ...policy, restricted_paths: lines(e.target.value) })}
+              placeholder="/etc/ssh&#10;/root/.aws"
+              className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-xs font-mono text-slate-200" />
+          </div>
+        </div>
+        <button onClick={save} className="btn-primary text-xs">Save Policy</button>
+        {msg && <div className={clsx('text-xs px-3 py-2 rounded border', msg.kind === 'ok' ? 'bg-green-900/20 border-green-900 text-green-400' : 'bg-red-900/20 border-red-900 text-red-400')}>{msg.text}</div>}
+        {defaults.length > 0 && (
+          <details className="text-xs text-slate-500">
+            <summary className="cursor-pointer">Built-in denylist ({defaults.length})</summary>
+            <pre className="bg-slate-950 border border-slate-800 rounded p-2 mt-2 text-slate-600 overflow-x-auto">{defaults.join('\n')}</pre>
+          </details>
+        )}
+      </div>
+    </section>
   )
 }
 
@@ -605,14 +922,33 @@ function SystemUpdateSection() {
             <pre className="text-[11px] text-slate-400 font-mono leading-relaxed">{`offdock-bundle/          ← any folder name
   offdock               ← binary (required — ELF x86-64)
   VERSION               ← version string, e.g. 2026-06-04
-  install.sh            ← full install (optional)
-  offdock.service       ← systemd unit (optional)
-  debs/                 ← offline packages (optional)
-    docker/*.deb
-    nginx/*.deb`}</pre>
+  install.sh            ← the ONE script for everything
+  offdock.service       ← systemd unit
+  debs/                 ← offline packages, by category
+    docker/*.deb        ← docker-ce, cli, containerd, compose
+    nginx/*.deb         ← nginx core/common/full
+    network/*.deb       ← tcpdump, dnsutils, iproute2, iptables…
+  images/*.tar          ← preloaded docker images (e.g. alpine)`}</pre>
             <p className="text-[10px] text-slate-600 mt-2">
               The UI update only uses the <code className="font-mono">offdock</code> binary.
-              Use <code className="font-mono">sudo bash install.sh</code> for a full install with packages.
+              For a full offline install with packages, use <code className="font-mono">install.sh</code> on the host (see below).
+            </p>
+          </div>
+
+          {/* install.sh flags — one script for everything */}
+          <div className="rounded-lg bg-slate-950 border border-slate-800 p-3 mb-1">
+            <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2">install.sh — one script, all operations</p>
+            <pre className="text-[11px] text-slate-400 font-mono leading-relaxed">{`bash install.sh --bundle             # build the offline tar.gz (no root)
+sudo bash install.sh --full --domain D  # full offline install (docker+nginx+tools)
+sudo bash install.sh                  # interactive install
+sudo bash install.sh --update         # replace binary + restart
+sudo bash install.sh --restore A.tar.gz  # restore a backup (db+volumes+config)
+sudo bash install.sh --uninstall      # remove (keeps /var/offdock data)`}</pre>
+            <p className="text-[10px] text-slate-600 mt-2">
+              <code className="font-mono">--full</code> installs Docker, nginx and network tools from the bundled
+              <code className="font-mono"> debs/</code>, loads <code className="font-mono">images/</code>, holds core packages so
+              <code className="font-mono"> apt --fix-broken</code> can never remove them, verifies everything works, and starts OffDock.
+              See the <a href="/docs" className="text-blue-400">Docs</a> page for the full deploy guide (downloadable as PDF).
             </p>
           </div>
         </div>

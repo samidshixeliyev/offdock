@@ -28,6 +28,7 @@ function UserModal({ user, perms, roles, projects, onSaved, onClose }: {
   const [explicitPerms, setExplicitPerms] = useState<string[]>(user?.permissions ?? [])
   const [useExplicit, setUseExplicit] = useState((user?.permissions ?? []).length > 0)
   const [projectIds, setProjectIds] = useState<string[]>(user?.project_ids ?? [])
+  const [hostTerm, setHostTerm] = useState<'otp' | 'bypass' | 'disabled'>(user?.host_terminal_access ?? 'otp')
   const [saving, setSaving] = useState(false)
 
   const togglePerm = (k: string) => setExplicitPerms(p => p.includes(k) ? p.filter(x => x !== k) : [...p, k])
@@ -40,7 +41,7 @@ function UserModal({ user, perms, roles, projects, onSaved, onClose }: {
       if (user) {
         await api.updateUser(user.id, {
           role, email: email || undefined, custom_role_id: useExplicit ? '' : customRoleId,
-          permissions: permsPayload, project_ids: projectIds,
+          permissions: permsPayload, project_ids: projectIds, host_terminal_access: hostTerm,
           ...(password ? { password } : {}),
         })
         toast.success('User updated')
@@ -87,6 +88,19 @@ function UserModal({ user, perms, roles, projects, onSaved, onClose }: {
             <option value="admin">Admin — full access</option>
             <option value="superadmin">Superadmin — full access + user management</option>
           </select>
+        </div>
+
+        <div>
+          <label className="block text-xs text-slate-500 mb-1.5">
+            Host terminal access <span className="text-slate-600">(root shell gate)</span>
+          </label>
+          <select className="select" value={hostTerm} onChange={e => setHostTerm(e.target.value as 'otp' | 'bypass' | 'disabled')}>
+            <option value="otp">OTP required — email one-time code (default)</option>
+            <option value="bypass">Bypass OTP — trusted, no email code</option>
+            <option value="disabled">Disabled — cannot open the host shell</option>
+          </select>
+          {hostTerm === 'bypass' && <p className="text-xs text-amber-500 mt-1">Removes the email second-factor for this user's root terminal.</p>}
+          {!user && <p className="text-xs text-slate-600 mt-1">Applied after the user is created (save, then edit if needed).</p>}
         </div>
 
         {!isSuper && (

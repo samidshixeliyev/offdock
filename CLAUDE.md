@@ -123,3 +123,60 @@ make build
 # On target machine:
 sudo bash install.sh
 ```
+
+## install.sh — the ONE script (no other .sh files)
+
+All install/build/restore operations live in `install.sh`. `make-bundle.sh`,
+`prepare-usb.sh`, `nginx-setup.sh`, `uninstall.sh` were removed. Flags:
+
+| Command | Action |
+|---|---|
+| `bash install.sh --bundle [OUT]` | Build the offline `.tar.gz` (no root). Bundles binary + frontend + `debs/{docker,nginx,network}` + `images/*.tar` + VERSION. |
+| `sudo bash install.sh --full [--domain D] [--port N] [--no-nginx] [--ssl]` | Non-interactive offline install: installs Docker/nginx/network tools from bundled debs, loads images, `apt-mark hold`s core packages, verifies tools, starts the service. Runs under `set +e` (handles its own errors). |
+| `sudo bash install.sh` | Interactive install. |
+| `sudo bash install.sh --update` | Replace binary + restart. |
+| `sudo bash install.sh --restore ARCHIVE` | Restore a backup (`data/`, `projects/`, `certs/`, `nginx/`, `config/`, Docker `volumes/`). |
+| `sudo bash install.sh --uninstall` | Remove (keeps `/var/offdock`). |
+
+Shell scripts MUST be LF (enforced by `.gitattributes`) — CRLF breaks them on Linux.
+
+### Offline deb bundle
+`debs/` is split by category: `docker/` (docker-ce, cli, containerd, buildx,
+compose), `nginx/` (core/common/full), `network/` (tcpdump, dnsutils, iproute2,
+iptables, conntrack, socat, curl, jq…). Debs are **release-specific** — gather on
+a host matching the target release. **Production target is Ubuntu 22.04 (jammy)**;
+gather/build on 22.04. Gather full recursive closures via
+`apt-cache depends --recurse … | apt-get download --print-uris` then parallel
+`curl`. Do NOT include `gnupg` in the network set — it pulls GTK/Qt GUI bloat.
+
+## Self-healing, backup, and maintenance subsystems
+
+- `internal/selfheal/` — boot-time + on-demand reconciler (`POST /system/reconcile`):
+  ensures Docker is up, re-`compose up`s every `running` project, re-applies all
+  active nginx vhosts/proxy hosts from the DB. Runs in the background at startup.
+- `internal/system/pkgguard.go` — `apt-mark hold` of Docker/nginx, re-asserted at
+  startup so `apt --fix-broken install` can never remove them.
+- `internal/api/handlers/packages.go` — safe `.deb` install / fix-broken that
+  simulates first and **refuses** any operation that would remove a protected pkg.
+- `internal/backup/` — archive (db + projects + certs + nginx + optional encrypted
+  `config.yaml` + Docker volume data), restore (dry-run inspect), and a daily
+  scheduler with retention + off-box copy. Volume export/import uses an `alpine`
+  helper image — keep it loaded.
+- `internal/security/cmdpolicy.go` — deny/allow command policy enforced + audited
+  on the terminal exec endpoint; built-in dangerous-command denylist always on.
+- Storage compaction: `Collection.Compact()` / `DB.CompactAll()`; memory optimize
+  via `POST /system/optimize` (compact + drop_caches + optional docker prune).
+
+## Versioning, dedup, rollback
+
+- Compose + env are content-hashed; saving identical content returns
+  `{unchanged:true}` instead of bumping the version. Env hash is over **decrypted**
+  plaintext (ciphertext is non-deterministic).
+- `POST /projects/{id}/rollback` re-deploys a tag / past deployment / explicit
+  version pair. `DeploySettings.RollbackOnFailure` auto-reverts a failed deploy.
+- `OFFDOCK_CONFIG` env var overrides the `/etc/offdock/config.yaml` path (dev/WSL).
+
+## Docs page
+`web/src/pages/DocsPage.tsx` (`/docs`) — operator/developer guide (images,
+offdock-external network, compose, envs, resource limits, backup/recovery) with
+a **Download PDF** button (browser print, no external lib — offline-safe).

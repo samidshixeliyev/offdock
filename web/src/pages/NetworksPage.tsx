@@ -127,12 +127,26 @@ function CreateNetworkModal({ onCreated, onClose }: { onCreated: () => void; onC
   const toast = useToast()
   const [name, setName] = useState('')
   const [driver, setDriver] = useState('bridge')
+  const [subnet, setSubnet] = useState('')
+  const [gateway, setGateway] = useState('')
+  const [ipRange, setIpRange] = useState('')
+  const [internal, setInternal] = useState(false)
+  const [attachable, setAttachable] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const create = async () => {
     if (!name.trim()) return
     setBusy(true)
-    try { await api.createDockerNetwork(name.trim(), driver); toast.success(`Created ${name.trim()}`); onCreated(); onClose() }
+    try {
+      await api.createDockerNetworkIPAM({
+        name: name.trim(), driver,
+        subnet: subnet.trim() || undefined,
+        gateway: gateway.trim() || undefined,
+        ip_range: ipRange.trim() || undefined,
+        internal, attachable,
+      })
+      toast.success(`Created ${name.trim()}`); onCreated(); onClose()
+    }
     catch (e) { toast.error(e instanceof Error ? e.message : 'Failed') }
     finally { setBusy(false) }
   }
@@ -155,6 +169,24 @@ function CreateNetworkModal({ onCreated, onClose }: { onCreated: () => void; onC
             <option value="overlay">overlay</option>
             <option value="macvlan">macvlan</option>
           </select>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1.5">Subnet (optional)</label>
+            <input className="input" placeholder="172.28.0.0/16" value={subnet} onChange={e => setSubnet(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1.5">Gateway (optional)</label>
+            <input className="input" placeholder="172.28.0.1" value={gateway} onChange={e => setGateway(e.target.value)} />
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1.5">IP range (optional)</label>
+          <input className="input" placeholder="172.28.5.0/24" value={ipRange} onChange={e => setIpRange(e.target.value)} />
+        </div>
+        <div className="flex items-center gap-4">
+          <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={internal} onChange={e => setInternal(e.target.checked)} />Internal (no external access)</label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={attachable} onChange={e => setAttachable(e.target.checked)} />Attachable</label>
         </div>
       </div>
     </Modal>

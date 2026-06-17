@@ -27,6 +27,9 @@ const (
 	PermManageFiles    Permission = "manage_files"     // write/delete files
 	PermManageProjects Permission = "manage_projects"  // create/delete projects
 	PermManageDNS      Permission = "manage_dns"       // create/manage DNS tickets
+	PermManagePackages Permission = "manage_packages"  // install/fix .deb packages on host
+	PermManageBackups  Permission = "manage_backups"   // create/restore/schedule backups
+	PermSystemMaint    Permission = "system_maint"     // reconcile, optimize, compact
 )
 
 // AllPermissions lists every grantable capability (for UI + validation).
@@ -34,6 +37,7 @@ var AllPermissions = []Permission{
 	PermManageProjects, PermDeploy, PermEditCompose, PermEditEnv,
 	PermManageProxy, PermManageNetwork, PermManageImages,
 	PermContainerOps, PermTerminal, PermManageFiles, PermManageDNS,
+	PermManagePackages, PermManageBackups, PermSystemMaint,
 }
 
 // User represents an OffDock operator account.
@@ -57,9 +61,33 @@ type User struct {
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	Active        bool      `json:"active"`
+	// HostTerminalAccess controls the root host shell gate for this user:
+	//   ""/"otp" → email OTP required (default)
+	//   "bypass" → skip OTP (still needs the terminal permission)
+	//   "disabled" → may never open the host shell
+	HostTerminalAccess string `json:"host_terminal_access"`
 }
 
 func (u User) GetID() string { return u.ID }
+
+// HostTerminalMode constants for User.HostTerminalAccess.
+const (
+	HostTermOTP      = "otp"
+	HostTermBypass   = "bypass"
+	HostTermDisabled = "disabled"
+)
+
+// EffectiveHostTerminalMode returns the resolved mode, defaulting to OTP.
+func (u User) EffectiveHostTerminalMode() string {
+	switch u.HostTerminalAccess {
+	case HostTermBypass:
+		return HostTermBypass
+	case HostTermDisabled:
+		return HostTermDisabled
+	default:
+		return HostTermOTP
+	}
+}
 
 // CustomRole is a named, superadmin-defined permission set.
 type CustomRole struct {
@@ -134,8 +162,11 @@ type ComposeConfig struct {
 	ProjectID string    `json:"project_id"`
 	Version   int       `json:"version"`
 	RawYAML   string    `json:"raw_yaml"`
-	CreatedAt time.Time `json:"created_at"`
-	CreatedBy string    `json:"created_by"`
+	// ContentHash is the sha256 of the normalized RawYAML, used to skip creating
+	// a new version when the content is unchanged. Empty on legacy records.
+	ContentHash string    `json:"content_hash"`
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedBy   string    `json:"created_by"`
 }
 
 func (c ComposeConfig) GetID() string { return c.ID }
@@ -155,8 +186,13 @@ type EnvVarSet struct {
 	ProjectID string    `json:"project_id"`
 	Version   int       `json:"version"`
 	Vars      []EnvVar  `json:"vars"`
-	CreatedAt time.Time `json:"created_at"`
-	CreatedBy string    `json:"created_by"`
+	// ContentHash is the sha256 of the canonical *decrypted* plaintext form of
+	// Vars (sorted by key). It is computed by the handler at save time because
+	// the store cannot decrypt. Used to skip creating an unchanged version.
+	// Ciphertext is non-deterministic (random GCM nonce), so it cannot be hashed.
+	ContentHash string    `json:"content_hash"`
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedBy   string    `json:"created_by"`
 }
 
 func (e EnvVarSet) GetID() string { return e.ID }
@@ -214,6 +250,10 @@ type DeploymentRecord struct {
 	StartedAt         time.Time        `json:"started_at"`
 	FinishedAt        *time.Time       `json:"finished_at"`
 	LogText           string           `json:"log_text"`
+	// IsRollback marks deployments triggered via the rollback flow; RollbackOf
+	// names the tag/deployment they restored (for history readability).
+	IsRollback bool   `json:"is_rollback"`
+	RollbackOf string `json:"rollback_of"`
 }
 
 func (d DeploymentRecord) GetID() string { return d.ID }
@@ -228,6 +268,15 @@ type DeploySettings struct {
 	HealthTimeoutSecs int    `json:"health_timeout_secs"` // default 120
 	DeployTimeoutSecs int    `json:"deploy_timeout_secs"` // default 300
 	HealthStableSecs  int    `json:"health_stable_secs"`  // default 5
+	// RollbackOnFailure, when true, automatically re-deploys the previously
+	// successful compose+env version if a deploy fails its health check.
+	RollbackOnFailure bool `json:"rollback_on_failure"`
+	// Network config injected into every service of the compose file at deploy
+	// time (the raw YAML in the DB is left untouched). For offline name
+	// resolution between containers and host.
+	DNSServers []string `json:"dns_servers"` // e.g. ["10.0.0.53"]
+	DNSSearch  []string `json:"dns_search"`  // e.g. ["corp.local"]
+	ExtraHosts []string `json:"extra_hosts"` // "host:ip" entries
 }
 
 func (d DeploySettings) GetID() string { return d.ID }
@@ -410,9 +459,62 @@ type DeployTag struct {
 	EnvVersion     int       `json:"env_version" msgpack:"env_version"`
 	CreatedBy      string    `json:"created_by" msgpack:"created_by"`
 	CreatedAt      time.Time `json:"created_at" msgpack:"created_at"`
+	// Protected tags are pinned "known-good" releases that auto-tag trimming
+	// must never delete.
+	Protected bool `json:"protected" msgpack:"protected"`
 }
 
 func (d DeployTag) GetID() string { return d.ID }
+
+// BackupRecord describes one created backup archive on disk.
+type BackupRecord struct {
+	ID          string    `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	Scope       string    `json:"scope"` // "full" | "project" | "db" | "config"
+	ProjectID   string    `json:"project_id"`
+	Path        string    `json:"path"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Contents    []string  `json:"contents"` // member categories included
+	Volumes     []string  `json:"volumes"`
+	Encrypted   bool      `json:"encrypted"`
+	Sensitive   bool      `json:"sensitive"` // includes config.yaml / secrets
+	TriggeredBy string    `json:"triggered_by"`
+	Status      string    `json:"status"` // "ok" | "partial" | "failed"
+	Note        string    `json:"note"`
+}
+
+func (b BackupRecord) GetID() string { return b.ID }
+
+// BackupSchedule configures automatic recurring backups. ID is always "default".
+type BackupSchedule struct {
+	ID             string    `json:"id"` // "default"
+	Enabled        bool      `json:"enabled"`
+	TimeOfDay      string    `json:"time_of_day"` // "HH:MM" 24h, local time
+	Scope          string    `json:"scope"`       // "full" | "db" | "config"
+	IncludeVolumes bool      `json:"include_volumes"`
+	IncludeConfig  bool      `json:"include_config"`
+	Encrypt        bool      `json:"encrypt"`
+	Retention      int       `json:"retention"` // keep last N, 0 = unlimited
+	DestPath       string    `json:"dest_path"` // optional off-box copy dir
+	LastRunAt      *time.Time `json:"last_run_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (b BackupSchedule) GetID() string { return b.ID }
+
+// TerminalPolicy is the (single, ID="default") command-execution policy applied
+// to the non-PTY terminal exec endpoint. Built-in defaults apply when no record
+// is saved; the saved record's lists are additive on top of those defaults.
+type TerminalPolicy struct {
+	ID              string    `json:"id"` // always "default"
+	Mode            string    `json:"mode"` // "denylist" (default) | "allowlist"
+	Deny            []string  `json:"deny"`             // extra deny regexes
+	Allow           []string  `json:"allow"`            // allowlist-mode regexes
+	RestrictedPaths []string  `json:"restricted_paths"` // extra blocked path prefixes
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+func (t TerminalPolicy) GetID() string { return t.ID }
 
 // OAuthSettings mirrors the OAuth2 fields from Config for passing to handlers.
 type OAuthSettings struct {

@@ -4,7 +4,7 @@ import clsx from 'clsx'
 import {
   LayoutDashboard, Boxes, Container, Globe, Network, HardDrive, FolderTree,
   Cpu, TerminalSquare, Activity, ScrollText, Users, LogOut, ChevronRight,
-  MapPin, Settings, Radio,
+  MapPin, Settings, Radio, BookOpen,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -28,6 +28,7 @@ const navSystem: NavItem[] = [
   { to: '/users',    label: 'Users',     icon: Users },
   { to: '/tracing',  label: 'Tracing',   icon: Radio },
   { to: '/settings', label: 'Settings',  icon: Settings },
+  { to: '/docs',     label: 'Docs',      icon: BookOpen },
 ]
 
 function breadcrumbFor(pathname: string): string {

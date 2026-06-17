@@ -16,6 +16,8 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
+
+	"offdock/internal/store"
 )
 
 // pwdSentinel marks the line that carries the new working directory.
@@ -32,7 +34,11 @@ var wsUpgrader = websocket.Upgrader{
 func allowLocalOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		return true
+		// A browser always sends Origin on a WS upgrade. An absent Origin means a
+		// non-browser client (curl, a script) — for the privileged terminal
+		// upgrade endpoints we require a recognised same-host/private origin, so
+		// reject the empty case rather than auto-allowing it.
+		return false
 	}
 	// Strip scheme
 	h := origin
@@ -93,6 +99,17 @@ func (h *H) ExecCommand(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "command is required")
 		return
 	}
+
+	// Enforce the command policy before running anything, and audit every
+	// command (allowed or blocked) — the file-explorer guards are otherwise
+	// trivially bypassed from a shell.
+	policy := h.resolveTermPolicy()
+	if ok, reason := policy.Check(req.Command, req.Cwd); !ok {
+		h.logAudit(r, "terminal_exec_blocked", "system", "", "", req.Command+" — "+reason)
+		writeError(w, http.StatusForbidden, reason)
+		return
+	}
+	h.logAudit(r, "terminal_exec", "system", "", "", req.Command)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
@@ -259,11 +276,26 @@ func parseUint16(s string) uint16 {
 // HostShellWS opens a WebSocket PTY session running bash on the host.
 // Requires a valid OTP terminal token obtained via /api/v1/terminal/otp/verify.
 func (h *H) HostShellWS(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("otp_token")
-	if !h.ValidateTerminalToken(token) {
-		http.Error(w, `{"error":"valid OTP token required for root terminal"}`, http.StatusForbidden)
+	// Per-user host-terminal gate set by superadmin.
+	user := currentUser(r, h.db.Users)
+	if user == nil {
+		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
 		return
 	}
+	switch user.EffectiveHostTerminalMode() {
+	case store.HostTermDisabled:
+		http.Error(w, `{"error":"host terminal access is disabled for your account"}`, http.StatusForbidden)
+		return
+	case store.HostTermBypass:
+		// No OTP required — but still audited below.
+	default: // HostTermOTP
+		token := r.URL.Query().Get("otp_token")
+		if !h.ValidateTerminalToken(token) {
+			http.Error(w, `{"error":"valid OTP token required for root terminal"}`, http.StatusForbidden)
+			return
+		}
+	}
+	h.logAudit(r, "host_shell_open", "system", "", "", "mode="+user.EffectiveHostTerminalMode())
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {

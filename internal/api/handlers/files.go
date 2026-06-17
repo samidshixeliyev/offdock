@@ -31,7 +31,7 @@ func (h *H) FileBrowse(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "/"
 	}
-	if isSensitivePath(path) {
+	if h.isPathSensitive(path) {
 		writeError(w, http.StatusForbidden, "access to this path is restricted")
 		return
 	}
@@ -80,7 +80,7 @@ func (h *H) FileRead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "path required")
 		return
 	}
-	if isSensitivePath(path) {
+	if h.isPathSensitive(path) {
 		writeError(w, http.StatusForbidden, "access to this path is restricted")
 		return
 	}
@@ -149,6 +149,10 @@ func (h *H) FileWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := cleanPath(req.Path)
+	if h.isPathBlocked(path) || h.isPathSensitive(path) {
+		writeError(w, http.StatusForbidden, "writing to this path is restricted")
+		return
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, "mkdir: "+err.Error())
 		return
@@ -190,7 +194,7 @@ func (h *H) FileDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "cannot delete root")
 		return
 	}
-	if isBlockedPath(path) {
+	if h.isPathBlocked(path) {
 		writeError(w, http.StatusForbidden, "cannot delete system path: "+path)
 		return
 	}
@@ -226,7 +230,7 @@ func (h *H) FileSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "path and q required")
 		return
 	}
-	if isSensitivePath(base) {
+	if h.isPathSensitive(base) {
 		writeError(w, http.StatusForbidden, "access to this path is restricted")
 		return
 	}
@@ -317,7 +321,7 @@ func (h *H) FileImport(w http.ResponseWriter, r *http.Request) {
 		dest = filepath.Join(dest, filepath.Base(src))
 	}
 
-	if isBlockedPath(dest) {
+	if h.isPathBlocked(dest) {
 		writeError(w, http.StatusForbidden, "destination path is protected")
 		return
 	}
@@ -470,6 +474,41 @@ func isSensitivePath(p string) bool {
 		}
 	}
 	return false
+}
+
+// extraRestrictedPaths returns operator-configured restricted paths from the
+// terminal policy, applied additively to the file explorer guards.
+func (h *H) extraRestrictedPaths() []string {
+	p, err := h.db.TermPolicy.FindByID(termPolicyID)
+	if err != nil {
+		return nil
+	}
+	return p.RestrictedPaths
+}
+
+func underAny(p string, paths []string) bool {
+	for _, rp := range paths {
+		rp = strings.TrimSpace(rp)
+		if rp == "" {
+			continue
+		}
+		if p == rp || strings.HasPrefix(p, rp+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// isPathSensitive combines the built-in sensitive list with operator-configured
+// restricted paths for read/browse endpoints.
+func (h *H) isPathSensitive(p string) bool {
+	return isSensitivePath(p) || underAny(p, h.extraRestrictedPaths())
+}
+
+// isPathBlocked combines the built-in blocked list with operator-configured
+// restricted paths for write/delete endpoints.
+func (h *H) isPathBlocked(p string) bool {
+	return isBlockedPath(p) || underAny(p, h.extraRestrictedPaths())
 }
 
 func guessMime(name string) string {

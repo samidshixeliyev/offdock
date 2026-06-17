@@ -17,12 +17,14 @@ import (
 	"offdock/internal/api"
 	"offdock/internal/api/sse"
 	"offdock/internal/auth"
+	"offdock/internal/backup"
 	"offdock/internal/config"
 	"offdock/internal/crypto"
 	"offdock/internal/deploy"
 	"offdock/internal/docker"
 	"offdock/internal/mailer"
 	"offdock/internal/nginx"
+	"offdock/internal/selfheal"
 	"offdock/internal/store"
 	"offdock/internal/system"
 )
@@ -31,7 +33,9 @@ import (
 var Version = "dev"
 
 func main() {
-	cfg, err := config.Load("")
+	// OFFDOCK_CONFIG overrides the default /etc/offdock/config.yaml path. Useful
+	// for running outside systemd (dev, WSL, CI) without writing to /etc.
+	cfg, err := config.Load(os.Getenv("OFFDOCK_CONFIG"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		os.Exit(1)
@@ -88,6 +92,35 @@ func main() {
 	deployer := deploy.New(db, dockerClient, enc, projectsDir)
 	stats := system.New(dockerClient, cfg.DataDir)
 	hub := sse.New()
+
+	// Re-assert apt holds on protected packages (Docker, nginx) so that a later
+	// `apt --fix-broken install` can never remove them and take containers down.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if held := system.EnsureHolds(ctx); len(held) > 0 {
+			slog.Info("protected packages held", "packages", held)
+		}
+	}()
+
+	// Boot-time self-heal: ensure Docker is up, bring running projects back, and
+	// re-apply nginx vhosts from the DB. Runs in the background so the HTTP
+	// server starts immediately.
+	selfheal.New(db, dockerClient, deployer).RunInBackground()
+
+	// Daily backup scheduler.
+	backupBase := filepath.Dir(cfg.DataDir)
+	backupBuilder := &backup.Builder{
+		DataDir:     cfg.DataDir,
+		ProjectsDir: projectsDir,
+		CertsDir:    filepath.Join(backupBase, "certs"),
+		ConfigPath:  "/etc/offdock/config.yaml",
+		NginxAvail:  "/etc/nginx/sites-available",
+		Docker:      dockerClient,
+		Enc:         enc,
+	}
+	backupScheduler := backup.NewScheduler(db, backupBuilder, filepath.Join(backupBase, "backups"))
+	go backupScheduler.Run(context.Background())
 
 	smtpMode := cfg.SMTPMode
 	if smtpMode == "" && cfg.SMTPStartTLS {

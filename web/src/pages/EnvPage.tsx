@@ -175,9 +175,9 @@ export default function EnvPage() {
     setSaving(true)
     try {
       const payload = vars.map(({ key, value, is_secret }) => ({ key, value, is_secret }))
-      const set = await api.saveEnv(id, payload)
+      const { env: set, unchanged } = await api.saveEnv(id, payload)
       loadFrom(set)
-      toast.success(`Saved as version ${set.version}`)
+      toast.success(unchanged ? `No changes — still on version ${set.version}` : `Saved as version ${set.version}`)
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Save failed') } finally { setSaving(false) }
   }
 

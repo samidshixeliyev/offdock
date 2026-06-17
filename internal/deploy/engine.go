@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"offdock/internal/crypto"
@@ -34,6 +35,25 @@ type Engine struct {
 	docker      *docker.Client
 	enc         *crypto.Encryptor
 	projectsDir string
+	locks       sync.Map // projectID → *sync.Mutex, serialises deploys per project
+}
+
+// projectLock returns the per-project mutex, creating it on first use.
+func (e *Engine) projectLock(projectID string) *sync.Mutex {
+	m, _ := e.locks.LoadOrStore(projectID, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
+// composeForDisk applies per-project network injection (dns/dns_search/
+// extra_hosts) to the raw compose YAML before it is written to disk. The raw
+// YAML in the DB is never changed. Transform errors fall back to the raw YAML.
+func (e *Engine) composeForDisk(settings store.DeploySettings, raw string) string {
+	out, err := injectNetworkConfig(raw, settings.DNSServers, settings.DNSSearch, settings.ExtraHosts)
+	if err != nil {
+		slog.Warn("compose network injection failed; using raw compose", "err", err)
+		return raw
+	}
+	return out
 }
 
 // New returns an Engine ready to deploy projects.
@@ -86,6 +106,14 @@ func (e *Engine) Deploy(ctx context.Context, projectID, triggeredBy string, logF
 //  3. Poll health until stable or timeout (per-project settings).
 //  4. Reload nginx if a config is active.
 func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy string, composeVersion, envVersion int, logFn LogFunc) (*store.DeploymentRecord, error) {
+	// Serialise deploys per project so two concurrent triggers cannot race on
+	// `compose up` and the project directory.
+	lock := e.projectLock(projectID)
+	if !lock.TryLock() {
+		return nil, fmt.Errorf("a deployment is already in progress for this project")
+	}
+	defer lock.Unlock()
+
 	settings := e.resolveSettings(projectID)
 	deployTimeoutDur := time.Duration(settings.DeployTimeoutSecs) * time.Second
 
@@ -149,6 +177,24 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 		selectedEnv = latestEnvSet(allEnvSets)
 	}
 
+	// ── Capture previous good version for auto-rollback ──────────────────────
+	var prevComposeV, prevEnvV int
+	if settings.RollbackOnFailure {
+		successDeps, _ := e.db.Deployments.FindWhere(func(d store.DeploymentRecord) bool {
+			return d.ProjectID == projectID && d.Status == store.DeployStatusSuccess
+		})
+		var latest *store.DeploymentRecord
+		for i := range successDeps {
+			if latest == nil || successDeps[i].StartedAt.After(latest.StartedAt) {
+				latest = &successDeps[i]
+			}
+		}
+		if latest != nil {
+			prevComposeV = latest.NewComposeVersion
+			prevEnvV = latest.EnvVersion
+		}
+	}
+
 	// ── Create deployment record ─────────────────────────────────────────────
 	envVerUsed := 0
 	if selectedEnv != nil {
@@ -180,6 +226,24 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 			log("[STAGE:ERROR] " + reason.Error())
 			rec.LogText += "\n[STAGE:ERROR] " + reason.Error()
 			rec.LogText += "\nFAILED: " + reason.Error()
+
+			// Auto-rollback to the previous good version, if enabled and one
+			// exists that differs from the failed attempt.
+			if settings.RollbackOnFailure && prevComposeV > 0 &&
+				(prevComposeV != selectedCompose.Version || prevEnvV != envVerUsed) {
+				log("[STAGE] Auto-rollback to compose v%d, env v%d", prevComposeV, prevEnvV)
+				rec.LogText += fmt.Sprintf("\n[STAGE] Auto-rollback to compose v%d, env v%d", prevComposeV, prevEnvV)
+				rbCtx, rbCancel := context.WithTimeout(context.Background(), defaultDeployTimeout)
+				out, rbErr := e.applyVersionFiles(rbCtx, projectID, project.Name, prevComposeV, prevEnvV)
+				rbCancel()
+				if rbErr != nil {
+					rec.LogText += "\nAuto-rollback FAILED: " + rbErr.Error() + "\n" + strings.TrimSpace(out)
+					log("Auto-rollback failed: %v", rbErr)
+				} else {
+					rec.LogText += "\nAuto-rolled back to previous good version."
+					log("Auto-rolled back to compose v%d, env v%d", prevComposeV, prevEnvV)
+				}
+			}
 		}
 		rec.FinishedAt = &now
 		_ = e.db.Deployments.Save(rec)
@@ -210,7 +274,7 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	composePath := filepath.Join(projectDir, "docker-compose.yml")
 	appendLog("[STAGE] Writing compose + env")
 	appendLog("[1/4] Writing docker-compose.yml (compose v%d)", selectedCompose.Version)
-	if err := atomicWrite(composePath, []byte(selectedCompose.RawYAML)); err != nil {
+	if err := atomicWrite(composePath, []byte(e.composeForDisk(settings, selectedCompose.RawYAML))); err != nil {
 		return fail(fmt.Errorf("write compose: %w", err))
 	}
 
@@ -279,9 +343,99 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	return &rec, nil
 }
 
+// applyVersionFiles writes a specific compose+env version pair to disk and
+// force-recreates the stack. Used by the auto-rollback path. It does NOT take
+// the per-project lock (the caller already holds it) and does not wait for health.
+func (e *Engine) applyVersionFiles(ctx context.Context, projectID, projectName string, composeVer, envVer int) (string, error) {
+	composeVersions, err := e.db.Compose.FindWhere(func(c store.ComposeConfig) bool {
+		return c.ProjectID == projectID && c.Version == composeVer
+	})
+	if err != nil || len(composeVersions) == 0 {
+		return "", fmt.Errorf("compose version %d not found", composeVer)
+	}
+	var selectedEnv *store.EnvVarSet
+	if envVer > 0 {
+		envs, _ := e.db.EnvVars.FindWhere(func(v store.EnvVarSet) bool {
+			return v.ProjectID == projectID && v.Version == envVer
+		})
+		if len(envs) > 0 {
+			selectedEnv = &envs[0]
+		}
+	}
+
+	projectDir := filepath.Join(e.projectsDir, projectID)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		return "", err
+	}
+	composePath := filepath.Join(projectDir, "docker-compose.yml")
+	settings := e.resolveSettings(projectID)
+	if err := atomicWrite(composePath, []byte(e.composeForDisk(settings, composeVersions[0].RawYAML))); err != nil {
+		return "", err
+	}
+	envContent, err := e.buildEnvFile(selectedEnv)
+	if err != nil {
+		return "", err
+	}
+	if err := atomicWrite(filepath.Join(projectDir, ".env"), []byte(envContent)); err != nil {
+		return "", err
+	}
+	return e.docker.ComposeUp(ctx, composeProjectName(projectName), composePath, true)
+}
+
+// EnsureUp writes the latest compose+env for a project to disk and runs
+// `docker compose up -d` WITHOUT --force-recreate or --remove-orphans. It is
+// used by the boot reconciler to bring running projects back after host churn
+// (Docker reinstall, reboot) without disrupting healthy containers or deleting
+// orphans. It does not poll health or touch deployment records.
+func (e *Engine) EnsureUp(ctx context.Context, projectID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultDeployTimeout)
+	defer cancel()
+
+	project, err := e.db.Projects.FindByID(projectID)
+	if err != nil {
+		return "", fmt.Errorf("project not found: %w", err)
+	}
+
+	composeVersions, err := e.db.Compose.FindWhere(func(c store.ComposeConfig) bool {
+		return c.ProjectID == projectID
+	})
+	if err != nil || len(composeVersions) == 0 {
+		return "", fmt.Errorf("no compose config for project %q", project.Name)
+	}
+	selectedCompose := latestComposeConfig(composeVersions)
+
+	allEnvSets, _ := e.db.EnvVars.FindWhere(func(v store.EnvVarSet) bool {
+		return v.ProjectID == projectID
+	})
+	selectedEnv := latestEnvSet(allEnvSets)
+
+	projectDir := filepath.Join(e.projectsDir, projectID)
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		return "", fmt.Errorf("create project dir: %w", err)
+	}
+	composePath := filepath.Join(projectDir, "docker-compose.yml")
+	settings := e.resolveSettings(projectID)
+	if err := atomicWrite(composePath, []byte(e.composeForDisk(settings, selectedCompose.RawYAML))); err != nil {
+		return "", fmt.Errorf("write compose: %w", err)
+	}
+	envContent, err := e.buildEnvFile(selectedEnv)
+	if err != nil {
+		return "", fmt.Errorf("build env file: %w", err)
+	}
+	if err := atomicWrite(filepath.Join(projectDir, ".env"), []byte(envContent)); err != nil {
+		return "", fmt.Errorf("write .env: %w", err)
+	}
+
+	safeProject := composeProjectName(project.Name)
+	return e.docker.ComposeUpOpts(ctx, safeProject, composePath, false, false)
+}
+
 func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, healthTimeout, stableFor time.Duration, log func(string, ...any)) error {
 	deadline := time.Now().Add(healthTimeout)
-	var firstRunning time.Time
+	// Per-container timestamp of when it was first seen "running" without a
+	// healthcheck, so the stable-window is tracked independently per container
+	// rather than sharing a single timer across the whole stack.
+	runningSince := make(map[string]time.Time)
 
 	for {
 		if time.Now().After(deadline) {
@@ -301,24 +455,31 @@ func (e *Engine) waitHealthy(ctx context.Context, project, composePath string, h
 
 		allHealthy := true
 		for _, c := range containers {
-			status, err := e.docker.HealthStatus(ctx, c.Names)
+			status, exitCode, err := e.docker.HealthDetail(ctx, c.Names)
 			if err != nil {
 				allHealthy = false
 				break
 			}
 			switch status {
 			case "healthy":
-				// good
+				// good — explicit healthcheck passed
 			case "running":
-				if firstRunning.IsZero() {
-					firstRunning = time.Now()
+				if runningSince[c.Names].IsZero() {
+					runningSince[c.Names] = time.Now()
 				}
-				if time.Since(firstRunning) < stableFor {
+				if time.Since(runningSince[c.Names]) < stableFor {
 					allHealthy = false
 				}
+			case "exited":
+				// A one-shot/init/migration container that completed cleanly is
+				// healthy; a non-zero exit is a real failure.
+				if exitCode != 0 {
+					return fmt.Errorf("container %s exited with code %d", c.Names, exitCode)
+				}
 			default:
+				// starting, restarting, created, unhealthy, paused, dead…
 				allHealthy = false
-				firstRunning = time.Time{}
+				delete(runningSince, c.Names)
 			}
 		}
 
@@ -342,10 +503,31 @@ func (e *Engine) buildEnvFile(set *store.EnvVarSet) (string, error) {
 		}
 		sb.WriteString(v.Key)
 		sb.WriteByte('=')
-		sb.WriteString(plain)
+		sb.WriteString(quoteEnvValue(plain))
 		sb.WriteByte('\n')
 	}
 	return sb.String(), nil
+}
+
+// quoteEnvValue renders a value safe for a docker-compose .env file. Values with
+// newlines, surrounding whitespace, '#', or quote characters are wrapped in
+// double quotes with backslash/quote/newline escaped — which Docker Compose v2
+// decodes back to the original. Plain values are written verbatim so existing
+// behaviour is unchanged for the common case.
+func quoteEnvValue(v string) string {
+	needsQuote := strings.ContainsAny(v, "\n\r\"#") ||
+		v != strings.TrimSpace(v) ||
+		strings.Contains(v, "\\")
+	if !needsQuote {
+		return v
+	}
+	r := strings.NewReplacer(
+		"\\", "\\\\",
+		"\"", "\\\"",
+		"\n", "\\n",
+		"\r", "\\r",
+	)
+	return "\"" + r.Replace(v) + "\""
 }
 
 // composeProjectName converts a project name to a valid Docker Compose project name.

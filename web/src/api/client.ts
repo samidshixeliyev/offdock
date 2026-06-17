@@ -14,6 +14,7 @@ export interface User {
   created_at: string
   updated_at: string
   active: boolean
+  host_terminal_access?: 'otp' | 'bypass' | 'disabled'
 }
 
 export interface PermissionInfo { key: string; label: string }
@@ -109,6 +110,10 @@ export interface DeploySettings {
   health_timeout_secs: number
   deploy_timeout_secs: number
   health_stable_secs: number
+  rollback_on_failure?: boolean
+  dns_servers?: string[]
+  dns_search?: string[]
+  extra_hosts?: string[]
 }
 
 export interface DockerImage {
@@ -374,6 +379,7 @@ export interface DeployTag {
   env_version: number
   created_by: string
   created_at: string
+  protected?: boolean
 }
 
 export type DNSTicketStatus = 'pending' | 'sent' | 'approved' | 'rejected'
@@ -448,7 +454,7 @@ export const api = {
   listUsers: () => request<User[]>('/api/v1/users'),
   createUser: (data: { username: string; email?: string; password: string; role: User['role']; custom_role_id?: string; permissions?: string[]; project_ids?: string[] }) =>
     request<User>('/api/v1/users', { method: 'POST', body: JSON.stringify(data) }),
-  updateUser: (id: string, data: { role?: User['role']; email?: string; active?: boolean; custom_role_id?: string; permissions?: string[]; project_ids?: string[]; password?: string }) =>
+  updateUser: (id: string, data: { role?: User['role']; email?: string; active?: boolean; custom_role_id?: string; permissions?: string[]; project_ids?: string[]; password?: string; host_terminal_access?: 'otp' | 'bypass' | 'disabled' }) =>
     request<User>(`/api/v1/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteUser: (id: string) =>
     request<void>(`/api/v1/users/${id}`, { method: 'DELETE' }),
@@ -480,22 +486,32 @@ export const api = {
   // Compose
   getCompose: (projectId: string) =>
     request<ComposeConfig | null>(`/api/v1/projects/${projectId}/compose`),
-  saveCompose: (projectId: string, rawYaml: string) =>
-    request<ComposeConfig>(`/api/v1/projects/${projectId}/compose`, {
-      method: 'POST',
-      body: JSON.stringify({ raw_yaml: rawYaml }),
-    }),
+  saveCompose: async (projectId: string, rawYaml: string): Promise<{ config: ComposeConfig; unchanged: boolean }> => {
+    const res = await request<ComposeConfig | { unchanged: true; config: ComposeConfig }>(
+      `/api/v1/projects/${projectId}/compose`,
+      { method: 'POST', body: JSON.stringify({ raw_yaml: rawYaml }) },
+    )
+    if (res && typeof res === 'object' && 'unchanged' in res) {
+      return { config: res.config, unchanged: true }
+    }
+    return { config: res as ComposeConfig, unchanged: false }
+  },
   composeHistory: (projectId: string) =>
     request<ComposeConfig[]>(`/api/v1/projects/${projectId}/compose/history`),
 
   // Env vars
   getEnv: (projectId: string) =>
     request<EnvVarSet | null>(`/api/v1/projects/${projectId}/env`),
-  saveEnv: (projectId: string, vars: EnvVar[]) =>
-    request<EnvVarSet>(`/api/v1/projects/${projectId}/env`, {
-      method: 'POST',
-      body: JSON.stringify({ vars }),
-    }),
+  saveEnv: async (projectId: string, vars: EnvVar[]): Promise<{ env: EnvVarSet; unchanged: boolean }> => {
+    const res = await request<EnvVarSet | { unchanged: true; env: EnvVarSet }>(
+      `/api/v1/projects/${projectId}/env`,
+      { method: 'POST', body: JSON.stringify({ vars }) },
+    )
+    if (res && typeof res === 'object' && 'unchanged' in res) {
+      return { env: res.env, unchanged: true }
+    }
+    return { env: res as EnvVarSet, unchanged: false }
+  },
   envHistory: (projectId: string) =>
     request<EnvVarSet[]>(`/api/v1/projects/${projectId}/env/history`),
   restoreEnv: (projectId: string, version: number) =>
@@ -635,7 +651,7 @@ export const api = {
     request<DeploySettings>(`/api/v1/projects/${projectId}/deploy-settings`),
   // Deploy tags
   listDeployTags: (projectId: string) => request<DeployTag[]>(`/api/v1/projects/${projectId}/deploy-tags`),
-  createDeployTag: (projectId: string, data: { name: string; description?: string; compose_version?: number; env_version?: number }) =>
+  createDeployTag: (projectId: string, data: { name: string; description?: string; compose_version?: number; env_version?: number; protected?: boolean }) =>
     request<DeployTag>(`/api/v1/projects/${projectId}/deploy-tags`, { method: 'POST', body: JSON.stringify(data) }),
   deleteDeployTag: (projectId: string, tagId: string) =>
     request<void>(`/api/v1/projects/${projectId}/deploy-tags/${tagId}`, { method: 'DELETE' }),
@@ -844,6 +860,108 @@ export const api = {
       xhr.send(form)
     })
   },
+
+  // --- Host package safety (Tier 1) ---
+  packageStatus: () => request<{ protected: string[]; held: string[] }>('/api/v1/system/packages/status'),
+  ensurePackageHolds: () => request<{ held: string[] }>('/api/v1/system/packages/hold', { method: 'POST' }),
+  installPackages: (paths: string[], force = false) =>
+    request<PackageInstallResult>('/api/v1/system/packages/install', {
+      method: 'POST', body: JSON.stringify({ paths, force }),
+    }),
+  fixBroken: (force = false) =>
+    request<PackageInstallResult>('/api/v1/system/packages/fix-broken', {
+      method: 'POST', body: JSON.stringify({ force }),
+    }),
+
+  // --- System maintenance (Tier 1 / 4) ---
+  reconcile: () => request<ReconcileReport>('/api/v1/system/reconcile', { method: 'POST' }),
+  optimize: (opts: { compact?: boolean; drop_caches?: boolean; docker_prune?: boolean }) =>
+    request<OptimizeResult>('/api/v1/system/optimize', { method: 'POST', body: JSON.stringify(opts) }),
+
+  // --- Rollback + tags (Tier 6) ---
+  rollback: (projectId: string, body: { tag_id?: string; deployment_id?: string; compose_version?: number; env_version?: number }) =>
+    request<{ deployment_id: string; stream: string }>(`/api/v1/projects/${projectId}/rollback`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  toggleTagProtected: (projectId: string, tagId: string) =>
+    request<DeployTag>(`/api/v1/projects/${projectId}/deploy-tags/${tagId}/protect`, { method: 'POST' }),
+
+  // --- Backups (Tier 2) ---
+  listBackups: () => request<BackupRecord[]>('/api/v1/system/backups'),
+  createBackup: (body: { scope: string; project_id?: string; include_volumes?: boolean; include_config?: boolean; encrypt?: boolean }) =>
+    request<BackupRecord>('/api/v1/system/backups', { method: 'POST', body: JSON.stringify(body) }),
+  inspectBackup: (id: string) => request<RestorePlan>(`/api/v1/system/backups/${id}/inspect`),
+  restoreBackup: (id: string, opts: RestoreOptions) =>
+    request<{ result: RestoreResult; warning?: string }>(`/api/v1/system/backups/${id}/restore`, {
+      method: 'POST', body: JSON.stringify(opts),
+    }),
+  deleteBackup: (id: string) => request<void>(`/api/v1/system/backups/${id}`, { method: 'DELETE' }),
+  downloadBackupURL: (id: string) => `/api/v1/system/backups/${id}/download`,
+  getBackupSchedule: () => request<BackupSchedule>('/api/v1/system/backups-schedule'),
+  saveBackupSchedule: (s: BackupSchedule) =>
+    request<BackupSchedule>('/api/v1/system/backups-schedule', { method: 'POST', body: JSON.stringify(s) }),
+
+  // --- Terminal policy (Tier 3) ---
+  getTerminalPolicy: () => request<TerminalPolicy>('/api/v1/terminal/policy'),
+  getTerminalPolicyDefaults: () => request<{ default_deny: string[] }>('/api/v1/terminal/policy/defaults'),
+  saveTerminalPolicy: (p: TerminalPolicy) =>
+    request<TerminalPolicy>('/api/v1/terminal/policy', { method: 'POST', body: JSON.stringify(p) }),
+
+  // --- Docker network IPAM (Tier 8) ---
+  createDockerNetworkIPAM: (body: { name: string; driver?: string; subnet?: string; gateway?: string; ip_range?: string; internal?: boolean; attachable?: boolean }) =>
+    request<DockerNetwork>('/api/v1/docker/networks', { method: 'POST', body: JSON.stringify(body) }),
 }
 
 export { ApiError }
+
+// --- New types (Tiers 1-8) ---
+export interface PackageSimulation {
+  install: string[]; upgrade: string[]; remove: string[]; protected_removals: string[]; raw: string
+}
+export interface PackageInstallResult {
+  applied?: boolean; output?: string; simulation?: PackageSimulation; error?: string; protected?: string[]
+}
+export interface ReconcileItemErr { name: string; err: string }
+export interface ReconcileReport {
+  docker_ready: boolean
+  projects_up: string[]
+  project_errors: ReconcileItemErr[]
+  nginx_applied: string[]
+  nginx_errors: ReconcileItemErr[]
+  started_at: string
+  finished_at: string
+}
+export interface CompactResult { collection: string; reclaimed_bytes: number; error?: string }
+export interface OptimizeResult {
+  ram_used_before: number; ram_used_after: number; ram_freed_bytes: number
+  compacted: CompactResult[]; disk_reclaimed_bytes: number; dropped_caches: boolean
+  docker_prune_output?: string; errors?: string[]
+}
+export interface BackupRecord {
+  id: string; created_at: string; scope: string; project_id: string; path: string
+  size_bytes: number; contents: string[]; volumes: string[]; encrypted: boolean
+  sensitive: boolean; triggered_by: string; status: string; note: string
+}
+export interface BackupSchedule {
+  id: string; enabled: boolean; time_of_day: string; scope: string
+  include_volumes: boolean; include_config: boolean; encrypt: boolean
+  retention: number; dest_path: string; last_run_at?: string | null; updated_at: string
+}
+export interface BackupManifest {
+  version: number; created_at: string; scope: string; project_id: string
+  volumes: string[]; encrypted: boolean; has_config: boolean
+}
+export interface RestorePlan {
+  manifest: BackupManifest; projects: string[]; volumes: string[]
+  has_config: boolean; has_db: boolean; has_nginx: boolean
+}
+export interface RestoreOptions {
+  volumes?: boolean; projects?: boolean; config?: boolean; db?: boolean; nginx?: boolean; certs?: boolean
+}
+export interface RestoreResult {
+  restored_projects: string[]; restored_volumes: string[]
+  restored_config: boolean; restored_db: boolean; errors: string[]
+}
+export interface TerminalPolicy {
+  id: string; mode: string; deny: string[]; allow: string[]; restricted_paths: string[]; updated_at?: string
+}

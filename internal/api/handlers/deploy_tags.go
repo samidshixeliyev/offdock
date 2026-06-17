@@ -16,7 +16,7 @@ import (
 // list clutter. Errors are best-effort — trimming never blocks a deploy.
 func (h *H) trimAutoTags(projectID string, keep int) {
 	tags, err := h.db.DeployTags.FindWhere(func(t store.DeployTag) bool {
-		return t.ProjectID == projectID && strings.HasPrefix(t.Name, "deploy-")
+		return t.ProjectID == projectID && strings.HasPrefix(t.Name, "deploy-") && !t.Protected
 	})
 	if err != nil || len(tags) <= keep {
 		return
@@ -53,6 +53,7 @@ func (h *H) CreateDeployTag(w http.ResponseWriter, r *http.Request) {
 		Description    string `json:"description"`
 		ComposeVersion int    `json:"compose_version"`
 		EnvVersion     int    `json:"env_version"`
+		Protected      bool   `json:"protected"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
@@ -97,6 +98,7 @@ func (h *H) CreateDeployTag(w http.ResponseWriter, r *http.Request) {
 		Description:    req.Description,
 		ComposeVersion: req.ComposeVersion,
 		EnvVersion:     req.EnvVersion,
+		Protected:      req.Protected,
 		CreatedBy:      claims.Username,
 		CreatedAt:      timeNow(),
 	}
@@ -107,6 +109,23 @@ func (h *H) CreateDeployTag(w http.ResponseWriter, r *http.Request) {
 	h.logAudit(r, "create_deploy_tag", "project", projectID, req.Name,
 		"compose_v"+itoa(req.ComposeVersion)+" env_v"+itoa(req.EnvVersion))
 	writeJSON(w, http.StatusCreated, tag)
+}
+
+// ToggleTagProtected flips the Protected flag on a tag so it is (or is not)
+// exempt from auto-tag trimming.
+func (h *H) ToggleTagProtected(w http.ResponseWriter, r *http.Request) {
+	tagID := chi.URLParam(r, "tag_id")
+	tag, err := h.db.DeployTags.FindByID(tagID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "tag not found")
+		return
+	}
+	tag.Protected = !tag.Protected
+	if err := h.db.DeployTags.Save(tag); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not update tag")
+		return
+	}
+	writeJSON(w, http.StatusOK, tag)
 }
 
 // DeleteDeployTag removes a deploy tag.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"syscall"
@@ -77,6 +78,28 @@ func (c *Collector) Collect() (*Stats, error) {
 		Containers: containers,
 		Timestamp:  time.Now().UTC(),
 	}, nil
+}
+
+// MemSnapshot returns total and used RAM in bytes without the 1-second CPU
+// sampling that Collect performs. Used by the memory-optimize endpoint to report
+// before/after figures cheaply.
+func MemSnapshot() (total, used uint64) {
+	t, u, _, _, err := ramBytes()
+	if err != nil {
+		return 0, 0
+	}
+	return t, u
+}
+
+// DropCaches asks the kernel to free page cache, dentries and inodes by writing
+// to /proc/sys/vm/drop_caches. Safe and reversible — the kernel re-populates
+// caches on demand. Returns an error if the write fails (e.g. not root).
+func DropCaches() error {
+	// Sync first so dirty pages are flushed before dropping caches.
+	syncCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(syncCtx, "sync").Run()
+	return os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0o200)
 }
 
 // cpuPercent calculates CPU usage by reading /proc/stat twice with a 1-second gap.

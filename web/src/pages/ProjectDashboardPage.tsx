@@ -544,10 +544,10 @@ function ComposeTab({ projectId }: { projectId: string }) {
     if (!yaml.trim()) { notify('Compose content is empty', 'err'); return }
     setSaving(true); notify('')
     try {
-      const cfg = await api.saveCompose(projectId, yaml)
+      const { config: cfg, unchanged } = await api.saveCompose(projectId, yaml)
       setSelected(cfg)
       api.composeHistory(projectId).then(d => setHistory(d ?? []))
-      notify('Saved as version ' + cfg.version)
+      notify(unchanged ? 'No changes — still on version ' + cfg.version : 'Saved as version ' + cfg.version)
     } catch (e) {
       notify('Error: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
     } finally { setSaving(false) }
@@ -674,9 +674,9 @@ function EnvTab({ projectId }: { projectId: string }) {
     setSaving(true); notify('')
     try {
       const payload: EnvVar[] = vars.map(({ key, value, is_secret }) => ({ key, value, is_secret }))
-      const set = await api.saveEnv(projectId, payload)
+      const { env: set, unchanged } = await api.saveEnv(projectId, payload)
       setVars((set.vars ?? []).map(v => makeVar(v.key, v.value, v.is_secret)))
-      notify('Saved as version ' + set.version)
+      notify(unchanged ? 'No changes — still on version ' + set.version : 'Saved as version ' + set.version)
     } catch (e) {
       notify('Error: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
     } finally { setSaving(false) }

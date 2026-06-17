@@ -1,9 +1,12 @@
 package handlers
 
 import (
+	"net"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"offdock/internal/docker"
 )
 
 // ListAllDockerNetworks returns all Docker networks with attached containers.
@@ -19,8 +22,13 @@ func (h *H) ListAllDockerNetworks(w http.ResponseWriter, r *http.Request) {
 // CreateDockerNetwork creates a new Docker network.
 func (h *H) CreateDockerNetwork(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name   string `json:"name"`
-		Driver string `json:"driver"`
+		Name       string `json:"name"`
+		Driver     string `json:"driver"`
+		Subnet     string `json:"subnet"`
+		Gateway    string `json:"gateway"`
+		IPRange    string `json:"ip_range"`
+		Internal   bool   `json:"internal"`
+		Attachable bool   `json:"attachable"`
 	}
 	if err := decodeJSON(r, &req); err != nil || req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
@@ -29,7 +37,32 @@ func (h *H) CreateDockerNetwork(w http.ResponseWriter, r *http.Request) {
 	if req.Driver == "" {
 		req.Driver = "bridge"
 	}
-	if err := h.docker.CreateNetwork(r.Context(), req.Name, req.Driver); err != nil {
+	// Validate CIDR / IP inputs before handing them to docker.
+	if req.Subnet != "" {
+		if _, _, err := net.ParseCIDR(req.Subnet); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid subnet (expected CIDR like 172.28.0.0/16)")
+			return
+		}
+	}
+	if req.IPRange != "" {
+		if _, _, err := net.ParseCIDR(req.IPRange); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid ip_range (expected CIDR)")
+			return
+		}
+	}
+	if req.Gateway != "" && net.ParseIP(req.Gateway) == nil {
+		writeError(w, http.StatusBadRequest, "invalid gateway IP")
+		return
+	}
+	if err := h.docker.CreateNetworkOpts(r.Context(), docker.NetworkCreateOpts{
+		Name:       req.Name,
+		Driver:     req.Driver,
+		Subnet:     req.Subnet,
+		Gateway:    req.Gateway,
+		IPRange:    req.IPRange,
+		Internal:   req.Internal,
+		Attachable: req.Attachable,
+	}); err != nil {
 		writeError(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}

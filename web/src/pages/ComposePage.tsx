@@ -23,11 +23,11 @@ export default function ComposePage() {
     setSaving(true)
     setMsg('')
     try {
-      const cfg = await api.saveCompose(id, yaml)
+      const { config: cfg, unchanged } = await api.saveCompose(id, yaml)
       setSelected(cfg)
       const hist = await api.composeHistory(id)
       setHistory(hist ?? [])
-      setMsg('Saved as version ' + cfg.version)
+      setMsg(unchanged ? 'No changes — still on version ' + cfg.version : 'Saved as version ' + cfg.version)
       setMsgType('ok')
     } catch (e: unknown) {
       setMsg('Error: ' + (e instanceof Error ? e.message : 'unknown'))

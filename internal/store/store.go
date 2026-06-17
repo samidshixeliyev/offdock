@@ -25,6 +25,9 @@ type DB struct {
 	DNSTickets     *Collection[DNSTicket]
 	DeployTags     *Collection[DeployTag]
 	TraceSessions  *Collection[TraceSession]
+	TermPolicy     *Collection[TerminalPolicy]
+	Backups        *Collection[BackupRecord]
+	BackupSchedule *Collection[BackupSchedule]
 }
 
 // Open initialises all collections, creating data files if they do not exist.
@@ -88,8 +91,67 @@ func Open(dataDir string) (*DB, error) {
 	if db.TraceSessions, err = NewCollection[TraceSession](open("trace_sessions")); err != nil {
 		return nil, err
 	}
+	if db.TermPolicy, err = NewCollection[TerminalPolicy](open("term_policy")); err != nil {
+		return nil, err
+	}
+	if db.Backups, err = NewCollection[BackupRecord](open("backups")); err != nil {
+		return nil, err
+	}
+	if db.BackupSchedule, err = NewCollection[BackupSchedule](open("backup_schedule")); err != nil {
+		return nil, err
+	}
 
 	return db, nil
+}
+
+// CompactResult reports the bytes reclaimed per collection during CompactAll.
+type CompactResult struct {
+	Collection string `json:"collection"`
+	Reclaimed  int64  `json:"reclaimed_bytes"`
+	Err        string `json:"error,omitempty"`
+}
+
+// CompactAll compacts every collection, dropping tombstones and superseded
+// records. Errors on individual collections are reported but do not abort the
+// rest. Returns per-collection results and the total bytes reclaimed.
+func (db *DB) CompactAll() ([]CompactResult, int64) {
+	type compactor struct {
+		name string
+		fn   func() (int64, error)
+	}
+	cs := []compactor{
+		{"users", db.Users.Compact},
+		{"projects", db.Projects.Compact},
+		{"images", db.Images.Compact},
+		{"compose", db.Compose.Compact},
+		{"envvars", db.EnvVars.Compact},
+		{"nginx", db.Nginx.Compact},
+		{"deployments", db.Deployments.Compact},
+		{"proxyhosts", db.ProxyHosts.Compact},
+		{"deploy_settings", db.DeploySettings.Compact},
+		{"audit_events", db.AuditEvents.Compact},
+		{"custom_roles", db.CustomRoles.Compact},
+		{"sessions", db.Sessions.Compact},
+		{"otp_challenges", db.OTPChallenges.Compact},
+		{"dns_tickets", db.DNSTickets.Compact},
+		{"deploy_tags", db.DeployTags.Compact},
+		{"trace_sessions", db.TraceSessions.Compact},
+		{"term_policy", db.TermPolicy.Compact},
+		{"backups", db.Backups.Compact},
+		{"backup_schedule", db.BackupSchedule.Compact},
+	}
+	results := make([]CompactResult, 0, len(cs))
+	var total int64
+	for _, c := range cs {
+		reclaimed, err := c.fn()
+		res := CompactResult{Collection: c.name, Reclaimed: reclaimed}
+		if err != nil {
+			res.Err = err.Error()
+		}
+		total += reclaimed
+		results = append(results, res)
+	}
+	return results, total
 }
 
 // Close releases all file handles. Must be called on shutdown.
@@ -99,6 +161,7 @@ func (db *DB) Close() error {
 		db.EnvVars, db.Nginx, db.Deployments, db.ProxyHosts, db.DeploySettings,
 		db.AuditEvents, db.CustomRoles, db.Sessions,
 		db.OTPChallenges, db.DNSTickets, db.DeployTags, db.TraceSessions,
+		db.TermPolicy, db.Backups, db.BackupSchedule,
 	}
 	for _, c := range closers {
 		if err := c.Close(); err != nil {

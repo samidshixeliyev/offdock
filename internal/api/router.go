@@ -184,7 +184,11 @@ func NewRouter(deps Deps) http.Handler {
 			// Deploy tags — named labels for specific compose+env version pairs
 			r.Get("/api/v1/projects/{id}/deploy-tags", h.ListDeployTags)
 			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Post("/api/v1/projects/{id}/deploy-tags", h.CreateDeployTag)
+			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Post("/api/v1/projects/{id}/deploy-tags/{tag_id}/protect", h.ToggleTagProtected)
 			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Delete("/api/v1/projects/{id}/deploy-tags/{tag_id}", h.DeleteDeployTag)
+
+			// Rollback — re-deploy a project to a tagged/historical version pair.
+			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Post("/api/v1/projects/{id}/rollback", h.Rollback)
 
 		// Containers & logs
 		r.Get("/api/v1/projects/{id}/containers", h.ListContainers)
@@ -241,12 +245,38 @@ func NewRouter(deps Deps) http.Handler {
 		// Backup — superadmin only
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Get("/api/v1/system/backup", h.DownloadBackup)
 
+		// Full backup/restore + schedule — superadmin only.
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageBackups)).Get("/api/v1/system/backups", h.ListBackups)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageBackups)).Post("/api/v1/system/backups", h.CreateBackup)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageBackups)).Get("/api/v1/system/backups/{id}/download", h.DownloadBackupFile)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageBackups)).Get("/api/v1/system/backups/{id}/inspect", h.InspectBackup)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/backups/{id}/restore", h.RestoreBackup)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageBackups)).Delete("/api/v1/system/backups/{id}", h.DeleteBackup)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageBackups)).Get("/api/v1/system/backups-schedule", h.GetBackupSchedule)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/backups-schedule", h.SaveBackupSchedule)
+
 		// Self-update — superadmin only: upload tar.gz bundle, atomic binary replace + restart
 		r.Get("/api/v1/system/update/status", h.GetSystemUpdateStatus)
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/system/update", h.SystemUpdate)
 
+		// Host package safety — install .deb files / fix-broken without removing
+		// Docker or nginx; manage apt holds on protected packages.
+		r.With(authmw.RequirePermission(deps.DB, store.PermManagePackages)).Get("/api/v1/system/packages/status", h.GetPackageStatus)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManagePackages)).Post("/api/v1/system/packages/hold", h.EnsurePackageHolds)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManagePackages)).Post("/api/v1/system/packages/install", h.InstallPackages)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManagePackages)).Post("/api/v1/system/packages/fix-broken", h.FixBroken)
+
+		// System maintenance — reconcile (self-heal) + memory/disk optimize.
+		r.With(authmw.RequirePermission(deps.DB, store.PermSystemMaint)).Post("/api/v1/system/reconcile", h.Reconcile)
+		r.With(authmw.RequirePermission(deps.DB, store.PermSystemMaint)).Post("/api/v1/system/optimize", h.Optimize)
+
 		// Reverse proxy status probe (server-side to avoid CORS)
 		r.Get("/api/v1/proxy/status", h.ProxyStatus)
+
+		// Terminal command policy — read by terminal users, written by superadmin.
+		r.With(authmw.RequirePermission(deps.DB, store.PermTerminal)).Get("/api/v1/terminal/policy", h.GetTerminalPolicy)
+		r.With(authmw.RequirePermission(deps.DB, store.PermTerminal)).Get("/api/v1/terminal/policy/defaults", h.GetTerminalPolicyDefaults)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleSuperAdmin)).Post("/api/v1/terminal/policy", h.SaveTerminalPolicy)
 
 		// Terminal — admin+ only
 		r.With(authmw.RequirePermission(deps.DB, store.PermTerminal)).Post("/api/v1/terminal/exec", h.ExecCommand)

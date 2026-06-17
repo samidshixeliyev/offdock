@@ -119,9 +119,10 @@ func (h *H) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		Email        *string             `json:"email"`
 		Active       *bool               `json:"active"`
 		CustomRoleID *string             `json:"custom_role_id"`
-		Permissions  *[]store.Permission `json:"permissions"`
-		ProjectIDs   *[]string           `json:"project_ids"`
-		Password     *string             `json:"password"`
+		Permissions        *[]store.Permission `json:"permissions"`
+		ProjectIDs         *[]string           `json:"project_ids"`
+		Password           *string             `json:"password"`
+		HostTerminalAccess *string             `json:"host_terminal_access"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request")
@@ -149,6 +150,15 @@ func (h *H) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	if req.Password != nil && *req.Password != "" {
 		if hash, err := auth.HashPassword(*req.Password); err == nil {
 			user.PasswordHash = hash
+		}
+	}
+	if req.HostTerminalAccess != nil {
+		switch *req.HostTerminalAccess {
+		case store.HostTermOTP, store.HostTermBypass, store.HostTermDisabled, "":
+			user.HostTerminalAccess = *req.HostTerminalAccess
+		default:
+			writeError(w, http.StatusBadRequest, "invalid host_terminal_access (otp|bypass|disabled)")
+			return
 		}
 	}
 	user.UpdatedAt = timeNow()
@@ -196,9 +206,10 @@ func safeUser(u store.User) map[string]any {
 		"custom_role_id": u.CustomRoleID,
 		"permissions":    perms,
 		"project_ids":    pids,
-		"created_by":     u.CreatedBy,
-		"created_at":     u.CreatedAt,
-		"updated_at":     u.UpdatedAt,
-		"active":         u.Active,
+		"created_by":           u.CreatedBy,
+		"created_at":           u.CreatedAt,
+		"updated_at":           u.UpdatedAt,
+		"active":               u.Active,
+		"host_terminal_access": u.EffectiveHostTerminalMode(),
 	}
 }

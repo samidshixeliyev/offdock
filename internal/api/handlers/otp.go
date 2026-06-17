@@ -24,6 +24,15 @@ func (h *H) OTPRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
+	// Respect the per-user host-terminal gate set by superadmin.
+	switch user.EffectiveHostTerminalMode() {
+	case store.HostTermDisabled:
+		writeError(w, http.StatusForbidden, "host terminal access is disabled for your account")
+		return
+	case store.HostTermBypass:
+		writeJSON(w, http.StatusOK, map[string]any{"bypass": true, "message": "no OTP required for your account"})
+		return
+	}
 	if strings.TrimSpace(user.Email) == "" {
 		writeError(w, http.StatusUnprocessableEntity, "your account has no email address — ask an admin to set one before using the root terminal")
 		return

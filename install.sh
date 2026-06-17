@@ -26,20 +26,53 @@ DOMAIN=""
 PEM_PATH=""
 SKIP_NGINX=false
 UNINSTALL=false
-UPDATE=false  # --update: replace binary only, no interactive setup, no downtime beyond restart
+UPDATE=false        # --update:  replace binary only, brief restart
+FULL=false          # --full:    non-interactive full offline install
+NONINTERACTIVE=false
+RESTORE_ARCHIVE=""  # --restore <archive.tar.gz>
+BUNDLE=false        # --bundle [outdir]: build the offline tar.gz
+BUNDLE_OUT=""
+WANT_SSL=false      # --ssl with --full: generate self-signed cert
+
+usage() {
+  cat <<USAGE
+OffDock installer — one script for install, update, restore, and bundling.
+
+  sudo bash install.sh                      Interactive install
+  sudo bash install.sh --full [--domain D]  Non-interactive full offline install
+                                            (installs Docker+nginx+tools from ./debs,
+                                             loads ./images, verifies everything works)
+      optional: --port N  --no-nginx  --ssl
+  sudo bash install.sh --update             Replace binary + restart (no downtime setup)
+  sudo bash install.sh --restore ARCHIVE    Restore an OffDock backup .tar.gz
+  sudo bash install.sh --uninstall          Remove OffDock (keeps /var/offdock data)
+       bash install.sh --bundle [OUTDIR]    Build the offline tar.gz bundle (no root)
+
+Docs: System → System Update section in the OffDock UI.
+USAGE
+}
 
 # --- argument parsing -------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case $1 in
     --uninstall) UNINSTALL=true; shift ;;
     --update)    UPDATE=true; shift ;;
-    *) echo "Unknown argument: $1  (accepted: --uninstall | --update)" >&2; exit 1 ;;
+    --full)      FULL=true; NONINTERACTIVE=true; shift ;;
+    --restore)   RESTORE_ARCHIVE="${2:-}"; shift 2 ;;
+    --bundle)    BUNDLE=true; if [[ -n "${2:-}" && "${2:-}" != --* ]]; then BUNDLE_OUT="$2"; shift 2; else shift; fi ;;
+    --domain)    DOMAIN="${2:-}"; shift 2 ;;
+    --port)      PORT="${2:-7070}"; shift 2 ;;
+    --no-nginx)  SKIP_NGINX=true; shift ;;
+    --ssl)       WANT_SSL=true; shift ;;
+    -h|--help)   usage; exit 0 ;;
+    *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
 
-# Auto-detect update mode: if a running service + existing config found,
-# offer to do a quick update instead of full interactive setup.
-if [[ "$UPDATE" == "false" && "$UNINSTALL" == "false" ]]; then
+# Auto-detect update mode (interactive only): if a running service + existing
+# config found, offer a quick update instead of full interactive setup.
+if [[ "$UPDATE" == "false" && "$UNINSTALL" == "false" && "$NONINTERACTIVE" == "false" \
+      && "$BUNDLE" == "false" && -z "$RESTORE_ARCHIVE" ]]; then
   if systemctl is-active --quiet "${BINARY_NAME}" 2>/dev/null && [[ -f "${CONFIG_FILE}" ]]; then
     echo ""
     echo "  Existing OffDock service detected and running."
@@ -50,7 +83,8 @@ if [[ "$UPDATE" == "false" && "$UNINSTALL" == "false" ]]; then
   fi
 fi
 
-if [[ "$EUID" -ne 0 ]]; then
+# --bundle builds the offline archive and needs no root; everything else does.
+if [[ "$EUID" -ne 0 && "$BUNDLE" == "false" ]]; then
   echo "ERROR: Run as root: sudo bash install.sh" >&2; exit 1
 fi
 
@@ -83,6 +117,277 @@ _install_debs_safe() {
   dpkg --force-confold -i "${_install[@]}" 2>&1 || true
   dpkg --configure -a 2>&1 || true
 }
+
+# _hold_core_packages marks Docker + nginx packages as "hold" so that a later
+# `apt --fix-broken install` (or any dependency resolution) can never remove
+# them and take every running container down. This is the persistent guard for
+# the most common air-gapped outage. OffDock also re-asserts these holds on
+# every startup, so this is belt-and-suspenders.
+_hold_core_packages() {
+  local _pkgs=(docker-ce docker-ce-cli containerd.io docker-compose-plugin \
+               docker-buildx-plugin nginx nginx-core nginx-common)
+  local _held=()
+  for _p in "${_pkgs[@]}"; do
+    if dpkg-query -W -f='${Status}' "$_p" 2>/dev/null | grep -q "install ok installed"; then
+      apt-mark hold "$_p" >/dev/null 2>&1 && _held+=("$_p")
+    fi
+  done
+  [[ ${#_held[@]} -gt 0 ]] && echo "  Protected packages held: ${_held[*]}"
+  return 0   # never let a false [[ ]] abort the caller under set -e
+}
+
+# _install_network_tools — install bundled network/dev tool debs (tcpdump for
+# tracing, dnsutils, iproute2, iptables, conntrack, socat, etc.). Best-effort.
+_install_network_tools() {
+  if [[ -d "${SCRIPT_DIR}/debs/network" ]] && ls "${SCRIPT_DIR}/debs/network"/*.deb &>/dev/null; then
+    echo "=== Installing network/dev tools from bundle ==="
+    _install_debs_safe "${SCRIPT_DIR}/debs/network" "network tools"
+  fi
+}
+
+# _verify_tools — confirm the runtime dependencies actually work. Prints a status
+# line per tool and returns non-zero if a critical tool (docker) is broken.
+_verify_tools() {
+  echo ""
+  echo "=== Verifying tools ==="
+  local _crit_ok=true
+  if command -v docker &>/dev/null && docker info &>/dev/null; then
+    echo "  [ok]   docker runtime ($(docker --version | awk '{print $3}' | tr -d ,))"
+  else
+    echo "  [FAIL] docker not running — run: systemctl start docker" >&2; _crit_ok=false
+  fi
+  if docker compose version &>/dev/null; then
+    echo "  [ok]   docker compose plugin"
+  else
+    echo "  [warn] docker compose plugin missing — deploys will fail" >&2
+  fi
+  if command -v nginx &>/dev/null && nginx -t &>/dev/null; then
+    echo "  [ok]   nginx config valid"
+  elif command -v nginx &>/dev/null; then
+    echo "  [warn] nginx installed but 'nginx -t' failed" >&2
+  else
+    echo "  [warn] nginx not installed (reverse proxy disabled)"
+  fi
+  for _t in tcpdump nsenter ip iptables dig; do
+    if command -v "$_t" &>/dev/null; then echo "  [ok]   $_t"; else echo "  [warn] $_t missing (some features limited)"; fi
+  done
+  $_crit_ok
+}
+
+# do_restore ARCHIVE — restore an OffDock backup .tar.gz produced by the UI.
+# Archive layout: data/*.db, projects/<id>/, certs/, nginx/, config/config.yaml,
+# volumes/<name>.tar.gz, MANIFEST.json.
+do_restore() {
+  set +e   # explicit error handling below; don't abort on benign non-zero
+  local _arc="$1"
+  [[ -f "$_arc" ]] || { echo "ERROR: archive not found: $_arc" >&2; exit 1; }
+  echo "=== Restoring OffDock backup: $_arc ==="
+  local _tmp; _tmp="$(mktemp -d)"
+  trap 'rm -rf "$_tmp"' EXIT
+  tar xzf "$_arc" -C "$_tmp" || { echo "ERROR: extract failed" >&2; exit 1; }
+
+  systemctl stop "${BINARY_NAME}" 2>/dev/null || true
+
+  # Database + projects + certs.
+  [[ -d "$_tmp/data"     ]] && { mkdir -p "$DATA_DIR";     cp -a "$_tmp/data/."     "$DATA_DIR/"     && echo "  restored database"; }
+  [[ -d "$_tmp/projects" ]] && { mkdir -p "$PROJECTS_DIR"; cp -a "$_tmp/projects/." "$PROJECTS_DIR/" && echo "  restored projects"; }
+  [[ -d "$_tmp/certs"    ]] && { mkdir -p "$CERTS_DIR";    cp -a "$_tmp/certs/."    "$CERTS_DIR/"    && echo "  restored certs"; }
+  # nginx vhosts.
+  if [[ -d "$_tmp/nginx" ]]; then
+    mkdir -p /etc/nginx/sites-available
+    cp -a "$_tmp/nginx/." /etc/nginx/sites-available/ && echo "  restored nginx vhosts"
+  fi
+  # config.yaml (plaintext only; encrypted .enc must be restored from the UI).
+  if [[ -f "$_tmp/config/config.yaml" ]]; then
+    mkdir -p "$CONFIG_DIR"; cp -a "$_tmp/config/config.yaml" "$CONFIG_FILE" && chmod 600 "$CONFIG_FILE" && echo "  restored config.yaml"
+  elif [[ -f "$_tmp/config/config.yaml.enc" ]]; then
+    echo "  note: config is encrypted (config.yaml.enc) — restore it from the UI on the original machine."
+  fi
+  # Docker volumes.
+  if [[ -d "$_tmp/volumes" ]] && command -v docker &>/dev/null; then
+    for _vt in "$_tmp/volumes"/*.tar.gz; do
+      [[ -f "$_vt" ]] || continue
+      local _vn; _vn="$(basename "$_vt" .tar.gz)"
+      docker volume create "$_vn" >/dev/null 2>&1 || true
+      if docker run --rm -v "$_vn":/to -v "$_tmp/volumes":/backup:ro alpine \
+           sh -c "rm -rf /to/* 2>/dev/null; tar xzf /backup/$(basename "$_vt") -C /to" 2>/dev/null; then
+        echo "  restored volume: $_vn"
+      else
+        echo "  WARN: could not restore volume $_vn (is the 'alpine' image loaded?)" >&2
+      fi
+    done
+  fi
+
+  systemctl start "${BINARY_NAME}" 2>/dev/null || true
+  echo "Restore complete. OffDock will reconcile projects + nginx on startup."
+  exit 0
+}
+
+# do_bundle [OUTDIR] — assemble the offline tar.gz (binary + frontend embedded,
+# install.sh, service, debs/, images/, VERSION). Runs without root.
+do_bundle() {
+  local _out="${1:-./offdock-offline-$(date +%Y%m%d)}"
+  echo "=== Building offline bundle: ${_out}.tar.gz ==="
+  local _stage; _stage="$(mktemp -d)"
+  local _dst="$_stage/offdock-bundle"
+  mkdir -p "$_dst"
+
+  if [[ ! -f "${SCRIPT_DIR}/${BINARY_NAME}" ]]; then
+    echo "ERROR: ${BINARY_NAME} binary not built. Run: make all (or go build -o offdock ./cmd/offdock)" >&2
+    exit 1
+  fi
+  cp "${SCRIPT_DIR}/${BINARY_NAME}"      "$_dst/"
+  cp "${SCRIPT_DIR}/install.sh"          "$_dst/"
+  cp "${SCRIPT_DIR}/offdock.service"     "$_dst/"
+  [[ -d "${SCRIPT_DIR}/debs"   ]] && cp -a "${SCRIPT_DIR}/debs"   "$_dst/"
+  [[ -d "${SCRIPT_DIR}/images" ]] && cp -a "${SCRIPT_DIR}/images" "$_dst/"
+  [[ -d "${SCRIPT_DIR}/assets" ]] && { mkdir -p "$_dst/images"; cp -a "${SCRIPT_DIR}/assets/"*.tar "$_dst/images/" 2>/dev/null || true; }
+  ( cd "${SCRIPT_DIR}" && git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d ) > "$_dst/VERSION"
+
+  mkdir -p "$(dirname "$_out")"
+  tar czf "${_out}.tar.gz" -C "$_stage" offdock-bundle
+  rm -rf "$_stage"
+  echo "  Bundle: ${_out}.tar.gz ($(du -h "${_out}.tar.gz" | cut -f1))"
+  echo "  Install on target:  sudo bash install.sh --full --domain <your-domain>"
+  exit 0
+}
+
+# do_full_install — non-interactive full offline install. Installs Docker, nginx,
+# and network tools from ./debs, loads ./images, writes config, installs the
+# binary + service, configures nginx, verifies everything, and starts OffDock.
+do_full_install() {
+  # This installer handles its own errors (|| true, explicit checks). Disable
+  # set -e so a single benign non-zero (e.g. nothing-to-hold, inactive service
+  # during the wait loop) cannot abort the whole install midway.
+  set +e
+  local _ip; _ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  [[ -z "$DOMAIN" ]] && DOMAIN="$_ip"
+  echo ""
+  echo "╔══════════════════════════════════════════════════╗"
+  echo "║        OffDock Full Offline Install              ║"
+  echo "╚══════════════════════════════════════════════════╝"
+  echo "  Domain: ${DOMAIN}   Port: ${PORT}   nginx: $([[ "$SKIP_NGINX" == true ]] && echo off || echo on)"
+
+  # Required artifacts.
+  [[ -f "${SCRIPT_DIR}/${BINARY_NAME}" ]] || { echo "ERROR: ${BINARY_NAME} binary missing in bundle" >&2; exit 1; }
+
+  # Docker.
+  echo "=== Docker ==="
+  if command -v docker &>/dev/null && docker info &>/dev/null; then
+    echo "  Docker already running: $(docker --version)"
+  elif [[ -d "${SCRIPT_DIR}/debs/docker" ]] && ls "${SCRIPT_DIR}/debs/docker"/*.deb &>/dev/null; then
+    _install_debs_safe "${SCRIPT_DIR}/debs/docker" "Docker"
+  else
+    echo "ERROR: Docker not available and no debs/docker bundled." >&2; exit 1
+  fi
+  systemctl enable --now docker 2>/dev/null || true
+  _hold_core_packages
+
+  # Bundled images.
+  if [[ -d "${SCRIPT_DIR}/images" ]] && ls "${SCRIPT_DIR}/images"/*.tar &>/dev/null 2>&1; then
+    echo "=== Loading bundled images ==="
+    for _img in "${SCRIPT_DIR}/images/"*.tar; do docker load -i "${_img}" 2>/dev/null && echo "  loaded $(basename "$_img")" || true; done
+  fi
+
+  # nginx.
+  if [[ "$SKIP_NGINX" == false ]]; then
+    echo "=== nginx ==="
+    if command -v nginx &>/dev/null; then
+      echo "  nginx already installed"
+    elif [[ -d "${SCRIPT_DIR}/debs/nginx" ]] && ls "${SCRIPT_DIR}/debs/nginx"/*.deb &>/dev/null; then
+      _install_debs_safe "${SCRIPT_DIR}/debs/nginx" "nginx"
+    fi
+    command -v nginx &>/dev/null && { systemctl enable --now nginx 2>/dev/null || true; _hold_core_packages; } || SKIP_NGINX=true
+  fi
+
+  # Network/dev tools.
+  _install_network_tools
+
+  # Config (generate jwt secret if new).
+  echo "=== Config ==="
+  mkdir -p "${CONFIG_DIR}"
+  if [[ ! -f "${CONFIG_FILE}" ]]; then
+    local _jwt; _jwt="$(head -c48 /dev/urandom | base64 | tr -d '\n/+=')"
+    cat > "${CONFIG_FILE}" <<EOF
+port: ${PORT}
+data_dir: ${DATA_DIR}
+log_dir: ${LOG_DIR}
+log_level: info
+jwt_secret: "${_jwt}"
+default_pem_path: "${PEM_PATH}"
+EOF
+    chmod 600 "${CONFIG_FILE}"
+    echo "  wrote ${CONFIG_FILE}"
+  else
+    echo "  keeping existing ${CONFIG_FILE}"
+  fi
+  for _d in "${DATA_DIR}" "${LOG_DIR}" "${CERTS_DIR}" "${PROJECTS_DIR}"; do mkdir -p "$_d"; chmod 700 "$_d"; done
+
+  # Binary + service (atomic replace).
+  echo "=== Binary + service ==="
+  systemctl stop "${BINARY_NAME}" 2>/dev/null || true
+  cp "${SCRIPT_DIR}/${BINARY_NAME}" "${INSTALL_BIN}.tmp"; chmod 755 "${INSTALL_BIN}.tmp"; mv -f "${INSTALL_BIN}.tmp" "${INSTALL_BIN}"
+  cp "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}"; chmod 644 "${SERVICE_FILE}"
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable "${BINARY_NAME}" 2>/dev/null || true
+
+  # nginx vhost (HTTP) — name-based, never collides with an existing default.
+  if [[ "$SKIP_NGINX" == false ]] && command -v nginx &>/dev/null; then
+    echo "=== nginx vhost ==="
+    cat > /etc/nginx/sites-available/offdock-self.conf <<NGX
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    server_tokens off;
+    client_max_body_size 6g;
+    location / {
+        proxy_pass http://127.0.0.1:${PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_buffering off;
+    }
+}
+NGX
+    mkdir -p /etc/nginx/sites-enabled
+    ln -sf /etc/nginx/sites-available/offdock-self.conf /etc/nginx/sites-enabled/offdock-self.conf
+    if nginx -t 2>/dev/null; then systemctl reload nginx 2>/dev/null || true; echo "  nginx → ${DOMAIN}:${PORT}"; else
+      echo "  WARNING: nginx -t failed; removing OffDock vhost to protect your config" >&2
+      rm -f /etc/nginx/sites-enabled/offdock-self.conf /etc/nginx/sites-available/offdock-self.conf
+    fi
+  fi
+
+  # Start + wait.
+  echo "=== Starting OffDock ==="
+  systemctl start "${BINARY_NAME}" 2>/dev/null || true
+  local _up=false
+  for _i in $(seq 1 15); do sleep 1; systemctl is-active --quiet "${BINARY_NAME}" 2>/dev/null && { _up=true; break; }; done
+
+  _verify_tools || true
+
+  if [[ "$_up" == true ]]; then
+    echo ""
+    echo "OffDock running:  http://${DOMAIN}/   (direct: http://${_ip}:${PORT})"
+    echo "Next: open the UI and go to /setup to create the admin account."
+  else
+    echo "ERROR: OffDock failed to start — journalctl -u offdock -n 50" >&2; exit 1
+  fi
+  exit 0
+}
+
+# --- bundle path (no root) --------------------------------------------------
+if [[ "$BUNDLE" == "true" ]]; then
+  do_bundle "$BUNDLE_OUT"
+fi
+
+# --- restore path -----------------------------------------------------------
+if [[ -n "$RESTORE_ARCHIVE" ]]; then
+  do_restore "$RESTORE_ARCHIVE"
+fi
 
 # --- uninstall path ---------------------------------------------------------
 if [[ "$UNINSTALL" == "true" ]]; then
@@ -179,6 +484,13 @@ if [[ "$UPDATE" == "true" ]]; then
     exit 1
   fi
   exit 0
+fi
+
+# ============================================================================
+# FULL OFFLINE INSTALL (non-interactive) — exits when done
+# ============================================================================
+if [[ "$FULL" == "true" ]]; then
+  do_full_install
 fi
 
 SERVER_IP=$(hostname -I | awk '{print $1}')
@@ -411,11 +723,12 @@ elif [[ -d "${SCRIPT_DIR}/debs/docker" ]] && ls "${SCRIPT_DIR}/debs/docker"/*.de
   echo "  Docker installed: $(docker --version)"
 else
   echo "ERROR: Docker not installed and no offline packages found in ./debs/docker/" >&2
-  echo "       Run: bash prepare-usb.sh --only-docker  (on an internet machine)" >&2
+  echo "       Build a bundle on an internet machine: bash install.sh --bundle" >&2
   exit 1
 fi
 systemctl enable docker 2>/dev/null || true
 systemctl start  docker 2>/dev/null || true
+_hold_core_packages
 
 # Load any bundled Docker images
 if [[ -d "${SCRIPT_DIR}/images" ]] && ls "${SCRIPT_DIR}/images"/*.tar &>/dev/null 2>&1; then
@@ -449,6 +762,7 @@ if [[ "$SKIP_NGINX" == "false" ]]; then
   if [[ "$SKIP_NGINX" == "false" ]]; then
     systemctl enable nginx 2>/dev/null || true
     systemctl start  nginx 2>/dev/null || true
+    _hold_core_packages
     echo "  nginx running."
   fi
 fi
