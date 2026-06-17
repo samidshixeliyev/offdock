@@ -33,22 +33,31 @@ RESTORE_ARCHIVE=""  # --restore <archive.tar.gz>
 BUNDLE=false        # --bundle [outdir]: build the offline tar.gz
 BUNDLE_OUT=""
 WANT_SSL=false      # --ssl with --full: generate self-signed cert
+NGINX_CONF=""       # --nginx-conf PATH: install a custom vhost instead of generated
 
 usage() {
   cat <<USAGE
 OffDock installer — one script for install, update, restore, and bundling.
 
-  sudo bash install.sh                      Interactive install
+  sudo bash install.sh                      Interactive install (asks about SSL)
   sudo bash install.sh --full [--domain D]  Non-interactive full offline install
                                             (installs Docker+nginx+tools from ./debs,
                                              loads ./images, verifies everything works)
-      optional: --port N  --no-nginx  --ssl
+      SSL/nginx options (all optional):
+        --ssl                Generate a self-signed cert and serve HTTPS
+        --pem PATH           Use an existing combined PEM (cert chain + key) for HTTPS
+        --nginx-conf PATH    Install your own nginx vhost instead of the generated one
+        --port N  --no-nginx
   sudo bash install.sh --update             Replace binary + restart (no downtime setup)
   sudo bash install.sh --restore ARCHIVE    Restore an OffDock backup .tar.gz
   sudo bash install.sh --uninstall          Remove OffDock (keeps /var/offdock data)
        bash install.sh --bundle [OUTDIR]    Build the offline tar.gz bundle (no root)
 
-Docs: System → System Update section in the OffDock UI.
+Bundle conventions (auto-detected for --full):
+  certs/offdock.pem   → used as the HTTPS PEM if present (no --pem needed)
+  nginx/*.conf        → installed as custom vhost(s) if present
+
+Docs: System → System Update section, or the Docs page, in the OffDock UI.
 USAGE
 }
 
@@ -64,6 +73,8 @@ while [[ $# -gt 0 ]]; do
     --port)      PORT="${2:-7070}"; shift 2 ;;
     --no-nginx)  SKIP_NGINX=true; shift ;;
     --ssl)       WANT_SSL=true; shift ;;
+    --pem)       PEM_PATH="${2:-}"; shift 2 ;;
+    --nginx-conf) NGINX_CONF="${2:-}"; shift 2 ;;
     -h|--help)   usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
   esac
@@ -134,6 +145,39 @@ _hold_core_packages() {
   done
   [[ ${#_held[@]} -gt 0 ]] && echo "  Protected packages held: ${_held[*]}"
   return 0   # never let a false [[ ]] abort the caller under set -e
+}
+
+# _gen_self_signed PEM_OUT CN — generate a self-signed combined PEM (key+cert)
+# covering the given CN plus the server IP. Best-effort; needs openssl.
+_gen_self_signed() {
+  local _out="$1" _cn="$2"
+  command -v openssl &>/dev/null || { echo "  openssl missing — cannot generate cert" >&2; return 1; }
+  local _ip; _ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  local _k _c; _k="$(mktemp)"; _c="$(mktemp)"
+  local _cnf; _cnf="$(mktemp)"
+  cat > "$_cnf" <<CNF
+[req]
+prompt=no
+default_bits=2048
+default_md=sha256
+distinguished_name=dn
+x509_extensions=v3
+[dn]
+CN=${_cn}
+[v3]
+subjectAltName=@alt
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+basicConstraints=CA:FALSE
+[alt]
+DNS.1=${_cn}
+IP.1=${_ip:-127.0.0.1}
+CNF
+  openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -keyout "$_k" -out "$_c" -config "$_cnf" 2>/dev/null || { rm -f "$_k" "$_c" "$_cnf"; return 1; }
+  mkdir -p "$(dirname "$_out")"
+  cat "$_k" "$_c" > "$_out"; chmod 600 "$_out"
+  rm -f "$_k" "$_c" "$_cnf"
+  echo "  generated self-signed cert: $_out (CN=${_cn})"
 }
 
 # _install_network_tools — install bundled network/dev tool debs (tcpdump for
@@ -242,6 +286,10 @@ do_bundle() {
   [[ -d "${SCRIPT_DIR}/debs"   ]] && cp -a "${SCRIPT_DIR}/debs"   "$_dst/"
   [[ -d "${SCRIPT_DIR}/images" ]] && cp -a "${SCRIPT_DIR}/images" "$_dst/"
   [[ -d "${SCRIPT_DIR}/assets" ]] && { mkdir -p "$_dst/images"; cp -a "${SCRIPT_DIR}/assets/"*.tar "$_dst/images/" 2>/dev/null || true; }
+  # Optional: bundle a custom PEM (certs/offdock.pem) and/or custom nginx
+  # vhost(s) (nginx/*.conf). --full auto-detects and uses them.
+  [[ -d "${SCRIPT_DIR}/certs" ]] && cp -a "${SCRIPT_DIR}/certs" "$_dst/"
+  [[ -d "${SCRIPT_DIR}/nginx" ]] && cp -a "${SCRIPT_DIR}/nginx" "$_dst/"
   ( cd "${SCRIPT_DIR}" && git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d ) > "$_dst/VERSION"
 
   mkdir -p "$(dirname "$_out")"
@@ -303,6 +351,20 @@ do_full_install() {
   # Network/dev tools.
   _install_network_tools
 
+  # ── Resolve SSL/PEM ───────────────────────────────────────────────────────
+  # Priority: --pem PATH  >  bundle certs/offdock.pem  >  --ssl (generate).
+  for _d in "${DATA_DIR}" "${LOG_DIR}" "${CERTS_DIR}" "${PROJECTS_DIR}"; do mkdir -p "$_d"; chmod 700 "$_d"; done
+  if [[ -n "$PEM_PATH" ]]; then
+    if [[ -f "$PEM_PATH" ]]; then echo "=== SSL: using provided PEM $PEM_PATH ==="
+    else echo "  WARNING: --pem $PEM_PATH not found — continuing HTTP only" >&2; PEM_PATH=""; fi
+  elif [[ -f "${SCRIPT_DIR}/certs/offdock.pem" ]]; then
+    PEM_PATH="${CERTS_DIR}/offdock.pem"; cp "${SCRIPT_DIR}/certs/offdock.pem" "$PEM_PATH"; chmod 600 "$PEM_PATH"
+    echo "=== SSL: using bundled certs/offdock.pem ==="
+  elif [[ "$WANT_SSL" == true ]]; then
+    echo "=== SSL: generating self-signed cert ==="
+    _gen_self_signed "${CERTS_DIR}/offdock.pem" "${DOMAIN}" && PEM_PATH="${CERTS_DIR}/offdock.pem" || PEM_PATH=""
+  fi
+
   # Config (generate jwt secret if new).
   echo "=== Config ==="
   mkdir -p "${CONFIG_DIR}"
@@ -331,31 +393,87 @@ EOF
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable "${BINARY_NAME}" 2>/dev/null || true
 
-  # nginx vhost (HTTP) — name-based, never collides with an existing default.
+  # nginx vhost — custom file, or generated HTTP/HTTPS. Name-based, so it never
+  # collides with an existing default_server.
   if [[ "$SKIP_NGINX" == false ]] && command -v nginx &>/dev/null; then
     echo "=== nginx vhost ==="
-    cat > /etc/nginx/sites-available/offdock-self.conf <<NGX
-server {
-    listen 80;
-    server_name ${DOMAIN};
-    server_tokens off;
-    client_max_body_size 6g;
-    location / {
+    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+    local _proxy="    location / {
         proxy_pass http://127.0.0.1:${PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_set_header Connection \"upgrade\";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_buffering off;
-    }
+    }"
+
+    # 1) A user-provided custom vhost (--nginx-conf or bundle nginx/*.conf) wins.
+    local _custom=""
+    [[ -n "$NGINX_CONF" && -f "$NGINX_CONF" ]] && _custom="$NGINX_CONF"
+    if [[ -z "$_custom" && -d "${SCRIPT_DIR}/nginx" ]]; then
+      _custom="$(ls "${SCRIPT_DIR}/nginx/"*.conf 2>/dev/null | head -1)"
+    fi
+
+    if [[ -n "$_custom" ]]; then
+      cp "$_custom" /etc/nginx/sites-available/offdock-self.conf
+      echo "  using custom nginx vhost: $_custom"
+    elif [[ -n "$PEM_PATH" ]]; then
+      # 2) HTTPS vhost (HTTP → HTTPS redirect + 443 ssl).
+      cat > /etc/nginx/sites-available/offdock-self.conf <<NGX
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    server_tokens off;
+    return 301 https://\$host\$request_uri;
+}
+server {
+    listen 443 ssl http2;
+    server_name ${DOMAIN};
+    server_tokens off;
+    client_max_body_size 6g;
+    ssl_certificate     ${PEM_PATH};
+    ssl_certificate_key ${PEM_PATH};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+${_proxy}
 }
 NGX
-    mkdir -p /etc/nginx/sites-enabled
+      echo "  HTTPS vhost → ${DOMAIN} (PEM ${PEM_PATH})"
+    else
+      # 3) Plain HTTP vhost.
+      cat > /etc/nginx/sites-available/offdock-self.conf <<NGX
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    server_tokens off;
+    client_max_body_size 6g;
+${_proxy}
+}
+NGX
+      echo "  HTTP vhost → ${DOMAIN}:${PORT}"
+    fi
+
     ln -sf /etc/nginx/sites-available/offdock-self.conf /etc/nginx/sites-enabled/offdock-self.conf
-    if nginx -t 2>/dev/null; then systemctl reload nginx 2>/dev/null || true; echo "  nginx → ${DOMAIN}:${PORT}"; else
+    # Disable the stock default site (it also grabs :80 with its own server).
+    [[ -L /etc/nginx/sites-enabled/default ]] && rm -f /etc/nginx/sites-enabled/default
+
+    if nginx -t 2>/dev/null; then
+      systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+      # Verify nginx actually came up — the usual failure is another process
+      # (often a published Docker container) already holding :80/:443.
+      if ! systemctl is-active --quiet nginx 2>/dev/null; then
+        local _busy; _busy="$(ss -ltnp 2>/dev/null | grep -E ':80 |:443 ' | grep -v nginx | head -2)"
+        echo "  WARNING: nginx could not start — ports 80/443 appear to be in use:" >&2
+        [[ -n "$_busy" ]] && echo "$_busy" | sed 's/^/    /' >&2
+        echo "    Free those ports (e.g. stop the container publishing them) and run:" >&2
+        echo "      systemctl restart nginx" >&2
+        echo "    OffDock is still reachable directly at http://${_ip}:${PORT}" >&2
+      fi
+    else
       echo "  WARNING: nginx -t failed; removing OffDock vhost to protect your config" >&2
       rm -f /etc/nginx/sites-enabled/offdock-self.conf /etc/nginx/sites-available/offdock-self.conf
     fi
@@ -370,8 +488,9 @@ NGX
   _verify_tools || true
 
   if [[ "$_up" == true ]]; then
+    local _proto="http"; [[ -n "$PEM_PATH" ]] && _proto="https"
     echo ""
-    echo "OffDock running:  http://${DOMAIN}/   (direct: http://${_ip}:${PORT})"
+    echo "OffDock running:  ${_proto}://${DOMAIN}/   (direct: http://${_ip}:${PORT})"
     echo "Next: open the UI and go to /setup to create the admin account."
   else
     echo "ERROR: OffDock failed to start — journalctl -u offdock -n 50" >&2; exit 1
