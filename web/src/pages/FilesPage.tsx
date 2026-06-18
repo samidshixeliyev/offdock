@@ -217,7 +217,8 @@ function ContentViewer({ file, onClose, onEdit }: {
 // ─── Quick paths sidebar ──────────────────────────────────────────────────────
 const QUICK_PATHS = [
   { label: 'Root', path: '/', icon: '/' },
-  { label: 'Home', path: '/root', icon: '~' },
+  { label: '/root', path: '/root', icon: '~' },
+  { label: '/home/ubuntu', path: '/home/ubuntu', icon: '⌂' },
   { label: 'OffDock data', path: '/var/offdock', icon: '⬡' },
   { label: 'OffDock config', path: '/etc/offdock', icon: '⚙' },
   { label: 'Nginx', path: '/etc/nginx', icon: '⇄' },

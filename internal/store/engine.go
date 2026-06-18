@@ -18,6 +18,8 @@ const (
 	recordTypeDeleted = byte(1)
 	// headerSize = 4 (payload len) + 1 (type) + 4 (CRC32) = 9 bytes
 	headerSize = 9
+	// maxPayloadLen guards against corrupted length fields causing huge allocations.
+	maxPayloadLen = 64 << 20 // 64 MB
 )
 
 // ErrNotFound is returned when an entity does not exist in the collection.
@@ -141,6 +143,81 @@ func (c *Collection[T]) Count() int {
 	return len(c.data)
 }
 
+// Compact rewrites the log file containing only the live (active) records,
+// discarding all tombstones and superseded versions. This reclaims disk space
+// and shrinks startup replay time/memory for append-heavy collections.
+//
+// It writes a fresh file atomically (write-then-rename) per the project's file
+// constraint, then reopens the append handle on the new file. Returns the number
+// of bytes reclaimed (old size minus new size).
+func (c *Collection[T]) Compact() (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	oldSize := int64(0)
+	if fi, err := os.Stat(c.path); err == nil {
+		oldSize = fi.Size()
+	}
+
+	tmp := c.path + ".compact"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return 0, fmt.Errorf("compact open tmp: %w", err)
+	}
+
+	for _, entity := range c.data {
+		payload, err := json.Marshal(entity)
+		if err != nil {
+			out.Close()
+			os.Remove(tmp) //nolint:errcheck
+			return 0, fmt.Errorf("compact marshal: %w", err)
+		}
+		header := make([]byte, headerSize)
+		binary.LittleEndian.PutUint32(header[0:4], uint32(len(payload)))
+		header[4] = recordTypeActive
+		binary.LittleEndian.PutUint32(header[5:9], crc32.ChecksumIEEE(payload))
+		if _, err := out.Write(append(header, payload...)); err != nil {
+			out.Close()
+			os.Remove(tmp) //nolint:errcheck
+			return 0, fmt.Errorf("compact write: %w", err)
+		}
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		os.Remove(tmp) //nolint:errcheck
+		return 0, fmt.Errorf("compact sync: %w", err)
+	}
+	out.Close()
+
+	// Swap the append handle to the new file. Close the current handle first so
+	// the rename succeeds on platforms that lock open files.
+	if c.f != nil {
+		c.f.Close() //nolint:errcheck
+		c.f = nil
+	}
+	if err := os.Rename(tmp, c.path); err != nil {
+		// Best effort: reopen original so the collection stays usable.
+		c.f, _ = os.OpenFile(c.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+		os.Remove(tmp) //nolint:errcheck
+		return 0, fmt.Errorf("compact rename: %w", err)
+	}
+	f, err := os.OpenFile(c.path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return 0, fmt.Errorf("compact reopen: %w", err)
+	}
+	c.f = f
+
+	newSize := int64(0)
+	if fi, err := os.Stat(c.path); err == nil {
+		newSize = fi.Size()
+	}
+	reclaimed := oldSize - newSize
+	if reclaimed < 0 {
+		reclaimed = 0
+	}
+	return reclaimed, nil
+}
+
 // --- internal ------------------------------------------------------------------
 
 func (c *Collection[T]) load() error {
@@ -160,6 +237,10 @@ func (c *Collection[T]) load() error {
 		}
 
 		payloadLen := binary.LittleEndian.Uint32(header[0:4])
+		if payloadLen > maxPayloadLen {
+			// Corrupted length field — stop replaying to avoid OOM.
+			break
+		}
 		recordType := header[4]
 		expectedCRC := binary.LittleEndian.Uint32(header[5:9])
 
@@ -189,6 +270,9 @@ func (c *Collection[T]) load() error {
 }
 
 func (c *Collection[T]) appendRecord(recordType byte, entity T) error {
+	if c.f == nil {
+		return fmt.Errorf("collection %s: file handle is nil (compact may have failed)", c.path)
+	}
 	payload, err := json.Marshal(entity)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)

@@ -29,12 +29,17 @@ type H struct {
 	hub            *sse.Hub
 	projectsDir    string
 	dataDir        string
+	logDir         string
 	defaultPEMPath string
 	mailer         *mailer.Mailer
-	smtpSettings   store.SMTPSettings
-	oauthSettings  store.OAuthSettings
-	deployCancels  sync.Map // streamKey → context.CancelFunc
+	// settingsMu guards smtpSettings and oauthSettings — both can be read by
+	// concurrent HTTP requests and written by their respective Save handlers.
+	settingsMu    sync.RWMutex
+	smtpSettings  store.SMTPSettings
+	oauthSettings store.OAuthSettings
+	deployCancels  sync.Map  // streamKey → context.CancelFunc
 	limiter        *authmw.LoginLimiter
+	spanPruneMu    sync.Mutex // prevents concurrent PruneOTelSpans goroutines
 }
 
 // New returns an initialised handler bundle.
@@ -48,6 +53,7 @@ func New(
 	hub *sse.Hub,
 	projectsDir string,
 	dataDir string,
+	logDir string,
 	defaultPEMPath string,
 	m *mailer.Mailer,
 	smtpSettings store.SMTPSettings,
@@ -63,6 +69,7 @@ func New(
 		hub:            hub,
 		projectsDir:    projectsDir,
 		dataDir:        dataDir,
+		logDir:         logDir,
 		defaultPEMPath: defaultPEMPath,
 		mailer:         m,
 		smtpSettings:   smtpSettings,

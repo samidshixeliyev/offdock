@@ -27,6 +27,9 @@ const (
 	PermManageFiles    Permission = "manage_files"     // write/delete files
 	PermManageProjects Permission = "manage_projects"  // create/delete projects
 	PermManageDNS      Permission = "manage_dns"       // create/manage DNS tickets
+	PermManagePackages Permission = "manage_packages"  // install/fix .deb packages on host
+	PermManageBackups  Permission = "manage_backups"   // create/restore/schedule backups
+	PermSystemMaint    Permission = "system_maint"     // reconcile, optimize, compact
 )
 
 // AllPermissions lists every grantable capability (for UI + validation).
@@ -34,6 +37,7 @@ var AllPermissions = []Permission{
 	PermManageProjects, PermDeploy, PermEditCompose, PermEditEnv,
 	PermManageProxy, PermManageNetwork, PermManageImages,
 	PermContainerOps, PermTerminal, PermManageFiles, PermManageDNS,
+	PermManagePackages, PermManageBackups, PermSystemMaint,
 }
 
 // User represents an OffDock operator account.
@@ -57,9 +61,33 @@ type User struct {
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 	Active        bool      `json:"active"`
+	// HostTerminalAccess controls the root host shell gate for this user:
+	//   ""/"otp" → email OTP required (default)
+	//   "bypass" → skip OTP (still needs the terminal permission)
+	//   "disabled" → may never open the host shell
+	HostTerminalAccess string `json:"host_terminal_access"`
 }
 
 func (u User) GetID() string { return u.ID }
+
+// HostTerminalMode constants for User.HostTerminalAccess.
+const (
+	HostTermOTP      = "otp"
+	HostTermBypass   = "bypass"
+	HostTermDisabled = "disabled"
+)
+
+// EffectiveHostTerminalMode returns the resolved mode, defaulting to OTP.
+func (u User) EffectiveHostTerminalMode() string {
+	switch u.HostTerminalAccess {
+	case HostTermBypass:
+		return HostTermBypass
+	case HostTermDisabled:
+		return HostTermDisabled
+	default:
+		return HostTermOTP
+	}
+}
 
 // CustomRole is a named, superadmin-defined permission set.
 type CustomRole struct {
@@ -83,6 +111,9 @@ type Session struct {
 	CreatedAt time.Time `json:"created_at"`
 	LastSeen  time.Time `json:"last_seen"`
 	Revoked   bool      `json:"revoked"`
+	// IDToken is the OIDC id_token captured at OAuth login, used as id_token_hint
+	// for RP-initiated logout. Empty for password logins. Never sent to the client.
+	IDToken string `json:"id_token,omitempty"`
 }
 
 func (s Session) GetID() string { return s.ID }
@@ -134,8 +165,11 @@ type ComposeConfig struct {
 	ProjectID string    `json:"project_id"`
 	Version   int       `json:"version"`
 	RawYAML   string    `json:"raw_yaml"`
-	CreatedAt time.Time `json:"created_at"`
-	CreatedBy string    `json:"created_by"`
+	// ContentHash is the sha256 of the normalized RawYAML, used to skip creating
+	// a new version when the content is unchanged. Empty on legacy records.
+	ContentHash string    `json:"content_hash"`
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedBy   string    `json:"created_by"`
 }
 
 func (c ComposeConfig) GetID() string { return c.ID }
@@ -155,8 +189,13 @@ type EnvVarSet struct {
 	ProjectID string    `json:"project_id"`
 	Version   int       `json:"version"`
 	Vars      []EnvVar  `json:"vars"`
-	CreatedAt time.Time `json:"created_at"`
-	CreatedBy string    `json:"created_by"`
+	// ContentHash is the sha256 of the canonical *decrypted* plaintext form of
+	// Vars (sorted by key). It is computed by the handler at save time because
+	// the store cannot decrypt. Used to skip creating an unchanged version.
+	// Ciphertext is non-deterministic (random GCM nonce), so it cannot be hashed.
+	ContentHash string    `json:"content_hash"`
+	CreatedAt   time.Time `json:"created_at"`
+	CreatedBy   string    `json:"created_by"`
 }
 
 func (e EnvVarSet) GetID() string { return e.ID }
@@ -214,6 +253,10 @@ type DeploymentRecord struct {
 	StartedAt         time.Time        `json:"started_at"`
 	FinishedAt        *time.Time       `json:"finished_at"`
 	LogText           string           `json:"log_text"`
+	// IsRollback marks deployments triggered via the rollback flow; RollbackOf
+	// names the tag/deployment they restored (for history readability).
+	IsRollback bool   `json:"is_rollback"`
+	RollbackOf string `json:"rollback_of"`
 }
 
 func (d DeploymentRecord) GetID() string { return d.ID }
@@ -225,9 +268,32 @@ func (d DeploymentRecord) GetID() string { return d.ID }
 type DeploySettings struct {
 	ID                string `json:"id"`
 	ProjectID         string `json:"project_id"`
-	HealthTimeoutSecs int    `json:"health_timeout_secs"` // default 120
-	DeployTimeoutSecs int    `json:"deploy_timeout_secs"` // default 300
-	HealthStableSecs  int    `json:"health_stable_secs"`  // default 5
+	HealthTimeoutSecs int    `json:"health_timeout_secs"`   // default 120
+	DeployTimeoutSecs int    `json:"deploy_timeout_secs"`   // default 300
+	HealthStableSecs  int    `json:"health_stable_secs"`    // default 5
+	WebhookURL        string `json:"webhook_url,omitempty"` // HTTP POST on deploy complete/fail
+	// RollbackOnFailure, when true, automatically re-deploys the previously
+	// successful compose+env version if a deploy fails its health check.
+	RollbackOnFailure bool `json:"rollback_on_failure"`
+	// Network config injected into every service of the compose file at deploy
+	// time (the raw YAML in the DB is left untouched). For offline name
+	// resolution between containers and host.
+	DNSServers []string `json:"dns_servers"` // e.g. ["10.0.0.53"]
+	DNSSearch  []string `json:"dns_search"`  // e.g. ["corp.local"]
+	ExtraHosts []string `json:"extra_hosts"` // "host:ip" entries
+
+	// OpenTelemetry auto-instrumentation — one toggle, everything auto-configured.
+	// When enabled, OffDock injects OTEL_* env vars and generates a compose override
+	// that mounts the language tracer and joins the offdock-otel Docker network so
+	// containers can reach OffDock's native OTLP receiver.
+	OTelEnabled bool `json:"otel_enabled,omitempty"`
+
+	// OTelLanguageOverrides lets operators pin the runtime language for a specific
+	// service rather than relying on image-name auto-detection.
+	// Key = service name (from compose), value = "java"|"nodejs"|"php"|"python"|"ruby"|"dotnet"|"go"|"none".
+	// "none" explicitly disables injection for that service.
+	// Missing keys fall back to auto-detection.
+	OTelLanguageOverrides map[string]string `json:"otel_language_overrides,omitempty"`
 }
 
 func (d DeploySettings) GetID() string { return d.ID }
@@ -297,6 +363,7 @@ type OTPChallenge struct {
 	Purpose   string    `json:"purpose" msgpack:"purpose"` // "terminal"
 	ExpiresAt time.Time `json:"expires_at" msgpack:"expires_at"`
 	Used      bool      `json:"used" msgpack:"used"`
+	Attempts  int       `json:"attempts,omitempty" msgpack:"attempts,omitempty"`
 	CreatedAt time.Time `json:"created_at" msgpack:"created_at"`
 }
 
@@ -370,6 +437,41 @@ type TraceSession struct {
 
 func (t TraceSession) GetID() string { return t.ID }
 
+// --- OTelSpan ----------------------------------------------------------------
+
+// SpanEvent is a timestamped event attached to a span (e.g. exception stack trace).
+type SpanEvent struct {
+	TimeUs int64             `json:"time_us"`         // epoch microseconds
+	Name   string            `json:"name"`            // e.g. "exception", "message"
+	Attrs  map[string]string `json:"attrs,omitempty"` // e.g. exception.type, exception.stacktrace
+}
+
+// OTelSpan stores a single span received via the OTLP HTTP endpoint.
+// Spans are grouped into traces by TraceID at query time.
+type OTelSpan struct {
+	ID              string            `json:"id"`                    // OffDock internal ULID
+	TraceID         string            `json:"trace_id"`
+	SpanID          string            `json:"span_id"`
+	ParentSpanID    string            `json:"parent_span_id,omitempty"`
+	Service         string            `json:"service"`
+	ServiceVersion  string            `json:"service_version,omitempty"`
+	Name            string            `json:"name"`
+	Kind            string            `json:"kind"`                  // server|client|internal|producer|consumer
+	StartTimeUs     int64             `json:"start_us"`              // epoch microseconds
+	EndTimeUs       int64             `json:"end_us"`
+	DurationUs      int64             `json:"duration_us"`
+	StatusCode      string            `json:"status_code"`           // ok|error|unset
+	StatusMsg       string            `json:"status_msg,omitempty"`
+	Attributes      map[string]string `json:"attributes,omitempty"`
+	ResourceAttrs   map[string]string `json:"resource_attrs,omitempty"` // service.version, host.name, etc.
+	Events          []SpanEvent       `json:"events,omitempty"`         // span events (exception traces, logs)
+	ScopeName       string            `json:"scope_name,omitempty"`     // instrumentation library name
+	ScopeVersion    string            `json:"scope_version,omitempty"`
+	ReceivedAt      time.Time         `json:"received_at"`
+}
+
+func (s OTelSpan) GetID() string { return s.ID }
+
 // --- SMTPConfig (runtime, from config.yaml via handlers) --------------------
 
 // SMTPSettings mirrors the SMTP fields from Config for passing to handlers.
@@ -379,6 +481,7 @@ type SMTPSettings struct {
 	Username       string
 	Password       string
 	From           string
+	FromName       string // display name for the From header, e.g. "OffDock Alerts"
 	Mode           string // "starttls" | "implicit" | "plain"
 	StartTLS       bool   // legacy
 	SkipVerify     bool
@@ -386,6 +489,14 @@ type SMTPSettings struct {
 	ClientCertFile string // path to client cert PEM (mutual TLS)
 	ClientKeyFile  string // path to client key PEM (mutual TLS)
 	AdminEmail     string
+
+	// Email templates — {{var}} placeholders. Empty = use built-in default.
+	// OTP: {{username}}, {{code}}, {{expires_minutes}}
+	// DNS: {{record_type}}, {{hostname}}, {{value}}, {{ttl}}, {{notes}}, {{requested_by}}
+	OTPSubject string
+	OTPBody    string
+	DNSSubject string
+	DNSBody    string
 }
 
 // SMTPMode returns the effective connection mode.
@@ -410,9 +521,62 @@ type DeployTag struct {
 	EnvVersion     int       `json:"env_version" msgpack:"env_version"`
 	CreatedBy      string    `json:"created_by" msgpack:"created_by"`
 	CreatedAt      time.Time `json:"created_at" msgpack:"created_at"`
+	// Protected tags are pinned "known-good" releases that auto-tag trimming
+	// must never delete.
+	Protected bool `json:"protected" msgpack:"protected"`
 }
 
 func (d DeployTag) GetID() string { return d.ID }
+
+// BackupRecord describes one created backup archive on disk.
+type BackupRecord struct {
+	ID          string    `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	Scope       string    `json:"scope"` // "full" | "project" | "db" | "config"
+	ProjectID   string    `json:"project_id"`
+	Path        string    `json:"path"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Contents    []string  `json:"contents"` // member categories included
+	Volumes     []string  `json:"volumes"`
+	Encrypted   bool      `json:"encrypted"`
+	Sensitive   bool      `json:"sensitive"` // includes config.yaml / secrets
+	TriggeredBy string    `json:"triggered_by"`
+	Status      string    `json:"status"` // "ok" | "partial" | "failed"
+	Note        string    `json:"note"`
+}
+
+func (b BackupRecord) GetID() string { return b.ID }
+
+// BackupSchedule configures automatic recurring backups. ID is always "default".
+type BackupSchedule struct {
+	ID             string    `json:"id"` // "default"
+	Enabled        bool      `json:"enabled"`
+	TimeOfDay      string    `json:"time_of_day"` // "HH:MM" 24h, local time
+	Scope          string    `json:"scope"`       // "full" | "db" | "config"
+	IncludeVolumes bool      `json:"include_volumes"`
+	IncludeConfig  bool      `json:"include_config"`
+	Encrypt        bool      `json:"encrypt"`
+	Retention      int       `json:"retention"` // keep last N, 0 = unlimited
+	DestPath       string    `json:"dest_path"` // optional off-box copy dir
+	LastRunAt      *time.Time `json:"last_run_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+func (b BackupSchedule) GetID() string { return b.ID }
+
+// TerminalPolicy is the (single, ID="default") command-execution policy applied
+// to the non-PTY terminal exec endpoint. Built-in defaults apply when no record
+// is saved; the saved record's lists are additive on top of those defaults.
+type TerminalPolicy struct {
+	ID              string    `json:"id"` // always "default"
+	Mode            string    `json:"mode"` // "denylist" (default) | "allowlist"
+	Deny            []string  `json:"deny"`             // extra deny regexes
+	Allow           []string  `json:"allow"`            // allowlist-mode regexes
+	RestrictedPaths []string  `json:"restricted_paths"` // extra blocked path prefixes
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+func (t TerminalPolicy) GetID() string { return t.ID }
 
 // OAuthSettings mirrors the OAuth2 fields from Config for passing to handlers.
 type OAuthSettings struct {
@@ -422,23 +586,40 @@ type OAuthSettings struct {
 	ClientSecret string
 	RedirectURI  string
 	Scope        string
-	// Claim mappings — configurable JWT/userinfo claim names.
-	ClaimSub      string // default "sub"
+	// Claim mappings — the minimal set OffDock needs from userinfo: username,
+	// email, full name. The subject is always the standard OIDC "sub" claim
+	// and isn't configurable — every compliant IdP returns it unconditionally.
+	// Defaults match AO IDP's fixed /oauth2/userinfo response shape.
 	ClaimEmail    string // default "email"
 	ClaimUsername string // default "ldap_username"
 	ClaimName     string // default "display_name"
 	// TLS
 	CACertFile    string // path to custom CA cert for IdP (self-signed Exchange/internal)
 	TLSSkipVerify bool   // skip TLS verification
+
+	// PostLogoutRedirectURI is sent to the IdP as post_logout_redirect_uri.
+	// Must be registered in the IdP. If empty, derived from RedirectURI automatically.
+	PostLogoutRedirectURI string
 }
 
-// EffectiveClaimNames returns the resolved claim names, applying defaults
-// when a field is empty.
-func (s OAuthSettings) EffectiveClaimNames() (sub, email, username, name string) {
-	sub = s.ClaimSub
-	if sub == "" {
-		sub = "sub"
-	}
+// RetentionSettings configures how long OffDock keeps telemetry and audit data.
+// Zero values for max counts fall back to built-in defaults at prune time.
+// Zero values for max age mean unlimited (age-based pruning disabled).
+type RetentionSettings struct {
+	OTelSpansMaxCount       int `json:"otel_spans_max_count"`        // 0 → default 50 000
+	OTelSpansMaxAgeDays     int `json:"otel_spans_max_age_days"`     // 0 → unlimited
+	TraceSessionsMaxCount   int `json:"trace_sessions_max_count"`    // 0 → default 500
+	TraceSessionsMaxAgeDays int `json:"trace_sessions_max_age_days"` // 0 → unlimited
+	AuditEventsMaxCount     int `json:"audit_events_max_count"`      // 0 → default 10 000
+	AuditEventsMaxAgeDays   int `json:"audit_events_max_age_days"`   // 0 → unlimited
+	AppLogsMaxLines         int `json:"app_logs_max_lines"`          // 0 → unlimited (logrotate handles OS-level rotation)
+}
+
+// EffectiveClaimNames returns the resolved claim names, applying AO IDP /oauth2/userinfo
+// defaults when a field is empty. AO IDP's UserInfoResponse always serializes fixed JSON
+// keys — sub, ldap_username, email, display_name — regardless of its admin-configured
+// claim mappings (those only affect the JWT access token, which Offdock never decodes).
+func (s OAuthSettings) EffectiveClaimNames() (email, username, name string) {
 	email = s.ClaimEmail
 	if email == "" {
 		email = "email"

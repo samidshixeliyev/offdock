@@ -5,6 +5,8 @@ import { Modal } from '../components/Modal'
 import ConfirmModal from '../components/ConfirmModal'
 import { useToast } from '../components/Toast'
 import clsx from 'clsx'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 import {
   Network, Plus, RefreshCw, Trash2, Plug, Unplug, ChevronDown, Info,
 } from 'lucide-react'
@@ -127,12 +129,26 @@ function CreateNetworkModal({ onCreated, onClose }: { onCreated: () => void; onC
   const toast = useToast()
   const [name, setName] = useState('')
   const [driver, setDriver] = useState('bridge')
+  const [subnet, setSubnet] = useState('')
+  const [gateway, setGateway] = useState('')
+  const [ipRange, setIpRange] = useState('')
+  const [internal, setInternal] = useState(false)
+  const [attachable, setAttachable] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const create = async () => {
     if (!name.trim()) return
     setBusy(true)
-    try { await api.createDockerNetwork(name.trim(), driver); toast.success(`Created ${name.trim()}`); onCreated(); onClose() }
+    try {
+      await api.createDockerNetworkIPAM({
+        name: name.trim(), driver,
+        subnet: subnet.trim() || undefined,
+        gateway: gateway.trim() || undefined,
+        ip_range: ipRange.trim() || undefined,
+        internal, attachable,
+      })
+      toast.success(`Created ${name.trim()}`); onCreated(); onClose()
+    }
     catch (e) { toast.error(e instanceof Error ? e.message : 'Failed') }
     finally { setBusy(false) }
   }
@@ -156,6 +172,24 @@ function CreateNetworkModal({ onCreated, onClose }: { onCreated: () => void; onC
             <option value="macvlan">macvlan</option>
           </select>
         </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1.5">Subnet (optional)</label>
+            <input className="input" placeholder="172.28.0.0/16" value={subnet} onChange={e => setSubnet(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1.5">Gateway (optional)</label>
+            <input className="input" placeholder="172.28.0.1" value={gateway} onChange={e => setGateway(e.target.value)} />
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1.5">IP range (optional)</label>
+          <input className="input" placeholder="172.28.5.0/24" value={ipRange} onChange={e => setIpRange(e.target.value)} />
+        </div>
+        <div className="flex items-center gap-4">
+          <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={internal} onChange={e => setInternal(e.target.checked)} />Internal (no external access)</label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={attachable} onChange={e => setAttachable(e.target.checked)} />Attachable</label>
+        </div>
       </div>
     </Modal>
   )
@@ -163,6 +197,7 @@ function CreateNetworkModal({ onCreated, onClose }: { onCreated: () => void; onC
 
 export default function NetworksPage() {
   const toast = useToast()
+  const { can } = usePermissions()
   const [nets, setNets] = useState<DockerNetwork[]>([])
   const [containers, setContainers] = useState<ContainerInfo[]>([])
   const [loading, setLoading] = useState(true)
@@ -215,10 +250,11 @@ export default function NetworksPage() {
 
   return (
     <Page>
+      {!can(PERMS.manageNetwork) && <ReadOnlyBanner message="You don't have permission to manage networks. Viewing in read-only mode." />}
       <PageHeader title="Networks" subtitle="Connect containers to Docker networks" icon={Network}
         actions={<>
           <button onClick={load} className="btn-secondary"><RefreshCw className="w-4 h-4" /> Refresh</button>
-          <button onClick={() => setShowCreate(true)} className="btn-primary"><Plus className="w-4 h-4" /> Create Network</button>
+          {can(PERMS.manageNetwork) && <button onClick={() => setShowCreate(true)} className="btn-primary"><Plus className="w-4 h-4" /> Create Network</button>}
         </>} />
 
       {showCreate && <CreateNetworkModal onCreated={load} onClose={() => setShowCreate(false)} />}

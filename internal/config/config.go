@@ -32,7 +32,16 @@ type Config struct {
 	// Mutual TLS — some Exchange servers require a client certificate.
 	SMTPClientCertFile string `yaml:"smtp_client_cert_file"`
 	SMTPClientKeyFile  string `yaml:"smtp_client_key_file"`
+	SMTPFromName       string `yaml:"smtp_from_name"`       // display name, e.g. "OffDock Alerts"
 	DNSAdminEmail      string `yaml:"dns_admin_email"`
+
+	// Email templates — go-template-style {{var}} substitution.
+	// OTP vars: {{username}}, {{code}}, {{expires_minutes}}
+	// DNS vars: {{record_type}}, {{hostname}}, {{value}}, {{ttl}}, {{notes}}, {{requested_by}}
+	OTPEmailSubject string `yaml:"otp_email_subject"` // default: "OffDock Root Terminal — OTP Code"
+	OTPEmailBody    string `yaml:"otp_email_body"`    // default: built-in multi-line body
+	DNSEmailSubject string `yaml:"dns_email_subject"` // default: "[DNS Request] {{record_type}} {{hostname}} → {{value}}"
+	DNSEmailBody    string `yaml:"dns_email_body"`    // default: built-in structured body
 
 	// OAuth2 / OIDC — AO ID identity provider integration.
 	OAuthEnabled      bool   `yaml:"oauth_enabled"`
@@ -42,9 +51,10 @@ type Config struct {
 	OAuthRedirectURI  string `yaml:"oauth_redirect_uri"`  // must match IdP registration
 	OAuthScope        string `yaml:"oauth_scope"`         // default "openid profile email"
 
-	// Claim mapping — names of JWT/userinfo claims for each user attribute.
-	// Defaults match AO ID's out-of-the-box claim names.
-	OAuthClaimSub      string `yaml:"oauth_claim_sub"`      // default "sub"
+	// Claim mapping — the minimal set OffDock needs: username, email, full name.
+	// "sub" is always the standard OIDC subject claim and isn't configurable —
+	// every compliant IdP, including AO IDP, returns it unconditionally.
+	// Defaults match AO IDP's fixed /oauth2/userinfo response shape.
 	OAuthClaimEmail    string `yaml:"oauth_claim_email"`    // default "email"
 	OAuthClaimUsername string `yaml:"oauth_claim_username"` // default "ldap_username"
 	OAuthClaimName     string `yaml:"oauth_claim_name"`     // default "display_name"
@@ -52,6 +62,10 @@ type Config struct {
 	// OAuth2 TLS — for IdP servers with self-signed / internal CA certificates.
 	OAuthCACertFile    string `yaml:"oauth_ca_cert_file"`         // path to CA cert PEM
 	OAuthTLSSkipVerify bool   `yaml:"oauth_tls_skip_verify"`      // skip TLS verify (not recommended)
+
+	// OAuthPostLogoutRedirectURI is where the IdP redirects after RP-initiated logout.
+	// Must be registered in the IdP's "Allowed logout URLs". If empty, derived from OAuthRedirectURI.
+	OAuthPostLogoutRedirectURI string `yaml:"oauth_post_logout_redirect_uri"`
 }
 
 const defaultConfigPath = "/etc/offdock/config.yaml"
@@ -66,7 +80,8 @@ func Load(path string) (*Config, error) {
 
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return cfg, nil
+		// Config file absent — enforce JWT secret requirement; empty secret allows token forgery.
+		return nil, fmt.Errorf("config file not found at %s — run install.sh to initialise", path)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)

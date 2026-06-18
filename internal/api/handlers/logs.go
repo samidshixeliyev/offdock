@@ -51,9 +51,10 @@ func (h *H) ContainerLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go func() {
-		<-ctx.Done()
+	defer func() {
+		cancel()
 		cmd.Process.Kill() //nolint:errcheck
+		cmd.Wait()         //nolint:errcheck — must Wait() to reap child; omitting causes zombie
 	}()
 
 	sc := bufio.NewScanner(stdout)

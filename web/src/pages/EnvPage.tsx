@@ -6,6 +6,8 @@ import { Modal } from '../components/Modal'
 import { useToast } from '../components/Toast'
 import { timeAgo } from '../lib/format'
 import clsx from 'clsx'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 import {
   KeyRound, Plus, Save, Trash2, Eye, EyeOff, Search, FileUp, History,
   RotateCcw, GitCompare, Lock, Loader2,
@@ -138,6 +140,7 @@ function HistoryModal({ projectId, current, onRestore, onClose }: {
 export default function EnvPage() {
   const { id } = useParams<{ id: string }>()
   const toast = useToast()
+  const { can } = usePermissions()
   const [vars, setVars] = useState<EditableVar[]>([])
   const [version, setVersion] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
@@ -175,9 +178,9 @@ export default function EnvPage() {
     setSaving(true)
     try {
       const payload = vars.map(({ key, value, is_secret }) => ({ key, value, is_secret }))
-      const set = await api.saveEnv(id, payload)
+      const { env: set, unchanged } = await api.saveEnv(id, payload)
       loadFrom(set)
-      toast.success(`Saved as version ${set.version}`)
+      toast.success(unchanged ? `No changes — still on version ${set.version}` : `Saved as version ${set.version}`)
     } catch (e) { toast.error(e instanceof Error ? e.message : 'Save failed') } finally { setSaving(false) }
   }
 
@@ -190,12 +193,13 @@ export default function EnvPage() {
 
   return (
     <Page>
+      {!can(PERMS.editEnv) && <ReadOnlyBanner message="You don't have permission to edit environment variables. Viewing in read-only mode." />}
       <PageHeader title="Environment Variables" icon={KeyRound}
         subtitle={`${vars.length} variable${vars.length !== 1 ? 's' : ''}${secretCount ? ` · ${secretCount} secret` : ''}${version ? ` · v${version}` : ''}${dirty ? ' · unsaved changes' : ''}`}
         actions={<>
           <button onClick={() => setShowHistory(true)} className="btn-secondary"><History className="w-4 h-4" /> History</button>
-          <button onClick={() => setShowImport(true)} className="btn-secondary"><FileUp className="w-4 h-4" /> Import</button>
-          <button onClick={save} disabled={saving || !dirty} className="btn-primary">{saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : <><Save className="w-4 h-4" /> Save Version</>}</button>
+          {can(PERMS.editEnv) && <button onClick={() => setShowImport(true)} className="btn-secondary"><FileUp className="w-4 h-4" /> Import</button>}
+          <button onClick={save} disabled={saving || !dirty || !can(PERMS.editEnv)} title={!can(PERMS.editEnv) ? 'No permission to edit env vars' : undefined} className="btn-primary">{saving ? <><Loader2 className="w-4 h-4 animate-spin" /> Saving…</> : <><Save className="w-4 h-4" /> Save Version</>}</button>
         </>} />
 
       {showImport && <ImportModal onImport={onImport} onClose={() => setShowImport(false)} />}
@@ -219,8 +223,8 @@ export default function EnvPage() {
         ) : (
           <div className="divide-y divide-slate-800">
             {filtered.map(({ v, i }) => (
-              <div key={i} className="flex items-center gap-3 px-4 py-2.5">
-                <input className="input font-mono text-xs w-52 shrink-0" placeholder="KEY" value={v.key} onChange={e => updateVar(i, 'key', e.target.value.toUpperCase())} />
+              <div key={i} className="flex flex-wrap sm:flex-nowrap items-center gap-3 px-4 py-2.5">
+                <input className="input font-mono text-xs w-full sm:w-52 shrink-0" placeholder="KEY" value={v.key} onChange={e => updateVar(i, 'key', e.target.value.toUpperCase())} />
                 <div className="flex-1 relative">
                   <input className="input font-mono text-xs pr-9" placeholder="value"
                     type={v.is_secret && !v.revealed ? 'password' : 'text'} value={v.value} onChange={e => updateVar(i, 'value', e.target.value)} />

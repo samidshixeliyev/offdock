@@ -1,9 +1,12 @@
 import { useState, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { Lock } from 'lucide-react'
 
 export default function ProjectsNewPage() {
   const navigate = useNavigate()
+  const { can } = usePermissions()
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [error, setError] = useState('')
@@ -21,6 +24,15 @@ export default function ProjectsNewPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  if (!can(PERMS.manageProjects)) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-slate-400">
+        <Lock className="w-10 h-10 opacity-40" />
+        <p className="text-sm font-medium">You don't have permission to create projects.</p>
+      </div>
+    )
   }
 
   return (

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useNavigate } from 'react-router-dom'
 import {
   api, Project, ContainerInfo, ComposeConfig, EnvVar,
-  DeploymentRecord, FileEntry,
+  DeploymentRecord, FileEntry, DeploySettings, ComposeServiceInfo,
 } from '../api/client'
 import ConfirmModal from '../components/ConfirmModal'
+import { useToast } from '../components/Toast'
+import { Copy, Settings } from 'lucide-react'
 
 type Tab = 'overview' | 'compose' | 'env' | 'deploy'
 type MsgT = 'ok' | 'err'
@@ -544,10 +546,10 @@ function ComposeTab({ projectId }: { projectId: string }) {
     if (!yaml.trim()) { notify('Compose content is empty', 'err'); return }
     setSaving(true); notify('')
     try {
-      const cfg = await api.saveCompose(projectId, yaml)
+      const { config: cfg, unchanged } = await api.saveCompose(projectId, yaml)
       setSelected(cfg)
       api.composeHistory(projectId).then(d => setHistory(d ?? []))
-      notify('Saved as version ' + cfg.version)
+      notify(unchanged ? 'No changes — still on version ' + cfg.version : 'Saved as version ' + cfg.version)
     } catch (e) {
       notify('Error: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
     } finally { setSaving(false) }
@@ -674,9 +676,9 @@ function EnvTab({ projectId }: { projectId: string }) {
     setSaving(true); notify('')
     try {
       const payload: EnvVar[] = vars.map(({ key, value, is_secret }) => ({ key, value, is_secret }))
-      const set = await api.saveEnv(projectId, payload)
+      const { env: set, unchanged } = await api.saveEnv(projectId, payload)
       setVars((set.vars ?? []).map(v => makeVar(v.key, v.value, v.is_secret)))
-      notify('Saved as version ' + set.version)
+      notify(unchanged ? 'No changes — still on version ' + set.version : 'Saved as version ' + set.version)
     } catch (e) {
       notify('Error: ' + (e instanceof Error ? e.message : 'unknown'), 'err')
     } finally { setSaving(false) }
@@ -856,12 +858,51 @@ function DeployTab({ projectId }: { projectId: string }) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [rollbackTarget, setRollbackTarget] = useState<DeploymentRecord | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<DeploymentRecord | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const [settings, setSettings] = useState<DeploySettings | null>(null)
+  const [settingsDraft, setSettingsDraft] = useState<Omit<DeploySettings, 'id' | 'project_id'>>({
+    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5,
+    webhook_url: '', otel_enabled: false,
+  })
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [composeServices, setComposeServices] = useState<ComposeServiceInfo[]>([])
+  const [langOverrides, setLangOverrides] = useState<Record<string, string>>({})
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualName, setManualName] = useState('')
+  const [manualLang, setManualLang] = useState('java')
+  const toast = useToast()
   const logRef = useRef<HTMLDivElement>(null)
 
   const loadHistory = () =>
     api.listDeployments(projectId).then(d => setDeployments(d ?? [])).catch(() => {})
 
-  useEffect(() => { loadHistory() }, [projectId])
+  const loadSettings = () => {
+    api.getDeploySettings(projectId).then(s => {
+      setSettings(s)
+      setSettingsDraft({
+        health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs,
+        health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '',
+        otel_enabled: s.otel_enabled ?? false, otel_language_overrides: s.otel_language_overrides,
+      })
+      setLangOverrides(s.otel_language_overrides ?? {})
+    }).catch(() => {})
+    api.getComposeServices(projectId).then(r => setComposeServices(r.services ?? [])).catch(() => {})
+  }
+
+  const saveSettings = async () => {
+    setSettingsSaving(true)
+    try {
+      const payload = {
+        ...settingsDraft,
+        otel_language_overrides: Object.keys(langOverrides).length > 0 ? langOverrides : undefined,
+      }
+      const s = await api.saveDeploySettings(projectId, payload)
+      setSettings(s)
+      toast.success('Deploy settings saved')
+    } catch { toast.error('Failed to save settings') } finally { setSettingsSaving(false) }
+  }
+
+  useEffect(() => { loadHistory(); loadSettings() }, [projectId])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -897,14 +938,14 @@ function DeployTab({ projectId }: { projectId: string }) {
     return () => es.close()
   }, [streamKey, projectId])
 
-  const handleDeploy = async (composeVersion?: number) => {
+  const handleDeploy = async (composeVersion?: number, envVersion?: number) => {
     setDeploying(true)
     setCancelling(false)
     setLog([composeVersion ? `Rolling back to compose v${composeVersion}…` : 'Starting deployment…'])
     setExpandedId(null)
     setRollbackTarget(null)
     try {
-      const { deployment_id } = await api.triggerDeploy(projectId, composeVersion)
+      const { deployment_id } = await api.triggerDeploy(projectId, composeVersion, envVersion)
       setStreamKey(deployment_id)
       setActiveDepId(deployment_id)
     } catch (e) {
@@ -989,7 +1030,7 @@ function DeployTab({ projectId }: { projectId: string }) {
                 <div key={i} className={
                   line.startsWith('✗') ? 'text-red-400' :
                   line.startsWith('✓') ? 'text-green-300 font-medium' :
-                  line.match(/\[\d+\/7\]/) ? 'text-blue-300' :
+                  line.match(/\[\d+\/\d+\]/) ? 'text-blue-300' :
                   ''
                 }>
                   {line || ' '}
@@ -1088,7 +1129,7 @@ function DeployTab({ projectId }: { projectId: string }) {
                               ? d.log_text.split('\n').map((line, i) => (
                                   <div key={i} className={
                                     line.startsWith('FAILED') || line.startsWith('CANCELLED') ? 'text-red-400' :
-                                    line.match(/\[\d+\/7\]/) ? 'text-blue-300 font-medium' :
+                                    line.match(/\[\d+\/\d+\]/) ? 'text-blue-300 font-medium' :
                                     line.includes('complete') ? 'text-green-300 font-medium' :
                                     line.startsWith('  [cleanup]') || line.startsWith('  [rollback]') ? 'text-yellow-400' :
                                     ''
@@ -1110,12 +1151,176 @@ function DeployTab({ projectId }: { projectId: string }) {
         )}
       </section>
 
+      {/* ── Deploy Settings ───────────────────────────────────────────────────── */}
+      <section>
+        <button
+          onClick={() => { setShowSettings(s => !s) }}
+          className="flex items-center gap-2 text-sm font-semibold text-slate-400 hover:text-slate-200 transition-colors mb-3"
+        >
+          <Settings className="w-4 h-4" />
+          Deploy Settings
+          <span className="text-xs text-slate-600 font-normal ml-1">{showSettings ? '▲' : '▼'}</span>
+        </button>
+        {showSettings && (
+          <div className="bg-slate-900/40 border border-slate-800 rounded-xl p-4 space-y-4">
+            {/* Timeouts */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {[
+                { label: 'Health timeout (s)', key: 'health_timeout_secs' as const, min: 10, max: 600 },
+                { label: 'Deploy timeout (s)', key: 'deploy_timeout_secs' as const, min: 30, max: 1800 },
+                { label: 'Stable period (s)', key: 'health_stable_secs' as const, min: 0, max: 60 },
+              ].map(f => (
+                <div key={f.key}>
+                  <label className="block text-xs text-slate-400 mb-1">{f.label}</label>
+                  <input type="number" min={f.min} max={f.max}
+                    value={settingsDraft[f.key] as number}
+                    onChange={e => setSettingsDraft(d => ({ ...d, [f.key]: Number(e.target.value) }))}
+                    className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+                </div>
+              ))}
+            </div>
+            {/* Webhook */}
+            <div>
+              <label className="block text-xs text-slate-400 mb-1">Webhook URL <span className="text-slate-600">(POST on deploy complete/fail)</span></label>
+              <input type="url" placeholder="http://monitoring.intranet/deploy-hook"
+                value={settingsDraft.webhook_url ?? ''}
+                onChange={e => setSettingsDraft(d => ({ ...d, webhook_url: e.target.value }))}
+                className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-blue-500" />
+            </div>
+            {/* OTel toggle + language overrides */}
+            <div className="rounded-lg border border-slate-800 bg-slate-950/40 overflow-hidden">
+              <div className="flex items-center justify-between p-4">
+                <div>
+                  <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input type="checkbox"
+                      checked={settingsDraft.otel_enabled ?? false}
+                      onChange={e => setSettingsDraft(d => ({ ...d, otel_enabled: e.target.checked }))}
+                      className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-blue-500" />
+                    <span className="text-sm font-medium text-slate-200">Enable OpenTelemetry tracing</span>
+                  </label>
+                  <p className="text-xs text-slate-500 mt-1 ml-6">
+                    Injects OTEL_* env vars and tracer agents automatically per service.
+                  </p>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded font-semibold shrink-0 ${settingsDraft.otel_enabled ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-600'}`}>
+                  {settingsDraft.otel_enabled ? 'ON' : 'OFF'}
+                </span>
+              </div>
+              {settingsDraft.otel_enabled && (() => {
+                const composeNames = new Set(composeServices.map(s => s.name))
+                const manualNames = Object.keys(langOverrides).filter(n => !composeNames.has(n)).sort()
+                const addManual = () => {
+                  const name = manualName.trim()
+                  if (!name) return
+                  setLangOverrides(prev => ({ ...prev, [name]: manualLang }))
+                  setManualName(''); setManualLang('java'); setManualOpen(false)
+                }
+                const removeOverride = (name: string) =>
+                  setLangOverrides(prev => { const next = { ...prev }; delete next[name]; return next })
+                const langSelect = (name: string, value: string, isCompose: boolean) => (
+                  <select
+                    value={value}
+                    onChange={e => {
+                      const v = e.target.value
+                      setLangOverrides(prev => {
+                        const next = { ...prev }
+                        if (isCompose && v === '') { delete next[name] } else { next[name] = v }
+                        return next
+                      })
+                    }}
+                    className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
+                  >
+                    {isCompose && <option value="">Auto ({(composeServices.find(s => s.name === name)?.detected_langs ?? []).join(', ') || 'none detected'})</option>}
+                    <option value="java">Java</option>
+                    <option value="nodejs">Node.js</option>
+                    <option value="php">PHP</option>
+                    <option value="python">Python</option>
+                    <option value="ruby">Ruby</option>
+                    <option value="none">Disabled (skip)</option>
+                  </select>
+                )
+                return (
+                  <div className="border-t border-slate-800 px-4 pb-4 pt-3">
+                    <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Service Language Overrides</p>
+                    <p className="text-[11px] text-slate-600 mb-3">Override auto-detection or manually map service names to languages.</p>
+                    <div className="space-y-2">
+                      {composeServices.map(svc => (
+                        <div key={svc.name} className="flex items-center gap-3 text-sm">
+                          <div className="flex-1 min-w-0">
+                            <span className="font-mono text-slate-200 text-xs">{svc.name}</span>
+                            {svc.image && <span className="ml-2 text-[10px] text-slate-600 font-mono">{svc.image}</span>}
+                          </div>
+                          {langSelect(svc.name, langOverrides[svc.name] ?? '', true)}
+                        </div>
+                      ))}
+                      {manualNames.map(name => (
+                        <div key={name} className="flex items-center gap-3 text-sm">
+                          <div className="flex-1 min-w-0">
+                            <span className="font-mono text-slate-200 text-xs">{name}</span>
+                            <span className="ml-2 text-[10px] text-amber-500/80 font-semibold">manual</span>
+                          </div>
+                          {langSelect(name, langOverrides[name] ?? 'java', false)}
+                          <button type="button" onClick={() => removeOverride(name)} className="text-[10px] text-slate-500 hover:text-red-400 px-1">Remove</button>
+                        </div>
+                      ))}
+                      {composeServices.length === 0 && manualNames.length === 0 && (
+                        <p className="text-[11px] text-slate-600 italic">No services detected — use "Add override" to map a service name to a language.</p>
+                      )}
+                    </div>
+                    <div className="mt-3 pt-3 border-t border-slate-800/60">
+                      {manualOpen ? (
+                        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                          <input autoFocus type="text" placeholder="service name" value={manualName}
+                            onChange={e => setManualName(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManual() } }}
+                            className="flex-1 text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-blue-500"
+                          />
+                          <select value={manualLang} onChange={e => setManualLang(e.target.value)}
+                            className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0">
+                            <option value="java">Java</option>
+                            <option value="nodejs">Node.js</option>
+                            <option value="php">PHP</option>
+                            <option value="python">Python</option>
+                            <option value="ruby">Ruby</option>
+                            <option value="none">Disabled</option>
+                          </select>
+                          <button type="button" onClick={addManual} disabled={!manualName.trim()}
+                            className="text-xs px-3 py-1 rounded bg-blue-600 text-white disabled:opacity-40 shrink-0">Add</button>
+                          <button type="button" onClick={() => { setManualOpen(false); setManualName('') }}
+                            className="text-xs text-slate-500 hover:text-slate-300 shrink-0">Cancel</button>
+                        </div>
+                      ) : (
+                        <button type="button" onClick={() => setManualOpen(true)}
+                          className="text-[11px] text-blue-400 hover:text-blue-300 font-medium">
+                          + Add manual override
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={saveSettings} disabled={settingsSaving} className="btn-secondary text-sm">
+                {settingsSaving ? 'Saving…' : 'Save Settings'}
+              </button>
+              {settings && (
+                <span className="text-xs text-slate-600">
+                  health {settings.health_timeout_secs}s · deploy {settings.deploy_timeout_secs}s
+                  {settings.otel_enabled && <span className="text-blue-400 ml-2">OTel enabled</span>}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
+
       {rollbackTarget && (
         <ConfirmModal
           title="Rollback Deployment"
           message={`Re-deploy compose version v${rollbackTarget.new_compose_version} (from ${new Date(rollbackTarget.started_at).toLocaleString()})? This triggers a new deployment using that compose version.`}
           confirmLabel="Rollback"
-          onConfirm={() => handleDeploy(rollbackTarget.new_compose_version)}
+          onConfirm={() => handleDeploy(rollbackTarget.new_compose_version, rollbackTarget.env_version)}
           onCancel={() => setRollbackTarget(null)}
         />
       )}
@@ -1143,14 +1348,31 @@ const statusBadge: Record<string, string> = {
 
 export default function ProjectDashboardPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('overview')
   const [project, setProject] = useState<Project | null>(null)
   const [error, setError] = useState('')
+  const [cloning, setCloning] = useState(false)
+  const [showClone, setShowClone] = useState(false)
+  const [cloneName, setCloneName] = useState('')
+  const toast = useToast()
 
   useEffect(() => {
     if (!id) return
     api.getProject(id).then(setProject).catch(() => setError('Project not found'))
   }, [id])
+
+  const handleClone = async () => {
+    if (!id || !cloneName.trim()) return
+    setCloning(true)
+    try {
+      const cloned = await api.cloneProject(id, cloneName.trim())
+      toast.success(`Project cloned as "${cloned.name}"`)
+      setShowClone(false)
+      setCloneName('')
+      navigate(`/projects/${cloned.id}`)
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Clone failed') } finally { setCloning(false) }
+  }
 
   if (error) return <div className="p-6 text-red-400 text-sm">{error}</div>
   if (!project) return <div className="p-6 text-slate-600 text-sm">Loading…</div>
@@ -1164,6 +1386,27 @@ export default function ProjectDashboardPage() {
 
   return (
     <div className="flex-1 overflow-y-auto p-6 max-w-6xl">
+      {/* Clone modal */}
+      {showClone && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-6 w-80 shadow-2xl">
+            <h2 className="text-sm font-semibold text-white mb-4">Clone project</h2>
+            <label className="block text-xs text-slate-500 mb-1.5">New project name</label>
+            <input
+              autoFocus value={cloneName} onChange={e => setCloneName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleClone()}
+              className="w-full h-8 px-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-slate-200 focus:outline-none focus:border-blue-500 mb-4"
+            />
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowClone(false)} className="btn-secondary text-xs">Cancel</button>
+              <button onClick={handleClone} disabled={cloning || !cloneName.trim()} className="btn-primary text-xs">
+                {cloning ? 'Cloning…' : 'Clone'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-xs text-slate-600 mb-5">
         <Link to="/" className="hover:text-slate-400 transition-colors">Dashboard</Link>
@@ -1183,6 +1426,10 @@ export default function ProjectDashboardPage() {
             <p className="text-sm text-slate-600 mt-1 pl-4">{project.description}</p>
           )}
         </div>
+        <button onClick={() => { setCloneName(project.name + '-copy'); setShowClone(true) }}
+          title="Clone this project" className="btn-secondary shrink-0">
+          <Copy className="w-4 h-4" /> Clone
+        </button>
         <button onClick={() => setTab('deploy')} className="btn-primary shrink-0">
           <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
             <path d="M6.3 2.841A1.5 1.5 0 004 4.11V15.89a1.5 1.5 0 002.3 1.269l9.344-5.89a1.5 1.5 0 000-2.538L6.3 2.84z" />

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sort"
 
 	"github.com/go-chi/chi/v5"
 
 	authmw "offdock/internal/middleware"
+	"offdock/internal/deploy"
 	"offdock/internal/store"
 )
 
@@ -95,7 +97,7 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 		if rec != nil {
 			// Auto-create a deploy tag for every successful deployment (like GitLab pipeline tags).
 			if rec.Status == store.DeployStatusSuccess {
-				tagName := fmt.Sprintf("deploy-%s", timeNow().Format("2006-01-02-150405"))
+				tagName := fmt.Sprintf("deploy-%s", rec.StartedAt.Format("2006-01-02-150405"))
 				tag := store.DeployTag{
 					ID:             store.NewULID(),
 					ProjectID:      projectID,
@@ -216,6 +218,15 @@ func (h *H) SaveDeploySettings(w http.ResponseWriter, r *http.Request) {
 	if s.HealthTimeoutSecs <= 0 { s.HealthTimeoutSecs = 120 }
 	if s.DeployTimeoutSecs <= 0 { s.DeployTimeoutSecs = 300 }
 	if s.HealthStableSecs <= 0 { s.HealthStableSecs = 5 }
+	// The overall deploy timeout must leave room for the health check, otherwise
+	// the deploy context cancels mid-health and a healthy stack is reported as
+	// cancelled. Require a 30s buffer above the health timeout.
+	if s.DeployTimeoutSecs < s.HealthTimeoutSecs+30 {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("deploy_timeout_secs (%d) must be at least 30s greater than health_timeout_secs (%d)",
+				s.DeployTimeoutSecs, s.HealthTimeoutSecs))
+		return
+	}
 	s.ID = projectID
 	s.ProjectID = projectID
 	if err := h.db.DeploySettings.Save(s); err != nil {
@@ -223,6 +234,24 @@ func (h *H) SaveDeploySettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s)
+}
+
+// GetComposeServices parses the project's current compose file and returns
+// per-service metadata: name, image, and auto-detected language runtimes.
+// Used by the Deploy settings page to populate the OTel language picker.
+func (h *H) GetComposeServices(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if _, err := h.db.Projects.FindByID(projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	composePath := filepath.Join(h.projectsDir, projectID, "docker-compose.yml")
+	services, err := deploy.ParseComposeServices(composePath)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"services": []any{}})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"services": services})
 }
 
 // DeleteDeployment removes a deployment record. Running/pending deployments cannot be deleted.

@@ -41,24 +41,52 @@ func (h *H) SaveCompose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine next version number.
+	// Determine next version number and the current latest version.
 	existing, _ := h.db.Compose.FindWhere(func(c store.ComposeConfig) bool {
 		return c.ProjectID == projectID
 	})
 	version := 1
-	for _, c := range existing {
+	var latest *store.ComposeConfig
+	for i := range existing {
+		c := existing[i]
 		if c.Version >= version {
 			version = c.Version + 1
+		}
+		if latest == nil || c.Version > latest.Version {
+			latest = &existing[i]
+		}
+	}
+
+	hash := composeContentHash(req.RawYAML)
+
+	// Dedup: if the incoming content matches the latest version, don't create a
+	// new version. Backfill the hash on the legacy record if it was empty.
+	if latest != nil {
+		latestHash := latest.ContentHash
+		if latestHash == "" {
+			latestHash = composeContentHash(latest.RawYAML)
+		}
+		if latestHash == hash {
+			if latest.ContentHash == "" {
+				latest.ContentHash = hash
+				_ = h.db.Compose.Save(*latest)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"unchanged": true,
+				"config":    *latest,
+			})
+			return
 		}
 	}
 
 	cfg := store.ComposeConfig{
-		ID:        store.NewULID(),
-		ProjectID: projectID,
-		Version:   version,
-		RawYAML:   req.RawYAML,
-		CreatedAt: timeNow(),
-		CreatedBy: claims.UserID,
+		ID:          store.NewULID(),
+		ProjectID:   projectID,
+		Version:     version,
+		RawYAML:     req.RawYAML,
+		ContentHash: hash,
+		CreatedAt:   timeNow(),
+		CreatedBy:   claims.UserID,
 	}
 	if err := h.db.Compose.Save(cfg); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not save compose config")

@@ -23,3 +23,12 @@ web/node_modules/
 .vscode/
 .idea/
 *.swp
+
+# Offline bundle artifacts — built fresh per target release, never committed
+debs/
+images/*.tar
+*.tar.gz
+/VERSION
+
+# Local scratch / scaffolding scripts (build + test helpers, not part of the app)
+_*.sh

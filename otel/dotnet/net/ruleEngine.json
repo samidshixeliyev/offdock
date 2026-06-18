@@ -1,0 +1,90 @@
+[
+  {
+    "FileName": "OpenTelemetry.Resources.Host",
+    "FileVersion": "0.1.0.139"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.SqlClient",
+    "FileVersion": "1.9.0.43"
+  },
+  {
+    "FileName": "OpenTelemetry.Resources.Azure",
+    "FileVersion": "1.0.0.172"
+  },
+  {
+    "FileName": "OpenTelemetry.Resources.Container",
+    "FileVersion": "1.0.0.54"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.GrpcNetClient",
+    "FileVersion": "1.9.0.44"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.Quartz",
+    "FileVersion": "1.0.0.50"
+  },
+  {
+    "FileName": "OpenTelemetry.Extensions.Propagators",
+    "FileVersion": "1.9.0.1312"
+  },
+  {
+    "FileName": "OpenTelemetry.Exporter.Console",
+    "FileVersion": "1.9.0.1312"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.StackExchangeRedis",
+    "FileVersion": "1.9.0.97"
+  },
+  {
+    "FileName": "OpenTelemetry.Shims.OpenTracing",
+    "FileVersion": "1.9.0.1324"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.EntityFrameworkCore",
+    "FileVersion": "1.0.0.48"
+  },
+  {
+    "FileName": "OpenTelemetry.Exporter.Zipkin",
+    "FileVersion": "1.9.0.1312"
+  },
+  {
+    "FileName": "OpenTelemetry.Resources.Process",
+    "FileVersion": "0.1.0.175"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.Wcf",
+    "FileVersion": "1.0.0.214"
+  },
+  {
+    "FileName": "OpenTelemetry.Resources.OperatingSystem",
+    "FileVersion": "0.1.0.152"
+  },
+  {
+    "FileName": "OpenTelemetry.Resources.ProcessRuntime",
+    "FileVersion": "0.1.0.56"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.AspNetCore",
+    "FileVersion": "1.9.0.42"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.Runtime",
+    "FileVersion": "1.9.0.57"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.Http",
+    "FileVersion": "1.9.0.41"
+  },
+  {
+    "FileName": "OpenTelemetry.Exporter.OpenTelemetryProtocol",
+    "FileVersion": "1.9.0.1312"
+  },
+  {
+    "FileName": "OpenTelemetry.Instrumentation.Process",
+    "FileVersion": "0.5.0.176"
+  },
+  {
+    "FileName": "OpenTelemetry.Exporter.Prometheus.HttpListener",
+    "FileVersion": "1.9.0.1324"
+  }
+]

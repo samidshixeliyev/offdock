@@ -14,6 +14,7 @@ export interface User {
   created_at: string
   updated_at: string
   active: boolean
+  host_terminal_access?: 'otp' | 'bypass' | 'disabled'
 }
 
 export interface PermissionInfo { key: string; label: string }
@@ -109,6 +110,92 @@ export interface DeploySettings {
   health_timeout_secs: number
   deploy_timeout_secs: number
   health_stable_secs: number
+  rollback_on_failure?: boolean
+  dns_servers?: string[]
+  dns_search?: string[]
+  extra_hosts?: string[]
+  webhook_url?: string
+  // OpenTelemetry — one toggle, everything auto-configured (native OTLP receiver)
+  otel_enabled?: boolean
+  // Manual language overrides: service name → "java"|"nodejs"|"php"|"python"|"ruby"|"dotnet"|"go"|"none"
+  otel_language_overrides?: Record<string, string>
+}
+
+export interface ComposeServiceInfo {
+  name: string
+  image: string
+  detected_langs: string[] | null
+}
+
+// ─── OpenTelemetry / Jaeger types ──────────────────────────────────────────
+
+export interface OTelTag {
+  key: string
+  type: string
+  value: string | number | boolean
+}
+
+export interface OTelSpanRef {
+  refType: 'CHILD_OF' | 'FOLLOWS_FROM'
+  traceID: string
+  spanID: string
+}
+
+export interface OTelSpanLog {
+  timestamp: number    // microseconds since epoch
+  fields: OTelTag[]
+}
+
+export interface OTelSpan {
+  traceID: string
+  spanID: string
+  operationName: string
+  references: OTelSpanRef[]
+  startTime: number    // microseconds since epoch
+  duration: number     // microseconds
+  tags: OTelTag[]
+  logs: OTelSpanLog[] | null   // span events (exception stack traces, custom events)
+  processID: string
+  warnings: string[] | null
+  scopeName?: string
+  scopeVersion?: string
+}
+
+export interface OTelProcess {
+  serviceName: string
+  tags: OTelTag[]
+}
+
+export interface OTelTrace {
+  traceID: string
+  spans: OTelSpan[]
+  processes: Record<string, OTelProcess>
+  warnings: string[] | null
+}
+
+export interface OTelTraceSummary {
+  traceID: string
+  rootSpan: OTelSpan
+  service: string
+  spans: number
+  duration: number   // microseconds
+  startTime: number  // microseconds
+  hasError: boolean
+}
+
+export interface OTelStatus {
+  available: boolean
+  message?: string
+  otlp_http?: string   // e.g. http://HOST_IP:7070/v1/traces
+  span_count?: number
+}
+
+export interface DiskUsageRow {
+  type: string
+  total: string
+  active: string
+  size: string
+  reclaimable: string
 }
 
 export interface DockerImage {
@@ -374,6 +461,7 @@ export interface DeployTag {
   env_version: number
   created_by: string
   created_at: string
+  protected?: boolean
 }
 
 export type DNSTicketStatus = 'pending' | 'sent' | 'approved' | 'rejected'
@@ -385,9 +473,11 @@ export interface DNSTicket {
 }
 export interface SMTPSettings {
   host: string; port: number; username: string; password_set: boolean
-  from: string; mode: string; starttls: boolean; insecure_skip_verify: boolean
+  from: string; from_name: string; mode: string; starttls: boolean; insecure_skip_verify: boolean
   ca_cert_file: string; client_cert_file: string; client_key_file: string
   dns_admin_email: string; configured: boolean
+  otp_subject: string; otp_body: string
+  dns_subject: string; dns_body: string
 }
 
 export interface UsbDrive {
@@ -403,13 +493,23 @@ export interface OAuthSettings {
   client_id: string
   secret_set: boolean
   redirect_uri: string
+  post_logout_redirect_uri: string
   scope: string
-  claim_sub: string
   claim_email: string
   claim_username: string
   claim_name: string
   ca_cert_file: string
   tls_skip_verify: boolean
+}
+
+export interface RetentionSettings {
+  otel_spans_max_count: number
+  otel_spans_max_age_days: number
+  trace_sessions_max_count: number
+  trace_sessions_max_age_days: number
+  audit_events_max_count: number
+  audit_events_max_age_days: number
+  app_logs_max_lines: number
 }
 
 class ApiError extends Error {
@@ -448,7 +548,7 @@ export const api = {
   listUsers: () => request<User[]>('/api/v1/users'),
   createUser: (data: { username: string; email?: string; password: string; role: User['role']; custom_role_id?: string; permissions?: string[]; project_ids?: string[] }) =>
     request<User>('/api/v1/users', { method: 'POST', body: JSON.stringify(data) }),
-  updateUser: (id: string, data: { role?: User['role']; email?: string; active?: boolean; custom_role_id?: string; permissions?: string[]; project_ids?: string[]; password?: string }) =>
+  updateUser: (id: string, data: { role?: User['role']; email?: string; active?: boolean; custom_role_id?: string; permissions?: string[]; project_ids?: string[]; password?: string; host_terminal_access?: 'otp' | 'bypass' | 'disabled' }) =>
     request<User>(`/api/v1/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteUser: (id: string) =>
     request<void>(`/api/v1/users/${id}`, { method: 'DELETE' }),
@@ -480,22 +580,32 @@ export const api = {
   // Compose
   getCompose: (projectId: string) =>
     request<ComposeConfig | null>(`/api/v1/projects/${projectId}/compose`),
-  saveCompose: (projectId: string, rawYaml: string) =>
-    request<ComposeConfig>(`/api/v1/projects/${projectId}/compose`, {
-      method: 'POST',
-      body: JSON.stringify({ raw_yaml: rawYaml }),
-    }),
+  saveCompose: async (projectId: string, rawYaml: string): Promise<{ config: ComposeConfig; unchanged: boolean }> => {
+    const res = await request<ComposeConfig | { unchanged: true; config: ComposeConfig }>(
+      `/api/v1/projects/${projectId}/compose`,
+      { method: 'POST', body: JSON.stringify({ raw_yaml: rawYaml }) },
+    )
+    if (res && typeof res === 'object' && 'unchanged' in res) {
+      return { config: res.config, unchanged: true }
+    }
+    return { config: res as ComposeConfig, unchanged: false }
+  },
   composeHistory: (projectId: string) =>
     request<ComposeConfig[]>(`/api/v1/projects/${projectId}/compose/history`),
 
   // Env vars
   getEnv: (projectId: string) =>
     request<EnvVarSet | null>(`/api/v1/projects/${projectId}/env`),
-  saveEnv: (projectId: string, vars: EnvVar[]) =>
-    request<EnvVarSet>(`/api/v1/projects/${projectId}/env`, {
-      method: 'POST',
-      body: JSON.stringify({ vars }),
-    }),
+  saveEnv: async (projectId: string, vars: EnvVar[]): Promise<{ env: EnvVarSet; unchanged: boolean }> => {
+    const res = await request<EnvVarSet | { unchanged: true; env: EnvVarSet }>(
+      `/api/v1/projects/${projectId}/env`,
+      { method: 'POST', body: JSON.stringify({ vars }) },
+    )
+    if (res && typeof res === 'object' && 'unchanged' in res) {
+      return { env: res.env, unchanged: true }
+    }
+    return { env: res as EnvVarSet, unchanged: false }
+  },
   envHistory: (projectId: string) =>
     request<EnvVarSet[]>(`/api/v1/projects/${projectId}/env/history`),
   restoreEnv: (projectId: string, version: number) =>
@@ -635,7 +745,7 @@ export const api = {
     request<DeploySettings>(`/api/v1/projects/${projectId}/deploy-settings`),
   // Deploy tags
   listDeployTags: (projectId: string) => request<DeployTag[]>(`/api/v1/projects/${projectId}/deploy-tags`),
-  createDeployTag: (projectId: string, data: { name: string; description?: string; compose_version?: number; env_version?: number }) =>
+  createDeployTag: (projectId: string, data: { name: string; description?: string; compose_version?: number; env_version?: number; protected?: boolean }) =>
     request<DeployTag>(`/api/v1/projects/${projectId}/deploy-tags`, { method: 'POST', body: JSON.stringify(data) }),
   deleteDeployTag: (projectId: string, tagId: string) =>
     request<void>(`/api/v1/projects/${projectId}/deploy-tags/${tagId}`, { method: 'DELETE' }),
@@ -644,6 +754,9 @@ export const api = {
     request<DeploySettings>(`/api/v1/projects/${projectId}/deploy-settings`, {
       method: 'PUT', body: JSON.stringify(data),
     }),
+
+  getComposeServices: (projectId: string) =>
+    request<{ services: ComposeServiceInfo[] }>(`/api/v1/projects/${projectId}/compose/services`),
 
   // Containers — per-project
   listContainers: (projectId: string) =>
@@ -803,9 +916,76 @@ export const api = {
     window.open('/api/v1/system/backup')
   },
 
-  // Self-update
-  getUpdateStatus: () => request<{ can_update: boolean; install_path: string }>('/api/v1/system/update/status'),
+  // App logs
+  getAppLogs: (n = 500) => request<{ source: string; lines: string[] }>(`/api/v1/system/app-logs?n=${n}`),
+  appLogsStreamUrl: () => '/api/v1/system/app-logs/stream',
+
+  // OpenTelemetry / Jaeger proxy
+  otelStatus: () => request<OTelStatus>('/api/v1/otel/status'),
+  otelServices: () => request<{ data: string[] }>('/api/v1/otel/services'),
+  otelOperations: (service: string) =>
+    request<{ data: Array<{ name: string; spanKind: string }> }>(`/api/v1/otel/operations?service=${encodeURIComponent(service)}`),
+  otelTraces: (params: {
+    service?: string; limit?: number; operation?: string
+    search?: string; status?: string; min_duration_ms?: number; time_range?: string
+  } = {}) => {
+    const q = new URLSearchParams()
+    if (params.service) q.set('service', params.service)
+    if (params.limit) q.set('limit', String(params.limit))
+    if (params.operation) q.set('operation', params.operation)
+    if (params.search) q.set('search', params.search)
+    if (params.status) q.set('status', params.status)
+    if (params.min_duration_ms) q.set('min_duration_ms', String(params.min_duration_ms))
+    if (params.time_range) q.set('time_range', params.time_range)
+    return request<{ data: OTelTrace[] }>(`/api/v1/otel/traces?${q}`)
+  },
+  otelTrace: (id: string) => request<{ data: OTelTrace[] }>(`/api/v1/otel/traces/${id}`),
+  otelDeleteTraces: () => request<{ deleted: number }>('/api/v1/otel/traces', { method: 'DELETE' }),
+
+  // Retention settings
+  getRetentionSettings: () => request<RetentionSettings>('/api/v1/settings/retention'),
+  saveRetentionSettings: (s: RetentionSettings) => request<RetentionSettings>('/api/v1/settings/retention', {
+    method: 'PUT', body: JSON.stringify(s),
+  }),
+
+  // App log management
+  clearAppLogs: () => request<{ status: string }>('/api/v1/system/app-logs', { method: 'DELETE' }),
+
+  // Docker disk usage + image prune
+  getSystemDf: () => request<{ rows: DiskUsageRow[] }>('/api/v1/system/df'),
+  pruneImages: (all = false) =>
+    request<{ output: string; removed_records: number }>(`/api/v1/images/prune${all ? '?all=true' : ''}`, { method: 'POST', body: '{}' }),
+
+  // Project clone
+  cloneProject: (projectId: string, name: string, description?: string) =>
+    request<{ id: string; name: string; description: string; status: string }>(`/api/v1/projects/${projectId}/clone`, {
+      method: 'POST', body: JSON.stringify({ name, description }),
+    }),
+
+  // Self-update, rollback, and DB compaction
+  getUpdateStatus: () => request<{ can_update: boolean; can_rollback: boolean; install_path: string; backup_path: string }>('/api/v1/system/update/status'),
   systemUpdateUrl: () => '/api/v1/system/update',
+  systemRollbackUrl: () => '/api/v1/system/rollback',
+
+  // Scheduled self-update — upload now, install automatically at a chosen time.
+  scheduleUpdateUrl: () => '/api/v1/system/update/schedule',
+  getScheduledUpdate: () => request<{
+    scheduled: boolean
+    run_at?: string
+    filename?: string
+    version?: string
+    uploaded_by?: string
+    uploaded_at?: string
+    active: boolean
+    last_result?: string
+    last_log?: string
+  }>('/api/v1/system/update/scheduled'),
+  cancelScheduledUpdate: () => request<{ status: string }>('/api/v1/system/update/scheduled', { method: 'DELETE' }),
+  compactDB: () => request<{ status: string; bytes_before: number; bytes_after: number; bytes_freed: number }>('/api/v1/system/compact', { method: 'POST', body: '{}' }),
+  pruneAll: (params?: { sessions?: number; otel_spans?: number; audit?: number; deployments?: number }) => {
+    const q = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v]) => v !== undefined).map(([k,v]) => [k, String(v)])).toString() : ''
+    return request<{ status: string; sessions_deleted: number; otel_spans_deleted: number; audit_deleted: number; deployments_deleted: number }>(`/api/v1/system/prune${q}`, { method: 'POST', body: '{}' })
+  },
 
   // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
   uploadFile: (
@@ -844,6 +1024,108 @@ export const api = {
       xhr.send(form)
     })
   },
+
+  // --- Host package safety (Tier 1) ---
+  packageStatus: () => request<{ protected: string[]; held: string[] }>('/api/v1/system/packages/status'),
+  ensurePackageHolds: () => request<{ held: string[] }>('/api/v1/system/packages/hold', { method: 'POST' }),
+  installPackages: (paths: string[], force = false) =>
+    request<PackageInstallResult>('/api/v1/system/packages/install', {
+      method: 'POST', body: JSON.stringify({ paths, force }),
+    }),
+  fixBroken: (force = false) =>
+    request<PackageInstallResult>('/api/v1/system/packages/fix-broken', {
+      method: 'POST', body: JSON.stringify({ force }),
+    }),
+
+  // --- System maintenance (Tier 1 / 4) ---
+  reconcile: () => request<ReconcileReport>('/api/v1/system/reconcile', { method: 'POST' }),
+  optimize: (opts: { compact?: boolean; drop_caches?: boolean; docker_prune?: boolean }) =>
+    request<OptimizeResult>('/api/v1/system/optimize', { method: 'POST', body: JSON.stringify(opts) }),
+
+  // --- Rollback + tags (Tier 6) ---
+  rollback: (projectId: string, body: { tag_id?: string; deployment_id?: string; compose_version?: number; env_version?: number }) =>
+    request<{ deployment_id: string; stream: string }>(`/api/v1/projects/${projectId}/rollback`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+  toggleTagProtected: (projectId: string, tagId: string) =>
+    request<DeployTag>(`/api/v1/projects/${projectId}/deploy-tags/${tagId}/protect`, { method: 'POST' }),
+
+  // --- Backups (Tier 2) ---
+  listBackups: () => request<BackupRecord[]>('/api/v1/system/backups'),
+  createBackup: (body: { scope: string; project_id?: string; include_volumes?: boolean; include_config?: boolean; encrypt?: boolean }) =>
+    request<BackupRecord>('/api/v1/system/backups', { method: 'POST', body: JSON.stringify(body) }),
+  inspectBackup: (id: string) => request<RestorePlan>(`/api/v1/system/backups/${id}/inspect`),
+  restoreBackup: (id: string, opts: RestoreOptions) =>
+    request<{ result: RestoreResult; warning?: string }>(`/api/v1/system/backups/${id}/restore`, {
+      method: 'POST', body: JSON.stringify(opts),
+    }),
+  deleteBackup: (id: string) => request<void>(`/api/v1/system/backups/${id}`, { method: 'DELETE' }),
+  downloadBackupURL: (id: string) => `/api/v1/system/backups/${id}/download`,
+  getBackupSchedule: () => request<BackupSchedule>('/api/v1/system/backups-schedule'),
+  saveBackupSchedule: (s: BackupSchedule) =>
+    request<BackupSchedule>('/api/v1/system/backups-schedule', { method: 'POST', body: JSON.stringify(s) }),
+
+  // --- Terminal policy (Tier 3) ---
+  getTerminalPolicy: () => request<TerminalPolicy>('/api/v1/terminal/policy'),
+  getTerminalPolicyDefaults: () => request<{ default_deny: string[] }>('/api/v1/terminal/policy/defaults'),
+  saveTerminalPolicy: (p: TerminalPolicy) =>
+    request<TerminalPolicy>('/api/v1/terminal/policy', { method: 'POST', body: JSON.stringify(p) }),
+
+  // --- Docker network IPAM (Tier 8) ---
+  createDockerNetworkIPAM: (body: { name: string; driver?: string; subnet?: string; gateway?: string; ip_range?: string; internal?: boolean; attachable?: boolean }) =>
+    request<DockerNetwork>('/api/v1/docker/networks', { method: 'POST', body: JSON.stringify(body) }),
 }
 
 export { ApiError }
+
+// --- New types (Tiers 1-8) ---
+export interface PackageSimulation {
+  install: string[]; upgrade: string[]; remove: string[]; protected_removals: string[]; raw: string
+}
+export interface PackageInstallResult {
+  applied?: boolean; output?: string; simulation?: PackageSimulation; error?: string; protected?: string[]
+}
+export interface ReconcileItemErr { name: string; err: string }
+export interface ReconcileReport {
+  docker_ready: boolean
+  projects_up: string[]
+  project_errors: ReconcileItemErr[]
+  nginx_applied: string[]
+  nginx_errors: ReconcileItemErr[]
+  started_at: string
+  finished_at: string
+}
+export interface CompactResult { collection: string; reclaimed_bytes: number; error?: string }
+export interface OptimizeResult {
+  ram_used_before: number; ram_used_after: number; ram_freed_bytes: number
+  compacted: CompactResult[]; disk_reclaimed_bytes: number; dropped_caches: boolean
+  docker_prune_output?: string; errors?: string[]
+}
+export interface BackupRecord {
+  id: string; created_at: string; scope: string; project_id: string; path: string
+  size_bytes: number; contents: string[]; volumes: string[]; encrypted: boolean
+  sensitive: boolean; triggered_by: string; status: string; note: string
+}
+export interface BackupSchedule {
+  id: string; enabled: boolean; time_of_day: string; scope: string
+  include_volumes: boolean; include_config: boolean; encrypt: boolean
+  retention: number; dest_path: string; last_run_at?: string | null; updated_at: string
+}
+export interface BackupManifest {
+  version: number; created_at: string; scope: string; project_id: string
+  volumes: string[]; encrypted: boolean; has_config: boolean
+}
+export interface RestorePlan {
+  manifest: BackupManifest; projects: string[]; volumes: string[]
+  has_config: boolean; has_db: boolean; has_nginx: boolean
+}
+export interface RestoreOptions {
+  volumes?: boolean; projects?: boolean; config?: boolean; db?: boolean; nginx?: boolean; certs?: boolean
+}
+export interface RestoreResult {
+  restored_projects: string[]; restored_volumes: string[]
+  restored_config: boolean; restored_db: boolean; errors: string[]
+}
+export interface TerminalPolicy {
+  id: string; mode: string; deny: string[]; allow: string[]; restricted_paths: string[]; updated_at?: string
+}

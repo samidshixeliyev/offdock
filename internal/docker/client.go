@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -150,6 +151,27 @@ func (c *Client) HealthStatus(ctx context.Context, containerName string) (string
 	return strings.TrimSpace(out), nil
 }
 
+// HealthDetail reports a container's health plus, for stopped containers, its
+// exit code. Status mirrors HealthStatus ("healthy"/"running"/"exited"/...).
+// ExitCode is meaningful only when Status == "exited".
+func (c *Client) HealthDetail(ctx context.Context, containerName string) (status string, exitCode int, err error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "inspect",
+		"--format", `{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.State.ExitCode}}`,
+		containerName,
+	)
+	if err != nil {
+		return "", 0, err
+	}
+	parts := strings.SplitN(strings.TrimSpace(out), "|", 2)
+	status = parts[0]
+	if len(parts) == 2 {
+		fmt.Sscanf(parts[1], "%d", &exitCode)
+	}
+	return status, exitCode, nil
+}
+
 // Logs returns a streaming docker logs command (caller must start and manage it).
 func (c *Client) Logs(ctx context.Context, containerName string, tail int) *exec.Cmd {
 	tailStr := "all"
@@ -219,9 +241,29 @@ func (c *Client) StartContainer(ctx context.Context, name string) error {
 }
 
 // ComposeUp runs docker compose up -d. forceRecreate ensures containers are
-// always rebuilt even when the image digest has not changed.
-func (c *Client) ComposeUp(ctx context.Context, project, composePath string, forceRecreate bool) (string, error) {
-	args := []string{"compose", "-p", project, "-f", composePath, "up", "-d", "--remove-orphans"}
+// always rebuilt even when the image digest has not changed. It always passes
+// --remove-orphans (deploy path). Additional compose override files (e.g. the
+// OTel instrumentation override) can be passed via overrideFiles.
+func (c *Client) ComposeUp(ctx context.Context, project, composePath string, forceRecreate bool, overrideFiles ...string) (string, error) {
+	return c.ComposeUpOpts(ctx, project, composePath, forceRecreate, true, overrideFiles...)
+}
+
+// ComposeUpOpts runs docker compose up -d with explicit control over
+// --force-recreate and --remove-orphans. The reconciler uses
+// removeOrphans=false so re-asserting one project never deletes containers that
+// happen to share a (collision-mapped) compose project name. Additional compose
+// override files can be layered via overrideFiles.
+func (c *Client) ComposeUpOpts(ctx context.Context, project, composePath string, forceRecreate, removeOrphans bool, overrideFiles ...string) (string, error) {
+	args := []string{"compose", "-p", project, "-f", composePath}
+	for _, f := range overrideFiles {
+		if f != "" {
+			args = append(args, "-f", f)
+		}
+	}
+	args = append(args, "up", "-d")
+	if removeOrphans {
+		args = append(args, "--remove-orphans")
+	}
 	if forceRecreate {
 		args = append(args, "--force-recreate")
 	}
@@ -231,6 +273,36 @@ func (c *Client) ComposeUp(ctx context.Context, project, composePath string, for
 	cmd.Stderr = &out
 	err := cmd.Run()
 	return out.String(), err
+}
+
+// Info runs `docker info` to confirm the daemon is reachable.
+func (c *Client) Info(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	_, err := run(ctx, "info", "--format", "{{.ServerVersion}}")
+	return err
+}
+
+// SystemPrune removes unused images, stopped containers, build cache and unused
+// networks. It NEVER touches volumes (no --volumes flag), so persistent data is
+// safe. Returns the command output (which includes reclaimed space).
+func (c *Client) SystemPrune(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	return run(ctx, "system", "prune", "-f")
+}
+
+// EnsureNetwork creates a Docker network if it doesn't already exist.
+func (c *Client) EnsureNetwork(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	// Check if it exists first.
+	out, _ := run(ctx, "network", "inspect", name)
+	if strings.Contains(out, `"Name"`) {
+		return nil
+	}
+	_, err := run(ctx, "network", "create", name)
+	return err
 }
 
 // DeleteContainer force-removes a container by name or short ID.
@@ -319,12 +391,45 @@ func (c *Client) ListNetworks(ctx context.Context) ([]NetworkDetail, error) {
 
 // CreateNetwork creates a Docker network with the given driver (default: bridge).
 func (c *Client) CreateNetwork(ctx context.Context, name, driver string) error {
-	if driver == "" {
-		driver = "bridge"
+	return c.CreateNetworkOpts(ctx, NetworkCreateOpts{Name: name, Driver: driver})
+}
+
+// NetworkCreateOpts holds the IPAM and behaviour options for creating a network.
+type NetworkCreateOpts struct {
+	Name       string
+	Driver     string
+	Subnet     string // e.g. "172.28.0.0/16"
+	Gateway    string // e.g. "172.28.0.1"
+	IPRange    string // e.g. "172.28.5.0/24"
+	Internal   bool   // no external connectivity
+	Attachable bool   // allow manual container attach
+}
+
+// CreateNetworkOpts creates a Docker network with optional IPAM configuration.
+func (c *Client) CreateNetworkOpts(ctx context.Context, o NetworkCreateOpts) error {
+	if o.Driver == "" {
+		o.Driver = "bridge"
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
-	out, err := run(ctx, "network", "create", "--driver", driver, name)
+	args := []string{"network", "create", "--driver", o.Driver}
+	if o.Subnet != "" {
+		args = append(args, "--subnet", o.Subnet)
+	}
+	if o.Gateway != "" {
+		args = append(args, "--gateway", o.Gateway)
+	}
+	if o.IPRange != "" {
+		args = append(args, "--ip-range", o.IPRange)
+	}
+	if o.Internal {
+		args = append(args, "--internal")
+	}
+	if o.Attachable {
+		args = append(args, "--attachable")
+	}
+	args = append(args, o.Name)
+	out, err := run(ctx, args...)
 	if err != nil {
 		return fmt.Errorf("%s", strings.TrimSpace(out))
 	}
@@ -439,6 +544,47 @@ func (c *Client) DeleteVolume(ctx context.Context, name string) error {
 	return nil
 }
 
+// VolumeBackupImage is the helper image used to tar/untar volume contents.
+// It must be present on the (air-gapped) host; busybox/alpine both work.
+var VolumeBackupImage = "alpine"
+
+// ExportVolume archives a named volume's contents to destTarGz (a .tar.gz path
+// on the host) by running a throwaway helper container that tars the mount.
+func (c *Client) ExportVolume(ctx context.Context, volume, destTarGz string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	destDir := filepath.Dir(destTarGz)
+	base := filepath.Base(destTarGz)
+	out, err := run(ctx, "run", "--rm",
+		"-v", volume+":/from:ro",
+		"-v", destDir+":/backup",
+		VolumeBackupImage,
+		"sh", "-c", "tar czf /backup/"+base+" -C /from .")
+	if err != nil {
+		return fmt.Errorf("export volume %s: %w\n%s", volume, err, out)
+	}
+	return nil
+}
+
+// ImportVolume restores a .tar.gz (srcTarGz on the host) into a named volume,
+// creating the volume if needed. Existing content is overwritten.
+func (c *Client) ImportVolume(ctx context.Context, volume, srcTarGz string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	_, _ = run(ctx, "volume", "create", volume)
+	srcDir := filepath.Dir(srcTarGz)
+	base := filepath.Base(srcTarGz)
+	out, err := run(ctx, "run", "--rm",
+		"-v", volume+":/to",
+		"-v", srcDir+":/backup:ro",
+		VolumeBackupImage,
+		"sh", "-c", "rm -rf /to/* /to/..?* /to/.[!.]* 2>/dev/null; tar xzf /backup/"+base+" -C /to")
+	if err != nil {
+		return fmt.Errorf("import volume %s: %w\n%s", volume, err, out)
+	}
+	return nil
+}
+
 // PruneVolumes removes all unused Docker volumes and returns (names, spaceReclaimed).
 func (c *Client) PruneVolumes(ctx context.Context) ([]string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -539,4 +685,86 @@ func (c *Client) ComposePS(ctx context.Context, project, composePath string) ([]
 		}
 	}
 	return result, nil
+}
+
+// ─── Disk usage + image prune ────────────────────────────────────────────────
+
+// DiskUsageRow is one row from docker system df output.
+type DiskUsageRow struct {
+	Type        string `json:"type"`
+	Total       string `json:"total"`
+	Active      string `json:"active"`
+	Size        string `json:"size"`
+	Reclaimable string `json:"reclaimable"`
+}
+
+// SystemDiskUsage runs docker system df and returns per-type disk usage.
+func (c *Client) SystemDiskUsage() ([]DiskUsageRow, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "system", "df")
+	if err != nil {
+		return nil, err
+	}
+	return parseDFOutput(out), nil
+}
+
+// parseDFOutput converts docker system df plain-text into typed rows.
+// Handles multi-word types like "Local Volumes" by splitting on ≥2 spaces.
+func parseDFOutput(out string) []DiskUsageRow {
+	var rows []DiskUsageRow
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.HasPrefix(line, "TYPE") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := splitOnMultiSpace(line)
+		if len(parts) < 4 {
+			continue
+		}
+		row := DiskUsageRow{Type: parts[0], Total: parts[1], Active: parts[2], Size: parts[3]}
+		if len(parts) > 4 {
+			row.Reclaimable = parts[4]
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func splitOnMultiSpace(s string) []string {
+	var parts []string
+	cur := ""
+	spaces := 0
+	for _, ch := range s {
+		if ch == ' ' {
+			spaces++
+			if spaces >= 2 {
+				if t := strings.TrimSpace(cur); t != "" {
+					parts = append(parts, t)
+					cur = ""
+				}
+				spaces = 0
+			} else {
+				cur += string(ch)
+			}
+		} else {
+			spaces = 0
+			cur += string(ch)
+		}
+	}
+	if t := strings.TrimSpace(cur); t != "" {
+		parts = append(parts, t)
+	}
+	return parts
+}
+
+// PruneImages removes dangling Docker images (all=false) or all images not
+// referenced by any running container (all=true).
+func (c *Client) PruneImages(all bool) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	args := []string{"image", "prune", "-f"}
+	if all {
+		args = append(args, "-a")
+	}
+	return run(ctx, args...)
 }

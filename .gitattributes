@@ -1,0 +1,22 @@
+# Shell scripts and the systemd unit must always use LF — CRLF breaks them on Linux.
+*.sh        text eol=lf
+*.service   text eol=lf
+install.sh  text eol=lf
+
+# OpenTelemetry script tracers are mounted into Linux containers — keep them LF.
+otel/**/*.js   text eol=lf
+otel/**/*.py   text eol=lf
+otel/**/*.php  text eol=lf
+otel/**/*.rb   text eol=lf
+otel/**/*.ini  text eol=lf
+otel/**/*.go   text eol=lf
+otel/**/*.md   text eol=lf
+
+# Bundled native agents (Java jar, .NET native libs/assemblies) are binary blobs.
+*.jar       binary
+*.dll       binary
+*.so        binary
+*.so.*      binary
+*.pdb       binary
+*.a         binary
+*.dylib     binary

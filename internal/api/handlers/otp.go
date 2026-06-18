@@ -24,6 +24,15 @@ func (h *H) OTPRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
+	// Respect the per-user host-terminal gate set by superadmin.
+	switch user.EffectiveHostTerminalMode() {
+	case store.HostTermDisabled:
+		writeError(w, http.StatusForbidden, "host terminal access is disabled for your account")
+		return
+	case store.HostTermBypass:
+		writeJSON(w, http.StatusOK, map[string]any{"bypass": true, "message": "no OTP required for your account"})
+		return
+	}
 	if strings.TrimSpace(user.Email) == "" {
 		writeError(w, http.StatusUnprocessableEntity, "your account has no email address — ask an admin to set one before using the root terminal")
 		return
@@ -42,7 +51,11 @@ func (h *H) OTPRequest(w http.ResponseWriter, r *http.Request) {
 		h.db.OTPChallenges.Save(old) //nolint:errcheck
 	}
 
-	code := generateOTPCode()
+	code, err := generateOTPCode()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not generate OTP")
+		return
+	}
 	hash := hashOTP(code)
 
 	challenge := store.OTPChallenge{
@@ -59,18 +72,32 @@ func (h *H) OTPRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	subject := "OffDock Root Terminal — OTP Code"
-	body := fmt.Sprintf(`Hello %s,
+	h.settingsMu.RLock()
+	otpSubjectTpl := h.smtpSettings.OTPSubject
+	otpBodyTpl := h.smtpSettings.OTPBody
+	h.settingsMu.RUnlock()
+
+	if otpSubjectTpl == "" {
+		otpSubjectTpl = "OffDock Root Terminal — OTP Code"
+	}
+	if otpBodyTpl == "" {
+		otpBodyTpl = `Hello {{username}},
 
 A root terminal session was requested on OffDock.
 
 Your one-time password is:
 
-    %s
+    {{code}}
 
-This code expires in 5 minutes. If you did not request this, ignore this email.
+This code expires in {{expires_minutes}} minutes. If you did not request this, ignore this email.
 
-— OffDock`, user.Username, code)
+— OffDock`
+	}
+	expiresMin := fmt.Sprintf("%d", int(otpTTL.Minutes()))
+	subject := otpSubjectTpl
+	body := strings.ReplaceAll(otpBodyTpl, "{{username}}", user.Username)
+	body = strings.ReplaceAll(body, "{{code}}", code)
+	body = strings.ReplaceAll(body, "{{expires_minutes}}", expiresMin)
 
 	if err := h.mailer.Send(user.Email, subject, body); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not send OTP email: "+err.Error())
@@ -124,6 +151,14 @@ func (h *H) OTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hashOTP(req.Code) != challenge.CodeHash {
+		challenge.Attempts++
+		h.db.OTPChallenges.Save(challenge) //nolint:errcheck
+		if challenge.Attempts >= 5 {
+			challenge.Used = true
+			h.db.OTPChallenges.Save(challenge) //nolint:errcheck
+			writeError(w, http.StatusUnprocessableEntity, "too many incorrect attempts — request a new OTP")
+			return
+		}
 		writeError(w, http.StatusUnprocessableEntity, "incorrect OTP code")
 		return
 	}
@@ -132,8 +167,12 @@ func (h *H) OTPVerify(w http.ResponseWriter, r *http.Request) {
 	challenge.Used = true
 	h.db.OTPChallenges.Save(challenge) //nolint:errcheck
 
-	// Issue a short-lived terminal token (signed JWT with 10-min expiry, stored in DB).
-	token := generateTerminalToken()
+	// Issue a short-lived terminal token (32-byte random token, stored as hash in DB).
+	token, err := generateTerminalToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not generate terminal token")
+		return
+	}
 	termChallenge := store.OTPChallenge{
 		ID:        store.NewULID(),
 		UserID:    user.ID,
@@ -176,19 +215,21 @@ func (h *H) ValidateTerminalToken(token string) bool {
 
 // --- helpers ----------------------------------------------------------------
 
-func generateOTPCode() string {
+func generateOTPCode() (string, error) {
 	max := big.NewInt(1000000)
 	n, err := rand.Int(rand.Reader, max)
 	if err != nil {
-		n = big.NewInt(123456)
+		return "", fmt.Errorf("failed to generate OTP: %w", err)
 	}
-	return fmt.Sprintf("%06d", n.Int64())
+	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
-func generateTerminalToken() string {
+func generateTerminalToken() (string, error) {
 	b := make([]byte, 32)
-	rand.Read(b) //nolint:errcheck
-	return hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("failed to generate terminal token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func hashOTP(code string) string {

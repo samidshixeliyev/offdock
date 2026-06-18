@@ -171,6 +171,24 @@ func containerBridgeIface(containerName string) (iface, containerIP string, err 
 	return bridgeIface, containerIPAddr, nil
 }
 
+// containerPID returns the host PID of the container's init process.
+func containerPID(containerName string) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "inspect",
+		"--format", "{{.State.Pid}}", containerName,
+	).Output()
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || pid == 0 {
+		return 0, fmt.Errorf("invalid pid")
+	}
+	return pid, nil
+}
+
+
 // ─── SSE trace stream ─────────────────────────────────────────────────────────
 
 var ipHdrRe = regexp.MustCompile(`IP (\d+\.\d+\.\d+\.\d+)\.(\S+) > (\d+\.\d+\.\d+\.\d+)\.(\S+):`)
@@ -199,24 +217,8 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 
 	name := chi.URLParam(r, "name")
 
-	// Verify container is running.
-	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer checkCancel()
-	pidOut, err := exec.CommandContext(checkCtx, "docker", "inspect",
-		"--format", "{{.State.Running}}", name).Output()
-	if err != nil || strings.TrimSpace(string(pidOut)) != "true" {
-		http.Error(w, "container not found or not running", http.StatusNotFound)
-		return
-	}
-
-	// Find bridge interface and container IP.
-	iface, containerIP, err := containerBridgeIface(name)
-	if err != nil {
-		http.Error(w, "could not find container network: "+err.Error(), http.StatusUnprocessableEntity)
-		return
-	}
-
-	// SSE setup.
+	// SSE setup first — so the client always receives onopen and error
+	// messages are delivered as TraceError events rather than HTTP errors.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -224,6 +226,36 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify container is running.
+	checkCtx, checkCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer checkCancel()
+	pidOut, err := exec.CommandContext(checkCtx, "docker", "inspect",
+		"--format", "{{.State.Running}}", name).Output()
+	if err != nil || strings.TrimSpace(string(pidOut)) != "true" {
+		// Send error via SSE so the frontend can display it, then close.
+		fmt.Fprintf(w, "data: {\"type\":\"error\",\"message\":\"container %s is not running\"}\n\n", name)
+		flusher.Flush()
+		return
+	}
+
+	// Find bridge interface and container IP (used for bridge-mode capture / info).
+	iface, containerIP, bridgeErr := containerBridgeIface(name)
+
+	// Try nsenter into the container's network namespace so we capture loopback
+	// traffic too. This is required when services share a container (e.g. a Java
+	// app with an embedded PostgreSQL): those connections use 127.0.0.1 and never
+	// cross the bridge interface.
+	pid, pidErr := containerPID(name)
+	_, nsenterLookErr := exec.LookPath("nsenter")
+	useNsenter := pidErr == nil && nsenterLookErr == nil
+
+	if bridgeErr != nil && !useNsenter {
+		fmt.Fprintf(w, "data: {\"type\":\"error\",\"message\":\"could not find container network: %s — container may use host networking or a non-standard bridge\"}\n\n",
+			strings.ReplaceAll(bridgeErr.Error(), `"`, `\"`))
+		flusher.Flush()
 		return
 	}
 
@@ -252,6 +284,7 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = h.db.TraceSessions.Save(session)
+		h.db.PruneTraceSessions(500)
 	}
 	defer saveSession()
 
@@ -270,29 +303,49 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	send(TraceSpan{
-		Type:    TraceInfo,
-		Message: fmt.Sprintf("Tracing %s on %s (IP: %s)", name, iface, containerIP),
-	})
-
 	traceCtx, traceCancel := context.WithCancel(r.Context())
 	defer traceCancel()
 
-	// Run tcpdump on the bridge interface, filtering only this container's IP.
-	// -A: ASCII output; -nn: no name resolution; -s 2048: capture 2KB per packet.
-	cmd := exec.CommandContext(traceCtx,
-		"tcpdump", "-i", iface, "-l", "-s", "2048", "-A", "-nn",
-		"host", containerIP, "and", "tcp",
-	)
-	cmd.Stderr = nil
+	var cmd *exec.Cmd
+	if useNsenter {
+		// nsenter: captures bridge + loopback (e.g. same-container postgres on 127.0.0.1).
+		infoMsg := fmt.Sprintf("Tracing %s via netns PID %d — bridge + loopback (SQL, Redis, HTTP)", name, pid)
+		if containerIP != "" {
+			infoMsg = fmt.Sprintf("Tracing %s on %s via netns — bridge + loopback (SQL, Redis, HTTP)", name, containerIP)
+		}
+		send(TraceSpan{Type: TraceInfo, Message: infoMsg})
+		cmd = exec.CommandContext(traceCtx,
+			"nsenter", "-t", strconv.Itoa(pid), "-n", "--",
+			"tcpdump", "-i", "any", "-l", "-s", "0", "-A", "-nn",
+			"tcp", "and", "(", "port", "80", "or", "port", "8080", "or",
+			"port", "8443", "or", "port", "443", "or", "port", "5432", "or",
+			"port", "3306", "or", "port", "6379", "or", "port", "27017", "or",
+			"port", "1433", ")",
+		)
+	} else {
+		// Bridge-mode: captures only traffic that crosses the container's bridge veth.
+		send(TraceSpan{
+			Type:    TraceInfo,
+			Message: fmt.Sprintf("Tracing %s on %s (IP: %s)", name, iface, containerIP),
+		})
+		cmd = exec.CommandContext(traceCtx,
+			"tcpdump", "-i", iface, "-l", "-s", "0", "-A", "-nn",
+			"host", containerIP, "and", "tcp",
+		)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		send(TraceSpan{Type: TraceError, Message: "pipe error: " + err.Error()})
 		return
 	}
+	stderrPipe, _ := cmd.StderrPipe()
+
 	if err := cmd.Start(); err != nil {
+		if stderrPipe != nil {
+			stderrPipe.Close() //nolint:errcheck
+		}
 		send(TraceSpan{Type: TraceError, Message: "tcpdump failed to start: " + err.Error() +
-			" (offdock must run as root or have CAP_NET_RAW)"})
+			" — install tcpdump and ensure offdock runs as root or has CAP_NET_RAW"})
 		return
 	}
 	defer func() {
@@ -301,13 +354,34 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 		cmd.Wait()         //nolint:errcheck
 	}()
 
+	// Collect tcpdump stderr in background. Errors (permission denied, bad
+	// interface, etc.) go there and would otherwise be silently swallowed.
+	var stderrBuf strings.Builder
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		if stderrPipe == nil {
+			return
+		}
+		sc := bufio.NewScanner(stderrPipe)
+		for sc.Scan() {
+			line := sc.Text()
+			// Skip the normal startup messages tcpdump prints to stderr.
+			if strings.Contains(line, "listening on") || strings.Contains(line, "verbose output") {
+				continue
+			}
+			stderrBuf.WriteString(strings.TrimPrefix(line, "tcpdump: "))
+			stderrBuf.WriteByte(' ')
+		}
+	}()
+
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 
 	lines := make(chan string, 512)
 	go func() {
 		sc := bufio.NewScanner(stdout)
-		sc.Buffer(make([]byte, 131072), 131072)
+		sc.Buffer(make([]byte, 262144), 262144)
 		for sc.Scan() {
 			select {
 			case lines <- sc.Text():
@@ -387,11 +461,16 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Expire stale open requests.
+		// Expire stale open requests and their activeSpan entries.
 		for k, v := range openReqs {
 			if time.Since(v.t) > 30*time.Second {
 				delete(openReqs, k)
 			}
+		}
+		// activeSpan grows unboundedly (one entry per src endpoint, never deleted).
+		// Prune entries that have no corresponding open request to prevent memory leak.
+		if len(activeSpan) > 1000 {
+			activeSpan = make(map[string]string)
 		}
 		send(*ev)
 	}
@@ -405,6 +484,14 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		case line, ok := <-lines:
 			if !ok {
+				// stdout closed — tcpdump exited. Wait briefly for stderr to drain.
+				select {
+				case <-stderrDone:
+				case <-time.After(500 * time.Millisecond):
+				}
+				if msg := strings.TrimSpace(stderrBuf.String()); msg != "" {
+					send(TraceSpan{Type: TraceError, Message: "tcpdump: " + msg})
+				}
 				return
 			}
 			if m := ipHdrRe.FindStringSubmatch(line); m != nil {
@@ -438,6 +525,15 @@ var (
 	pgCmdRe = regexp.MustCompile(`C\.*\s*(SELECT|INSERT\s+\d+|UPDATE|DELETE)\s+(\d+)`)
 	// Table name extraction
 	tableRe = regexp.MustCompile(`(?i)(?:FROM|INTO|UPDATE|JOIN)\s+["` + "`" + `]?(\w+)["` + "`" + `]?`)
+
+	// In tcpdump -A output, non-printable bytes are shown as '.'.
+	// Runs of 3+ dots therefore represent binary protocol data, not literal SQL.
+	pgBinaryRunRe = regexp.MustCompile(`\.{3,}`)
+	// $N parameter placeholders in SQL text.
+	pgParamNumRe = regexp.MustCompile(`\$(\d+)`)
+	// PostgreSQL protocol noise: statement/portal names, single-byte message types.
+	// e.g. "C_5", "S1", "PC_5", "9C_5", "__asyncpg_stmt_0__"
+	pgNoiseRe = regexp.MustCompile(`^(?:\d{0,3}[A-Z][A-Z_]?\d*|__[a-z_0-9]+__)$`)
 )
 
 func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *TraceSpan {
@@ -458,7 +554,10 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 	}
 
 	// ── PostgreSQL (port 5432) ─────────────────────────────────────────────────
-	if dstPort == 5432 || srcPort == 5432 {
+	// Only parse client→server direction (dstPort==5432). Server→client packets
+	// contain CommandComplete/DataRow responses — not SQL — and previously caused
+	// spurious "SELECT 2", "COMMIT" entries to appear in the waterfall.
+	if dstPort == 5432 {
 		pgKeywords := []string{
 			"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
 			"BEGIN", "COMMIT", "ROLLBACK", "WITH", "CALL", "EXECUTE", "MERGE",
@@ -472,15 +571,15 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 		}
 	}
 
-	// ── MySQL (port 3306) ──────────────────────────────────────────────────────
-	if dstPort == 3306 || srcPort == 3306 {
+	// ── MySQL (port 3306) — client→server only ─────────────────────────────────
+	if dstPort == 3306 {
 		if q := extractMySQL(payload); q != "" {
 			return &TraceSpan{Type: TraceSQL, DBType: "mysql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
 
-	// ── MSSQL / SQL Server (port 1433) ─────────────────────────────────────────
-	if dstPort == 1433 || srcPort == 1433 {
+	// ── MSSQL / SQL Server (port 1433) — client→server only ────────────────────
+	if dstPort == 1433 {
 		if q := extractMSSQL(payload); q != "" {
 			return &TraceSpan{Type: TraceSQL, DBType: "mssql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
@@ -574,6 +673,9 @@ func extractMySQL(payload string) string {
 			}
 		}
 		q := extractPrintableFrom(payload[idx:], 16384)
+		if m := pgBinaryRunRe.FindStringIndex(q); m != nil {
+			q = q[:m[0]]
+		}
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			return q
 		}
@@ -641,6 +743,9 @@ func extractMSSQL(payload string) string {
 			}
 		}
 		q := extractPrintableFrom(payload[idx:], 16384)
+		if m := pgBinaryRunRe.FindStringIndex(q); m != nil {
+			q = q[:m[0]]
+		}
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			return q
 		}
@@ -674,11 +779,19 @@ func extractMongoDB(payload string) string {
 // Format: P<len4><stmt_name>\0<sql_text>\0
 // In ASCII tcpdump output this appears as: P...__stmt_name__.<SQL text>
 // We strip the statement name prefix to return clean SQL.
+// extractPostgresExtended handles the PostgreSQL Extended Query Protocol.
+//
+// In tcpdump -A output non-printable bytes appear as '.' so a packet like:
+//   P\x00\x00\x00NstmtName\x00INSERT INTO t VALUES ($1,$2)\x00...B\x00\x00\x00H...\x00stmtName\x00...\x24UUID1\x00\x00\x00\x24UUID2
+// looks like:
+//   P....stmtName.INSERT INTO t VALUES ($1,$2)...B...`.......stmtName......$UUID1...$UUID2
+//
+// The function:
+//  1. Finds the SQL keyword and extracts clean SQL (stops at first 3+ dot run)
+//  2. Finds the Bind message ('B...') in the binary noise after the SQL
+//  3. Extracts parameter values from the Bind section
+//  4. Substitutes $1,$2,... with the actual extracted values
 func extractPostgresExtended(payload string, keywords []string) string {
-	// Look for the pattern: after "P" and some binary bytes, find an asyncpg/JDBC
-	// statement name like "__asyncpg_stmt_N__." or "S1." or just a null-byte boundary.
-	// Strategy: find the keyword in the payload, then walk backwards to confirm
-	// we're past a statement-name boundary (null byte or known prefix).
 	upper := strings.ToUpper(payload)
 	for _, kw := range keywords {
 		idx := strings.Index(upper, kw)
@@ -687,37 +800,143 @@ func extractPostgresExtended(payload string, keywords []string) string {
 		}
 		if idx > 0 {
 			prev := payload[idx-1]
-			// Check prev char is not alphanumeric (avoid false positives mid-word)
 			if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
 				continue
 			}
-			// Must be preceded by a dot, null, or whitespace (statement name boundary)
 			if prev != '.' && prev != 0 && prev != ' ' && prev != '\n' && prev != '\r' {
-				// Relax: also allow if within 32 bytes of a 'P' byte (Parse message start)
 				start := idx - 32
 				if start < 0 {
 					start = 0
 				}
-				hasPMsg := strings.ContainsRune(payload[start:idx], 'P')
-				if !hasPMsg {
+				if !strings.ContainsRune(payload[start:idx], 'P') {
 					continue
 				}
 			}
 		}
-		q := extractPrintableFrom(payload[idx:], 16384)
-		// Clean up: remove trailing asyncpg metadata that follows the null-terminated SQL
-		if q = strings.TrimSpace(q); len(q) > 3 {
-			// Remove any trailing "...D....S__asyncpg_stmt_..." noise
-			if cut := strings.Index(q, "...D"); cut > 10 {
-				q = strings.TrimSpace(q[:cut])
-			}
-			if cut := strings.Index(q, "\x00"); cut > 3 {
-				q = strings.TrimSpace(q[:cut])
-			}
-			return q
+
+		raw := extractPrintableFrom(payload[idx:], 32768)
+		if len(raw) < 3 {
+			continue
 		}
+
+		// ── Step 1: Extract clean SQL text ───────────────────────────────────
+		// SQL text ends where binary protocol bytes begin (3+ consecutive dots).
+		sql, noise := raw, ""
+		if m := pgBinaryRunRe.FindStringIndex(raw); m != nil {
+			sql = strings.TrimSpace(raw[:m[0]])
+			noise = raw[m[0]:]
+		}
+		if sql = strings.TrimSpace(sql); len(sql) < 3 {
+			continue
+		}
+
+		// ── Step 2: Count parameters and look for Bind values ────────────────
+		paramCount := pgCountParams(sql)
+		if paramCount > 0 && noise != "" {
+			if values := pgExtractBindValues(noise, paramCount); len(values) > 0 {
+				sql = pgSubstituteParams(sql, values)
+			}
+		}
+
+		return sql
 	}
 	return ""
+}
+
+// pgCountParams returns the highest $N placeholder number found in sql.
+func pgCountParams(sql string) int {
+	max := 0
+	for _, m := range pgParamNumRe.FindAllStringSubmatch(sql, -1) {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// pgExtractBindValues extracts actual parameter values from the binary noise
+// section that follows an SQL text in a tcpdump -A PostgreSQL payload.
+//
+// PostgreSQL Bind message format (in tcpdump -A):
+//   B [4-byte length as dots][portal\0][stmt\0][format-codes][param-count][len1][val1][len2][val2]...
+//
+// 36-byte values (UUIDs) have length byte 0x24 = '$' which IS printable, so they
+// appear as "$UUID" in the output — we strip the leading '$'.
+func pgExtractBindValues(noise string, paramCount int) []string {
+	// Find the Bind message: 'B' followed immediately by binary bytes.
+	bindPos := strings.Index(noise, "B...")
+	section := noise
+	if bindPos >= 0 {
+		section = noise[bindPos+1:] // skip past 'B'
+	}
+
+	var values []string
+	// Split on binary runs (3+ dots) and collect printable blobs.
+	for _, part := range pgBinaryRunRe.Split(section, -1) {
+		part = strings.TrimSpace(part)
+		if len(part) < 1 {
+			continue
+		}
+		if pgIsProtocolNoise(part) {
+			continue
+		}
+
+		// 36-byte UUID: the 4-byte length field ends in 0x24='$', so the blob
+		// appears as "$<UUID>" — strip the leading '$' to get the raw UUID.
+		if len(part) == 37 && part[0] == '$' && pgIsHexUUID(part[1:]) {
+			part = part[1:]
+		} else if len(part) < 1 {
+			continue
+		}
+
+		values = append(values, part)
+		if len(values) >= paramCount {
+			break
+		}
+	}
+	return values
+}
+
+// pgIsProtocolNoise returns true for blobs that are PostgreSQL protocol metadata
+// rather than actual parameter values: statement names, portal names, message
+// type bytes that happen to be printable.
+func pgIsProtocolNoise(s string) bool {
+	if len(s) <= 2 {
+		return true
+	}
+	// Statement/portal name patterns: "C_5", "S1", "PC_5", "9C_5", "__asyncpg_stmt_0__"
+	return pgNoiseRe.MatchString(s)
+}
+
+// pgIsHexUUID returns true if s looks like a PostgreSQL UUID value.
+func pgIsHexUUID(s string) bool {
+	if len(s) < 32 || len(s) > 36 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+			(c >= 'A' && c <= 'F') || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// pgSubstituteParams replaces $1, $2, ... in sql with quoted extracted values.
+func pgSubstituteParams(sql string, values []string) string {
+	for i, v := range values {
+		placeholder := fmt.Sprintf("$%d", i+1)
+		if !strings.Contains(sql, placeholder) {
+			continue
+		}
+		// Quote non-numeric values.
+		quoted := v
+		if _, err := strconv.ParseFloat(v, 64); err != nil {
+			quoted = "'" + v + "'"
+		}
+		sql = strings.Replace(sql, placeholder, quoted, 1)
+	}
+	return sql
 }
 
 func extractSQL(payload string, keywords []string) string {
@@ -733,7 +952,11 @@ func extractSQL(payload string, keywords []string) string {
 				continue
 			}
 		}
-		q := extractPrintableFrom(payload[idx:], 16384)
+		q := extractPrintableFrom(payload[idx:], 32768)
+		// Strip binary protocol noise (3+ dots from tcpdump -A) and everything after.
+		if m := pgBinaryRunRe.FindStringIndex(q); m != nil {
+			q = q[:m[0]]
+		}
 		if q = strings.TrimSpace(q); len(q) > 3 {
 			return q
 		}

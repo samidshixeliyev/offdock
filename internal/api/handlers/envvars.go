@@ -36,6 +36,10 @@ func (h *H) GetEnv(w http.ResponseWriter, r *http.Request) {
 // the user can save without re-entering secrets they haven't changed.
 func (h *H) SaveEnv(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
+	if _, err := h.db.Projects.FindByID(projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
 	claims := authmw.ClaimsFromContext(r.Context())
 
 	var req struct {
@@ -68,8 +72,10 @@ func (h *H) SaveEnv(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vars := make([]store.EnvVar, 0, len(req.Vars))
+	plainForHash := make([]envVarForHash, 0, len(req.Vars))
 	for _, v := range req.Vars {
 		var encrypted string
+		var plaintext string
 		// Preserve existing ciphertext when a secret has not been changed.
 		if v.IsSecret && v.Value == "********" {
 			enc, ok := existingEncrypted[v.Key]
@@ -78,6 +84,11 @@ func (h *H) SaveEnv(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			encrypted = enc
+			// Decrypt the preserved value so the content hash reflects the real
+			// (unchanged) secret rather than non-deterministic ciphertext.
+			if dec, err := h.enc.Decrypt(enc); err == nil {
+				plaintext = dec
+			}
 		} else {
 			var err error
 			encrypted, err = h.enc.Encrypt(v.Value)
@@ -85,33 +96,64 @@ func (h *H) SaveEnv(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "could not encrypt value for key "+v.Key)
 				return
 			}
+			plaintext = v.Value
 		}
 		vars = append(vars, store.EnvVar{
 			Key:      v.Key,
 			Value:    encrypted,
 			IsSecret: v.IsSecret,
 		})
+		plainForHash = append(plainForHash, envVarForHash{Key: v.Key, Value: plaintext, IsSecret: v.IsSecret})
 	}
 
+	hash := envContentHash(plainForHash)
+
+	// Find the latest existing version for both numbering and dedup.
 	version := 1
-	for _, s := range existing {
+	var latest *store.EnvVarSet
+	for i := range existing {
+		s := existing[i]
 		if s.Version >= version {
 			version = s.Version + 1
+		}
+		if latest == nil || s.Version > latest.Version {
+			latest = &existing[i]
+		}
+	}
+
+	// Dedup: skip creating a new version when content matches the latest.
+	if latest != nil {
+		latestHash := latest.ContentHash
+		if latestHash == "" {
+			latestHash = h.envSetContentHash(*latest)
+		}
+		if latestHash == hash {
+			if latest.ContentHash == "" {
+				latest.ContentHash = hash
+				_ = h.db.EnvVars.Save(*latest)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"unchanged": true,
+				"env":       h.marshalEnvSet(*latest),
+			})
+			return
 		}
 	}
 
 	set := store.EnvVarSet{
-		ID:        store.NewULID(),
-		ProjectID: projectID,
-		Version:   version,
-		Vars:      vars,
-		CreatedAt: timeNow(),
-		CreatedBy: claims.UserID,
+		ID:          store.NewULID(),
+		ProjectID:   projectID,
+		Version:     version,
+		Vars:        vars,
+		ContentHash: hash,
+		CreatedAt:   timeNow(),
+		CreatedBy:   claims.UserID,
 	}
 	if err := h.db.EnvVars.Save(set); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not save env vars")
 		return
 	}
+	h.logAudit(r, "save_env", "project", projectID, "", "v"+strconv.Itoa(version))
 	writeJSON(w, http.StatusCreated, h.marshalEnvSet(set))
 }
 
@@ -173,12 +215,13 @@ func (h *H) RestoreEnv(w http.ResponseWriter, r *http.Request) {
 
 	// Copy ciphertext as-is — preserves secrets exactly.
 	set := store.EnvVarSet{
-		ID:        store.NewULID(),
-		ProjectID: projectID,
-		Version:   nextVersion,
-		Vars:      append([]store.EnvVar(nil), source.Vars...),
-		CreatedAt: timeNow(),
-		CreatedBy: claims.UserID,
+		ID:          store.NewULID(),
+		ProjectID:   projectID,
+		Version:     nextVersion,
+		Vars:        append([]store.EnvVar(nil), source.Vars...),
+		ContentHash: h.envSetContentHash(*source),
+		CreatedAt:   timeNow(),
+		CreatedBy:   claims.UserID,
 	}
 	if err := h.db.EnvVars.Save(set); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not restore env vars")
@@ -186,6 +229,21 @@ func (h *H) RestoreEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	h.logAudit(r, "restore_env", "project", projectID, "", "v"+strconv.Itoa(req.Version)+"→v"+strconv.Itoa(nextVersion))
 	writeJSON(w, http.StatusCreated, h.marshalEnvSet(set))
+}
+
+// envSetContentHash computes the canonical content hash of a stored env set by
+// decrypting each value to plaintext. Used to backfill the hash on legacy
+// records (saved before ContentHash existed) so dedup works retroactively.
+func (h *H) envSetContentHash(set store.EnvVarSet) string {
+	plain := make([]envVarForHash, 0, len(set.Vars))
+	for _, v := range set.Vars {
+		val, err := h.enc.Decrypt(v.Value)
+		if err != nil {
+			val = ""
+		}
+		plain = append(plain, envVarForHash{Key: v.Key, Value: val, IsSecret: v.IsSecret})
+	}
+	return envContentHash(plain)
 }
 
 // marshalEnvSet returns a JSON-safe map with non-secret values decrypted

@@ -84,6 +84,7 @@ func GenerateSelfConfig(domain string, port int, pemPath string) string {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_buffering off;
+        proxy_request_buffering off;
     }`, port)
 
 	if pemPath != "" {
