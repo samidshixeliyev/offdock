@@ -959,6 +959,7 @@ export const api = {
   otelTraces: (params: {
     service?: string; limit?: number; operation?: string
     search?: string; status?: string; min_duration_ms?: number; time_range?: string
+    span_kind?: string; attr_key?: string; attr_val?: string
   } = {}) => {
     const q = new URLSearchParams()
     if (params.service) q.set('service', params.service)
@@ -968,6 +969,9 @@ export const api = {
     if (params.status) q.set('status', params.status)
     if (params.min_duration_ms) q.set('min_duration_ms', String(params.min_duration_ms))
     if (params.time_range) q.set('time_range', params.time_range)
+    if (params.span_kind) q.set('span_kind', params.span_kind)
+    if (params.attr_key) q.set('attr_key', params.attr_key)
+    if (params.attr_val) q.set('attr_val', params.attr_val)
     return request<{ data: OTelTrace[] }>(`/api/v1/otel/traces?${q}`)
   },
   otelTrace: (id: string) => request<{ data: OTelTrace[] }>(`/api/v1/otel/traces/${id}`),

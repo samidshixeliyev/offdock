@@ -621,7 +621,7 @@ function PackagesSection() {
   const [busy, setBusy] = useState(false)
   const [blocked, setBlocked] = useState<string[] | null>(null)
 
-  useEffect(() => { api.packageStatus().then(s => setHeld(s.held)).catch(() => {}) }, [])
+  useEffect(() => { api.packageStatus().then(s => setHeld(s.held ?? [])).catch(() => {}) }, [])
 
   async function install(force = false) {
     const list = paths.split('\n').map(s => s.trim()).filter(Boolean)
@@ -654,7 +654,7 @@ function PackagesSection() {
             {held.length === 0 ? <span className="text-xs text-slate-600">none held yet</span> :
               held.map(p => <span key={p} className="px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-300 font-mono">{p}</span>)}
           </div>
-          <button onClick={() => api.ensurePackageHolds().then(r => setHeld(r.held))} className="btn-ghost text-xs mt-2">Re-assert holds</button>
+          <button onClick={() => api.ensurePackageHolds().then(r => setHeld(r.held ?? []))} className="btn-ghost text-xs mt-2">Re-assert holds</button>
         </div>
         <div className="border-t border-slate-800 pt-3">
           <p className="text-sm font-medium text-slate-200 mb-1">Install .deb files safely</p>
@@ -688,7 +688,7 @@ function BackupsSection() {
   const [opts, setOpts] = useState({ scope: 'full', include_volumes: true, include_config: false, encrypt: true })
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
-  const reload = () => api.listBackups().then(setList).catch(() => {})
+  const reload = () => api.listBackups().then(b => setList(b ?? [])).catch(() => {})
   useEffect(() => { reload(); api.getBackupSchedule().then(setSched).catch(() => {}) }, [])
 
   async function create() {
@@ -757,7 +757,7 @@ function BackupsSection() {
                     <td className="py-1.5 pr-3 text-slate-400">{new Date(b.created_at).toLocaleString()}</td>
                     <td className="pr-3 text-slate-400">{b.scope}{b.sensitive && <span title="contains config.yaml" className="ml-1 text-amber-500">●</span>}</td>
                     <td className="pr-3 text-slate-400 tabular-nums">{fmtBytes(b.size_bytes)}</td>
-                    <td className="pr-3 text-slate-500">{b.volumes.length}</td>
+                    <td className="pr-3 text-slate-500">{b.volumes?.length ?? 0}</td>
                     <td className="pr-3"><span className={clsx(b.status === 'ok' ? 'text-emerald-400' : 'text-amber-400')}>{b.status}</span></td>
                     <td className="text-right whitespace-nowrap">
                       <a href={api.downloadBackupURL(b.id)} className="btn-ghost text-xs">Download</a>
@@ -807,7 +807,7 @@ function TerminalPolicySection() {
 
   useEffect(() => {
     api.getTerminalPolicy().then(setPolicy).catch(() => {})
-    api.getTerminalPolicyDefaults().then(d => setDefaults(d.default_deny)).catch(() => {})
+    api.getTerminalPolicyDefaults().then(d => setDefaults(d.default_deny ?? [])).catch(() => {})
   }, [])
 
   function lines(s: string): string[] { return s.split('\n').map(x => x.trim()).filter(Boolean) }

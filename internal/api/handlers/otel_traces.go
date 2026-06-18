@@ -760,7 +760,10 @@ func (h *H) OTelTraces(w http.ResponseWriter, r *http.Request) {
 	svc := q.Get("service")
 	op := q.Get("operation")
 	search := strings.ToLower(strings.TrimSpace(q.Get("search")))
-	statusFilter := q.Get("status") // "error" or ""
+	statusFilter := q.Get("status")      // "error" or ""
+	spanKind := strings.ToLower(q.Get("span_kind")) // server|client|producer|consumer|internal
+	attrKey := strings.TrimSpace(q.Get("attr_key"))
+	attrVal := strings.ToLower(strings.TrimSpace(q.Get("attr_val")))
 	minDurMs := 0
 	if d, err := strconv.Atoi(q.Get("min_duration_ms")); err == nil && d > 0 {
 		minDurMs = d
@@ -790,6 +793,18 @@ func (h *H) OTelTraces(w http.ResponseWriter, r *http.Request) {
 		}
 		if op != "" && s.Name != op {
 			return false
+		}
+		if spanKind != "" && strings.ToLower(s.Kind) != spanKind {
+			return false
+		}
+		if attrKey != "" {
+			v, ok := s.Attributes[attrKey]
+			if !ok {
+				return false
+			}
+			if attrVal != "" && !strings.Contains(strings.ToLower(v), attrVal) {
+				return false
+			}
 		}
 		if !sinceTime.IsZero() && s.ReceivedAt.Before(sinceTime) {
 			return false
