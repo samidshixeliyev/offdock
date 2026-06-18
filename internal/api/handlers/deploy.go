@@ -95,28 +95,12 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 			h.hub.Publish(streamKey, string(msg))
 		}
 		if rec != nil {
-			// Auto-create a deploy tag for every successful deployment (like GitLab pipeline tags).
-			if rec.Status == store.DeployStatusSuccess {
-				tagName := fmt.Sprintf("deploy-%s", rec.StartedAt.Format("2006-01-02-150405"))
-				tag := store.DeployTag{
-					ID:             store.NewULID(),
-					ProjectID:      projectID,
-					Name:           tagName,
-					Description:    fmt.Sprintf("Auto-tagged from deployment by %s", claims.Username),
-					ComposeVersion: rec.NewComposeVersion,
-					EnvVersion:     rec.EnvVersion,
-					CreatedBy:      claims.Username,
-					CreatedAt:      timeNow(),
-				}
-				h.db.DeployTags.Save(tag) //nolint:errcheck
-				h.trimAutoTags(projectID, 20)
-			}
+			// Tags are created MANUALLY only (GitLab-style) — no auto-tagging on
+			// deploy. The UI offers a one-click "tag last successful deploy" that
+			// calls POST /deploy-tags with the deployed compose+env versions.
 			statusPayload := map[string]any{
 				"status":        rec.Status,
 				"deployment_id": rec.ID,
-			}
-			if rec.Status == store.DeployStatusSuccess {
-				statusPayload["tag"] = fmt.Sprintf("deploy-%s", rec.StartedAt.Format("2006-01-02-150405"))
 			}
 			msg, _ := json.Marshal(statusPayload)
 			h.hub.Publish(streamKey, string(msg))

@@ -1,19 +1,73 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, DockerImage, DiskUsageRow } from '../api/client'
-import ConfirmModal from '../components/ConfirmModal'
-import { Page, PageHeader, Panel, EmptyState, IconButton } from '../components/ui'
+import { api, DiskUsageRow, ImageUsage } from '../api/client'
+import { Page, PageHeader, Panel, EmptyState } from '../components/ui'
 import { Modal } from '../components/Modal'
 import { useToast } from '../components/Toast'
-import { formatBytes, formatDateTime } from '../lib/format'
+import { formatBytes } from '../lib/format'
 import clsx from 'clsx'
 import {
   Boxes, Upload, RefreshCw, RotateCw, Trash2, FileArchive, HardDriveUpload,
-  Loader2, CheckCircle2,
+  Loader2, CheckCircle2, AlertTriangle, Link2,
 } from 'lucide-react'
 import { usePermissions, PERMS } from '../hooks/usePermissions'
 import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 
 type UploadTab = 'computer' | 'server'
+
+// ─── Type-to-confirm delete modal (GitHub-style) ─────────────────────────────
+function DeleteImageModal({ image, onDone, onClose }: { image: ImageUsage; onDone: () => void; onClose: () => void }) {
+  const toast = useToast()
+  const ref = `${image.repository}:${image.tag}`
+  const [typed, setTyped] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [force, setForce] = useState(false)
+  const matches = typed.trim() === ref
+
+  const del = async () => {
+    if (!matches) return
+    setBusy(true)
+    try {
+      await api.removeImageByRef({ ref, image_id: image.image_id, force: image.in_use ? force : false })
+      toast.success(`Deleted ${ref}`)
+      onDone()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Delete failed')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={busy ? () => {} : onClose} size="md" icon={Trash2} title="Delete image"
+      subtitle="This permanently removes the image from Docker."
+      footer={<>
+        <button onClick={onClose} disabled={busy} className="btn-secondary">Cancel</button>
+        <button onClick={del} disabled={!matches || busy || (image.in_use && !force)} className="btn-danger">
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />} Delete image
+        </button>
+      </>}>
+      <div className="space-y-4">
+        {image.in_use && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-300">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-medium">This image is in use by {image.used_by.length} container{image.used_by.length !== 1 ? 's' : ''}.</p>
+              <p className="mt-0.5 text-amber-300/80 font-mono">{image.used_by.join(', ')}</p>
+              <label className="mt-2 flex items-center gap-2 text-amber-200 cursor-pointer">
+                <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} />
+                Force delete anyway (may break those containers)
+              </label>
+            </div>
+          </div>
+        )}
+        <p className="text-sm text-slate-400">
+          Type <code className="px-1 py-0.5 rounded bg-slate-800 text-slate-200 font-mono">{ref}</code> to confirm.
+        </p>
+        <input autoFocus className="input font-mono text-sm" value={typed} placeholder={ref}
+          onChange={e => setTyped(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') del() }} />
+      </div>
+    </Modal>
+  )
+}
 
 // ─── Upload + load modal ────────────────────────────────────────────────────
 function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => void }) {
@@ -122,19 +176,24 @@ function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => v
 export default function ImagesPage() {
   const toast = useToast()
   const { can } = usePermissions()
-  const [images, setImages] = useState<DockerImage[]>([])
+  const [usage, setUsage] = useState<ImageUsage[]>([])
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [pruning, setPruning] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState<DockerImage | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<ImageUsage | null>(null)
   const [diskRows, setDiskRows] = useState<DiskUsageRow[]>([])
+  const [unusedOnly, setUnusedOnly] = useState(false)
 
-  const reload = () => api.listImages().then(d => setImages(d ?? [])).catch(() => {}).finally(() => setLoading(false))
+  const reload = () => api.imageUsage().then(d => setUsage(d.images ?? [])).catch(() => {}).finally(() => setLoading(false))
   useEffect(() => {
     reload()
     api.getSystemDf().then(d => setDiskRows(d.rows ?? [])).catch(() => {})
   }, [])
+
+  const inUseCount = usage.filter(u => u.in_use).length
+  const unusedCount = usage.length - inUseCount
+  const shown = unusedOnly ? usage.filter(u => !u.in_use) : usage
 
   const handleSync = async () => {
     setSyncing(true)
@@ -151,18 +210,14 @@ export default function ImagesPage() {
     }
     catch (e) { toast.error(e instanceof Error ? e.message : 'Prune failed') } finally { setPruning(false) }
   }
-  const handleDelete = async (img: DockerImage) => {
-    try { await api.deleteImage(img.id); toast.success('Image deleted'); reload() }
-    catch (e) { toast.error(e instanceof Error ? e.message : 'Delete failed') } finally { setConfirmDelete(null) }
-  }
 
   return (
     <Page>
       {!can(PERMS.manageImages) && <ReadOnlyBanner message="You don't have permission to manage images. Viewing in read-only mode." />}
-      <PageHeader title="Images" subtitle={`${images.length} tracked image${images.length !== 1 ? 's' : ''}`} icon={Boxes}
+      <PageHeader title="Images" subtitle={`${usage.length} image${usage.length !== 1 ? 's' : ''} · ${inUseCount} in use · ${unusedCount} unused`} icon={Boxes}
         actions={<>
           {can(PERMS.manageImages) && <button onClick={() => handlePrune(false)} disabled={pruning} title="Remove dangling (unused) images" className="btn-secondary">
-            {pruning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />} Prune
+            {pruning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />} Prune dangling
           </button>}
           <button onClick={handleSync} disabled={syncing} className="btn-secondary">
             {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCw className="w-4 h-4" />} Sync from Docker
@@ -184,17 +239,21 @@ export default function ImagesPage() {
       )}
 
       {showUpload && <UploadModal onDone={reload} onClose={() => setShowUpload(false)} />}
-      {confirmDelete && (
-        <ConfirmModal title="Delete image?" danger confirmLabel="Delete"
-          message={`Remove ${confirmDelete.image_name}:${confirmDelete.image_tag} from Docker and the registry?`}
-          onConfirm={() => handleDelete(confirmDelete)} onCancel={() => setConfirmDelete(null)} />
-      )}
+      {confirmDelete && <DeleteImageModal image={confirmDelete} onDone={() => { setConfirmDelete(null); reload() }} onClose={() => setConfirmDelete(null)} />}
 
-      <Panel title="Docker Images" icon={Boxes} actions={<button onClick={reload} className="text-slate-400 hover:text-slate-200"><RefreshCw className="w-4 h-4" /></button>}>
+      <Panel title="Docker Images" icon={Boxes} actions={
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer select-none">
+            <input type="checkbox" checked={unusedOnly} onChange={e => setUnusedOnly(e.target.checked)} />
+            Unused only
+          </label>
+          <button onClick={reload} className="text-slate-400 hover:text-slate-200"><RefreshCw className="w-4 h-4" /></button>
+        </div>
+      }>
         {loading ? (
           <div className="p-4 space-y-2">{[0,1,2].map(i => <div key={i} className="h-12 skeleton rounded-lg" />)}</div>
-        ) : images.length === 0 ? (
-          <EmptyState icon={FileArchive} title="No images tracked"
+        ) : usage.length === 0 ? (
+          <EmptyState icon={FileArchive} title="No images"
             description="Upload a .tar image from your computer, or sync images already loaded on the host."
             action={<div className="flex gap-2">
               <button onClick={() => setShowUpload(true)} className="btn-primary"><Upload className="w-4 h-4" /> Add Image</button>
@@ -202,21 +261,38 @@ export default function ImagesPage() {
             </div>} />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[680px]">
+            <table className="w-full min-w-[720px]">
               <thead><tr className="border-b border-slate-800">
                 <th className="th text-left">Image</th><th className="th text-left">Tag</th>
                 <th className="th text-left">Docker ID</th><th className="th text-left">Size</th>
-                <th className="th text-left">Loaded</th><th className="th text-right"></th>
+                <th className="th text-left">Status</th><th className="th text-right"></th>
               </tr></thead>
               <tbody>
-                {images.map(img => (
-                  <tr key={img.id} className="border-b border-slate-800/50 last:border-0 hover:bg-slate-800/30">
-                    <td className="px-4 py-3 font-mono text-xs text-slate-200">{img.image_name}</td>
-                    <td className="px-4 py-3 text-xs text-slate-400">{img.image_tag}</td>
-                    <td className="px-4 py-3 text-xs font-mono text-slate-500">{(img.docker_image_id ?? '').replace('sha256:', '').slice(0, 12)}</td>
-                    <td className="px-4 py-3 text-xs text-slate-400 tabular-nums">{img.size_bytes ? formatBytes(img.size_bytes) : '—'}</td>
-                    <td className="px-4 py-3 text-xs text-slate-500">{formatDateTime(img.loaded_at)}</td>
-                    <td className="px-4 py-3 text-right"><IconButton icon={Trash2} tone="danger" title={can(PERMS.manageImages) ? "Delete" : "Delete (no permission)"} disabled={!can(PERMS.manageImages)} onClick={() => can(PERMS.manageImages) && setConfirmDelete(img)} /></td>
+                {shown.map(img => (
+                  <tr key={img.image_id + img.repository + img.tag} className="border-b border-slate-800/50 last:border-0 hover:bg-slate-800/30">
+                    <td className="px-4 py-3 font-mono text-xs text-slate-200">{img.repository}</td>
+                    <td className="px-4 py-3 text-xs text-slate-400">{img.tag}</td>
+                    <td className="px-4 py-3 text-xs font-mono text-slate-500">{(img.image_id ?? '').replace('sha256:', '').slice(0, 12)}</td>
+                    <td className="px-4 py-3 text-xs text-slate-400 tabular-nums">{img.size || '—'}</td>
+                    <td className="px-4 py-3 text-xs">
+                      {img.in_use ? (
+                        <span className="inline-flex items-center gap-1 text-emerald-400" title={img.used_by.join(', ')}>
+                          <Link2 className="w-3.5 h-3.5" /> in use ({img.used_by.length})
+                        </span>
+                      ) : (
+                        <span className="text-slate-500">unused</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        disabled={!can(PERMS.manageImages)}
+                        title={can(PERMS.manageImages) ? 'Delete' : 'Delete (no permission)'}
+                        onClick={() => can(PERMS.manageImages) && setConfirmDelete(img)}
+                        className={clsx('inline-flex items-center justify-center w-8 h-8 rounded-lg transition-colors',
+                          can(PERMS.manageImages) ? 'text-slate-500 hover:text-red-400 hover:bg-red-500/10' : 'text-slate-700 cursor-not-allowed')}>
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

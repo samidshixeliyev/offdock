@@ -114,6 +114,9 @@ export interface DeploySettings {
   dns_servers?: string[]
   dns_search?: string[]
   extra_hosts?: string[]
+  // Per-service image override (service name → repo:tag) to deploy a specific
+  // previously-loaded image version without editing the compose YAML.
+  image_overrides?: Record<string, string>
   webhook_url?: string
   // OpenTelemetry — one toggle, everything auto-configured (native OTLP receiver)
   otel_enabled?: boolean
@@ -207,6 +210,25 @@ export interface DockerImage {
   loaded_at: string
   size_bytes: number
   docker_image_id: string
+}
+
+export interface ImageUsage {
+  image_id: string
+  repository: string
+  tag: string
+  size: string
+  created_at: string
+  in_use: boolean
+  used_by: string[]
+  tracked: boolean
+  db_id: string
+}
+
+export interface ImageUsageResult {
+  images: ImageUsage[]
+  total: number
+  in_use: number
+  unused: number
 }
 
 export interface FileEntry {
@@ -606,8 +628,9 @@ export const api = {
     }
     return { env: res as EnvVarSet, unchanged: false }
   },
-  envHistory: (projectId: string) =>
-    request<EnvVarSet[]>(`/api/v1/projects/${projectId}/env/history`),
+  // reveal=true decrypts secret values (superadmin only, audited server-side).
+  envHistory: (projectId: string, reveal = false) =>
+    request<EnvVarSet[]>(`/api/v1/projects/${projectId}/env/history${reveal ? '?reveal=true' : ''}`),
   restoreEnv: (projectId: string, version: number) =>
     request<EnvVarSet>(`/api/v1/projects/${projectId}/env/restore`, {
       method: 'POST', body: JSON.stringify({ version }),
@@ -786,11 +809,14 @@ export const api = {
 
   // Images
   listImages: () => request<DockerImage[]>('/api/v1/images'),
+  imageUsage: () => request<ImageUsageResult>('/api/v1/images/usage'),
   loadImage: (data: { tar_file_path: string; project_id?: string; image_name?: string; image_tag?: string }) =>
     request<{ loaded: number; images: DockerImage[] }>('/api/v1/images/load', { method: 'POST', body: JSON.stringify(data) }),
   syncImages: () =>
     request<{ synced: number; images: DockerImage[] }>('/api/v1/images/sync', { method: 'POST' }),
   deleteImage: (id: string) => request<void>(`/api/v1/images/${id}`, { method: 'DELETE' }),
+  removeImageByRef: (data: { ref?: string; image_id?: string; force?: boolean }) =>
+    request<{ status: string }>('/api/v1/images/remove', { method: 'POST', body: JSON.stringify(data) }),
 
   // Terminal / exec
   execCommand: (command: string, cwd?: string) =>
@@ -798,8 +824,9 @@ export const api = {
       '/api/v1/terminal/exec',
       { method: 'POST', body: JSON.stringify({ command, cwd: cwd ?? '' }) }
     ),
+  // Returns either a challenge (otp mode) or {bypass:true} (bypass mode — no OTP).
   otpRequest: () =>
-    request<{ challenge_id: string; email: string; expires_in: number }>(
+    request<{ challenge_id?: string; email?: string; expires_in?: number; bypass?: boolean; message?: string }>(
       '/api/v1/terminal/otp/request', { method: 'POST', body: '{}' }
     ),
   otpVerify: (challenge_id: string, code: string) =>

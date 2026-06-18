@@ -695,7 +695,8 @@ function BackupsSection() {
     setCreating(true); setMsg(null)
     try {
       const r = await api.createBackup(opts)
-      setMsg({ kind: 'ok', text: `Backup created (${r.status}) — ${fmtBytes(r.size_bytes)}, volumes: ${r.volumes.length}` })
+      const note = r.status === 'partial' && r.note ? ` — note: ${r.note}` : ''
+      setMsg({ kind: r.status === 'partial' ? 'err' : 'ok', text: `Backup ${r.status} — ${fmtBytes(r.size_bytes)}, ${r.volumes.length} volume(s)${note}` })
       reload()
     } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) } finally { setCreating(false) }
   }
@@ -736,6 +737,10 @@ function BackupsSection() {
           <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={opts.encrypt} onChange={e => setOpts({ ...opts, encrypt: e.target.checked })} />Encrypt config</label>
           <button onClick={create} disabled={creating} className="btn-primary text-xs disabled:opacity-50">{creating ? 'Creating…' : 'Create Backup'}</button>
         </div>
+        <p className="text-[11px] text-slate-600">
+          Volume data is archived directly from the host (<code className="font-mono">/var/lib/docker/volumes</code>) — no helper image needed.
+          If a volume can’t be read the backup still completes as <span className="text-amber-500">partial</span> and lists what was skipped.
+        </p>
 
         {msg && <div className={clsx('text-xs px-3 py-2 rounded border', msg.kind === 'ok' ? 'bg-green-900/20 border-green-900 text-green-400' : 'bg-red-900/20 border-red-900 text-red-400')}>{msg.text}</div>}
 

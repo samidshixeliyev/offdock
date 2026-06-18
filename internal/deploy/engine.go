@@ -55,9 +55,9 @@ func (e *Engine) projectLock(projectID string) *sync.Mutex {
 // extra_hosts) to the raw compose YAML before it is written to disk. The raw
 // YAML in the DB is never changed. Transform errors fall back to the raw YAML.
 func (e *Engine) composeForDisk(settings store.DeploySettings, raw string) string {
-	out, err := injectNetworkConfig(raw, settings.DNSServers, settings.DNSSearch, settings.ExtraHosts)
+	out, err := applyComposeOverrides(raw, settings.DNSServers, settings.DNSSearch, settings.ExtraHosts, settings.ImageOverrides)
 	if err != nil {
-		slog.Warn("compose network injection failed; using raw compose", "err", err)
+		slog.Warn("compose override injection failed; using raw compose", "err", err)
 		return raw
 	}
 	return out

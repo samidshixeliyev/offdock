@@ -213,9 +213,11 @@ func NewRouter(deps Deps) http.Handler {
 
 		// Images
 		r.Get("/api/v1/images", h.ListImages)
+		r.Get("/api/v1/images/usage", h.ImageUsage)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageImages)).Post("/api/v1/images/load", h.LoadImage)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageImages)).Post("/api/v1/images/sync", h.SyncImages)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageImages)).Post("/api/v1/images/prune", h.PruneImages)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageImages)).Post("/api/v1/images/remove", h.RemoveImageByRef)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageImages)).Delete("/api/v1/images/{id}", h.DeleteImage)
 
 		// System stats (SSE) + disk usage

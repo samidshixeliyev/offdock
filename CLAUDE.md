@@ -539,6 +539,32 @@ gather/build on 22.04. Gather full recursive closures via
   version pair. `DeploySettings.RollbackOnFailure` auto-reverts a failed deploy.
 - `OFFDOCK_CONFIG` env var overrides the `/etc/offdock/config.yaml` path (dev/WSL).
 
+## Deployment UX (2026-06-18 session)
+
+- **Tags are manual only (GitLab-style)** — deploys no longer auto-create a
+  `deploy-<ts>` tag (`deploy.go`). The DeployPage has "Create tag" + a one-click
+  "Tag last deploy" (pins the last successful compose+env). `trimAutoTags` removed.
+- **"What will deploy" confirmation** — every deploy/rollback funnels through a
+  modal showing the target compose+env version, image overrides, and a compose
+  preview before going live.
+- **Version content viewer** — compose YAML + env vars per version inline in the
+  deploy page. Superadmins can **reveal secret values** via
+  `GET /env/history?reveal=true` (server decrypts, audited `env_reveal_secrets`).
+- **Image override deploy** — `DeploySettings.ImageOverrides` (service→repo:tag)
+  applied to the compose at deploy time via `applyComposeOverrides` (same path as
+  DNS injection); lets a project deploy a previously-loaded image (image rollback)
+  without editing the YAML. UI in the deploy settings card.
+- **Image management** — `GET /images/usage` annotates every docker image with
+  in-use/used-by (cross-refs `docker ps -a`); ImagesPage has an "unused only"
+  filter and a **type-the-name-to-confirm** delete modal. `POST /images/remove`
+  deletes by ref/ID (refuses in-use unless `force`).
+- **Backup fix** — volume export/import tars the volume's host mountpoint
+  directly (`docker volume inspect` → host `tar`), so backups no longer need the
+  `alpine` helper image; the container helper remains a fallback for
+  rootless/remote daemons. A volume that can't be read → `partial`, not failure.
+- **Host-terminal bypass fix** — TerminalPage now honours the `{bypass:true}`
+  OTP response and opens the shell with no token (backend already allowed it).
+
 ## Docs page
 `web/src/pages/DocsPage.tsx` (`/docs`) — operator/developer guide (images,
 offdock-external network, compose, envs, resource limits, backup/recovery) with
