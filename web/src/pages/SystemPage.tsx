@@ -869,32 +869,21 @@ function SystemUpdateSection() {
   const fileRef = useRef<HTMLInputElement>(null)
   const [log, setLog] = useState<{ status: string; message: string }[]>([])
   const [uploading, setUploading] = useState(false)
+  const [uploadPct, setUploadPct] = useState(0)
   const [dragOver, setDragOver] = useState(false)
+  const [serverPath, setServerPath] = useState('')
   const logEndRef = useRef<HTMLDivElement>(null)
 
-  const runUpdate = (file: File) => {
-    if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
-      setLog([{ status: 'error', message: 'File must be a .tar.gz archive' }])
-      return
-    }
-    setUploading(true)
-    setLog([{ status: 'info', message: `Uploading ${file.name} (${(file.size / 1e6).toFixed(1)} MB)…` }])
-
+  // streamUpdate drives the SSE update flow for either a server-path update
+  // (no body) or a multipart file upload (with progress).
+  const streamUpdate = (url: string, body: Document | XMLHttpRequestBodyInit | null, withProgress: boolean) => {
+    setUploading(true); setUploadPct(0)
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', api.systemUpdateUrl())
-
-    xhr.onload = () => {
-      setUploading(false)
-      if (xhr.status >= 400) {
-        setLog(prev => [...prev, { status: 'error', message: `Server error: ${xhr.status}` }])
-      }
+    xhr.open('POST', url)
+    if (withProgress) {
+      xhr.upload.onprogress = e => { if (e.lengthComputable) setUploadPct(Math.round((e.loaded / e.total) * 100)) }
+      xhr.upload.onload = () => setUploadPct(100)
     }
-    xhr.onerror = () => {
-      setUploading(false)
-      setLog(prev => [...prev, { status: 'info', message: 'Connection closed (service restarting…)' }])
-    }
-
-    // Parse SSE lines as they stream in.
     let lastIdx = 0
     xhr.onreadystatechange = () => {
       if (xhr.readyState >= 3 && xhr.responseText.length > lastIdx) {
@@ -905,18 +894,32 @@ function SystemUpdateSection() {
           try {
             const ev = JSON.parse(line.slice(5)) as { status: string; message: string }
             setLog(prev => [...prev, ev])
-            if (ev.status === 'success') {
-              setUploading(false)
-              setTimeout(() => window.location.reload(), 5000)
-            }
-          } catch {}
+            if (ev.status === 'success') { setUploading(false); setTimeout(() => window.location.reload(), 5000) }
+          } catch { /* partial line */ }
         }
       }
     }
+    xhr.onload = () => { setUploading(false); if (xhr.status >= 400) setLog(prev => [...prev, { status: 'error', message: `Server error: ${xhr.status}` }]) }
+    xhr.onerror = () => { setUploading(false); setLog(prev => [...prev, { status: 'info', message: 'Connection closed (service restarting…)' }]) }
+    xhr.send(body)
+  }
 
+  const runFromServerPath = () => {
+    const p = serverPath.trim()
+    if (!p.endsWith('.tar.gz') && !p.endsWith('.tgz')) { setLog([{ status: 'error', message: 'Path must point to a .tar.gz archive' }]); return }
+    setLog([{ status: 'info', message: `Updating from server path: ${p}` }])
+    streamUpdate(api.systemUpdateUrl(p), null, false)
+  }
+
+  const runUpdate = (file: File) => {
+    if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
+      setLog([{ status: 'error', message: 'File must be a .tar.gz archive' }])
+      return
+    }
+    setLog([{ status: 'info', message: `Uploading ${file.name} (${(file.size / 1e6).toFixed(1)} MB)…` }])
     const form = new FormData()
     form.append('file', file)
-    xhr.send(form)
+    streamUpdate(api.systemUpdateUrl(), form, true)
   }
 
   useEffect(() => {
@@ -1010,13 +1013,40 @@ sudo bash install.sh --uninstall      # remove (keeps /var/offdock data)`}</pre>
             <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.338-2.323 3.75 3.75 0 013.543 4.098A3.75 3.75 0 0118.75 19.5H6.75z" />
           </svg>
           {uploading ? (
-            <p className="text-sm text-blue-400 font-medium">Updating…</p>
+            <div className="w-full max-w-xs text-center">
+              <p className="text-sm text-blue-400 font-medium mb-2">{uploadPct > 0 && uploadPct < 100 ? `Uploading… ${uploadPct}%` : 'Updating…'}</p>
+              {uploadPct > 0 && (
+                <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-500 rounded-full transition-all" style={{ width: `${uploadPct}%` }} />
+                </div>
+              )}
+            </div>
           ) : (
             <>
               <p className="text-sm text-slate-300 font-medium">Drop <code className="font-mono">offdock-offline-*.tar.gz</code> here</p>
               <p className="text-xs text-slate-600">or click to browse — safe atomic update, no data loss</p>
             </>
           )}
+        </div>
+
+        {/* Update from a server path (preferred for large offline bundles already
+            transferred via USB/scp — no slow browser upload). */}
+        <div className="rounded-lg border border-slate-800 bg-slate-900/30 p-3">
+          <p className="text-[11px] font-semibold text-slate-400 mb-1">Or update from a file already on the server</p>
+          <p className="text-[10px] text-slate-600 mb-2">
+            Recommended for big offline bundles — skips the browser upload entirely (the file is read directly on the host).
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={serverPath}
+              onChange={e => setServerPath(e.target.value)}
+              placeholder="/var/offdock/uploads/offdock-offline.tar.gz"
+              className="flex-1 min-w-[220px] bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-slate-500"
+            />
+            <button onClick={runFromServerPath} disabled={uploading || !serverPath.trim()} className="btn-secondary text-xs disabled:opacity-40">
+              Update from path
+            </button>
+          </div>
         </div>
 
         {/* Update log */}

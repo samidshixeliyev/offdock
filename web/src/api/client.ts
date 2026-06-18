@@ -999,7 +999,8 @@ export const api = {
 
   // Self-update, rollback, and DB compaction
   getUpdateStatus: () => request<{ can_update: boolean; can_rollback: boolean; install_path: string; backup_path: string }>('/api/v1/system/update/status'),
-  systemUpdateUrl: () => '/api/v1/system/update',
+  systemUpdateUrl: (serverPath?: string) =>
+    serverPath ? `/api/v1/system/update?path=${encodeURIComponent(serverPath)}` : '/api/v1/system/update',
   systemRollbackUrl: () => '/api/v1/system/rollback',
 
   // Scheduled self-update — upload now, install automatically at a chosen time.

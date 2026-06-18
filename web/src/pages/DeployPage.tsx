@@ -345,9 +345,9 @@ export default function DeployPage() {
   )
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="flex flex-col min-h-0">
     {!can(PERMS.deploy) && <ReadOnlyBanner message="You don't have permission to deploy. Viewing in read-only mode." />}
-    <div className="p-6 max-w-5xl space-y-6 animate-fadeIn flex-1 overflow-y-auto">
+    <div className="p-6 max-w-5xl space-y-6 animate-fadeIn">
 
       {/* ── Deploy now ─────────────────────────────────────────────────────── */}
       <div className="card-static">
