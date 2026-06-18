@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	authmw "offdock/internal/middleware"
@@ -50,12 +52,14 @@ func (h *H) Login(w http.ResponseWriter, r *http.Request) {
 		LastSeen:  now,
 	}
 	if err := h.db.Sessions.Save(session); err != nil {
+		slog.Error("login: save session", "user", user.Username, "err", err)
 		writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
 
 	token, err := h.auth.Issue(user, session.ID)
 	if err != nil {
+		slog.Error("login: issue token", "user", user.Username, "err", err)
 		writeError(w, http.StatusInternalServerError, "could not issue token")
 		return
 	}
@@ -69,6 +73,7 @@ func (h *H) Login(w http.ResponseWriter, r *http.Request) {
 		Expires:  time.Now().Add(8 * time.Hour),
 	})
 
+	slog.Info("login", "user", user.Username, "ip", authmw.RealIP(r), "role", string(user.Role))
 	h.logAudit(r, "login", "user", user.ID, user.Username, "")
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -152,8 +157,18 @@ func (h *H) SetupCreate(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Email    string `json:"email"`
 	}
-	if err := decodeJSON(r, &req); err != nil || req.Username == "" || req.Password == "" {
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	req.Email = strings.TrimSpace(req.Email)
+	if req.Username == "" || req.Password == "" {
 		writeError(w, http.StatusBadRequest, "username and password are required")
+		return
+	}
+	if len(req.Password) < 8 {
+		writeError(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
 	}
 

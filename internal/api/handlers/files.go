@@ -180,6 +180,10 @@ func (h *H) FileMkdir(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := cleanPath(req.Path)
+	if isSensitivePath(path) || isBlockedPath(path) {
+		writeError(w, http.StatusForbidden, "cannot create directory at this path")
+		return
+	}
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, "mkdir: "+err.Error())
 		return
@@ -215,7 +219,17 @@ func (h *H) FileRename(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "from and to required")
 		return
 	}
-	if err := os.Rename(cleanPath(req.From), cleanPath(req.To)); err != nil {
+	from := cleanPath(req.From)
+	to := cleanPath(req.To)
+	if isBlockedPath(from) || isSensitivePath(from) {
+		writeError(w, http.StatusForbidden, "cannot move from this path")
+		return
+	}
+	if isBlockedPath(to) || isSensitivePath(to) {
+		writeError(w, http.StatusForbidden, "cannot move to this path")
+		return
+	}
+	if err := os.Rename(from, to); err != nil {
 		writeError(w, http.StatusInternalServerError, "rename: "+err.Error())
 		return
 	}
@@ -448,7 +462,8 @@ var sensitivePaths = []string{
 	"/etc/gshadow",
 	"/etc/sudoers",
 	"/root/.ssh",
-	"/home",
+	"/var/offdock/data",  // bcrypt hashes, session tokens, OTP hashes
+	"/var/offdock/certs", // TLS private keys
 }
 
 func isBlockedPath(p string) bool {

@@ -242,17 +242,25 @@ func (c *Client) StartContainer(ctx context.Context, name string) error {
 
 // ComposeUp runs docker compose up -d. forceRecreate ensures containers are
 // always rebuilt even when the image digest has not changed. It always passes
-// --remove-orphans (deploy path).
-func (c *Client) ComposeUp(ctx context.Context, project, composePath string, forceRecreate bool) (string, error) {
-	return c.ComposeUpOpts(ctx, project, composePath, forceRecreate, true)
+// --remove-orphans (deploy path). Additional compose override files (e.g. the
+// OTel instrumentation override) can be passed via overrideFiles.
+func (c *Client) ComposeUp(ctx context.Context, project, composePath string, forceRecreate bool, overrideFiles ...string) (string, error) {
+	return c.ComposeUpOpts(ctx, project, composePath, forceRecreate, true, overrideFiles...)
 }
 
 // ComposeUpOpts runs docker compose up -d with explicit control over
 // --force-recreate and --remove-orphans. The reconciler uses
 // removeOrphans=false so re-asserting one project never deletes containers that
-// happen to share a (collision-mapped) compose project name.
-func (c *Client) ComposeUpOpts(ctx context.Context, project, composePath string, forceRecreate, removeOrphans bool) (string, error) {
-	args := []string{"compose", "-p", project, "-f", composePath, "up", "-d"}
+// happen to share a (collision-mapped) compose project name. Additional compose
+// override files can be layered via overrideFiles.
+func (c *Client) ComposeUpOpts(ctx context.Context, project, composePath string, forceRecreate, removeOrphans bool, overrideFiles ...string) (string, error) {
+	args := []string{"compose", "-p", project, "-f", composePath}
+	for _, f := range overrideFiles {
+		if f != "" {
+			args = append(args, "-f", f)
+		}
+	}
+	args = append(args, "up", "-d")
 	if removeOrphans {
 		args = append(args, "--remove-orphans")
 	}
@@ -282,6 +290,19 @@ func (c *Client) SystemPrune(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	return run(ctx, "system", "prune", "-f")
+}
+
+// EnsureNetwork creates a Docker network if it doesn't already exist.
+func (c *Client) EnsureNetwork(ctx context.Context, name string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	// Check if it exists first.
+	out, _ := run(ctx, "network", "inspect", name)
+	if strings.Contains(out, `"Name"`) {
+		return nil
+	}
+	_, err := run(ctx, "network", "create", name)
+	return err
 }
 
 // DeleteContainer force-removes a container by name or short ID.
@@ -664,4 +685,86 @@ func (c *Client) ComposePS(ctx context.Context, project, composePath string) ([]
 		}
 	}
 	return result, nil
+}
+
+// ─── Disk usage + image prune ────────────────────────────────────────────────
+
+// DiskUsageRow is one row from docker system df output.
+type DiskUsageRow struct {
+	Type        string `json:"type"`
+	Total       string `json:"total"`
+	Active      string `json:"active"`
+	Size        string `json:"size"`
+	Reclaimable string `json:"reclaimable"`
+}
+
+// SystemDiskUsage runs docker system df and returns per-type disk usage.
+func (c *Client) SystemDiskUsage() ([]DiskUsageRow, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	out, err := run(ctx, "system", "df")
+	if err != nil {
+		return nil, err
+	}
+	return parseDFOutput(out), nil
+}
+
+// parseDFOutput converts docker system df plain-text into typed rows.
+// Handles multi-word types like "Local Volumes" by splitting on ≥2 spaces.
+func parseDFOutput(out string) []DiskUsageRow {
+	var rows []DiskUsageRow
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.HasPrefix(line, "TYPE") || strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := splitOnMultiSpace(line)
+		if len(parts) < 4 {
+			continue
+		}
+		row := DiskUsageRow{Type: parts[0], Total: parts[1], Active: parts[2], Size: parts[3]}
+		if len(parts) > 4 {
+			row.Reclaimable = parts[4]
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+func splitOnMultiSpace(s string) []string {
+	var parts []string
+	cur := ""
+	spaces := 0
+	for _, ch := range s {
+		if ch == ' ' {
+			spaces++
+			if spaces >= 2 {
+				if t := strings.TrimSpace(cur); t != "" {
+					parts = append(parts, t)
+					cur = ""
+				}
+				spaces = 0
+			} else {
+				cur += string(ch)
+			}
+		} else {
+			spaces = 0
+			cur += string(ch)
+		}
+	}
+	if t := strings.TrimSpace(cur); t != "" {
+		parts = append(parts, t)
+	}
+	return parts
+}
+
+// PruneImages removes dangling Docker images (all=false) or all images not
+// referenced by any running container (all=true).
+func (c *Client) PruneImages(all bool) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	args := []string{"image", "prune", "-f"}
+	if all {
+		args = append(args, "-a")
+	}
+	return run(ctx, args...)
 }

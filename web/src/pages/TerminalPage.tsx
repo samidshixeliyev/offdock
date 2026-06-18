@@ -4,8 +4,9 @@ import { api, ContainerInfo } from '../api/client'
 import clsx from 'clsx'
 import {
   Server, Container as ContainerIcon, Copy, Check, ClipboardPaste,
-  RotateCw, Minus, Plus, ChevronDown, Shield, Mail, KeyRound, AlertCircle, Loader2,
+  RotateCw, Minus, Plus, ChevronDown, Shield, Mail, KeyRound, AlertCircle, Loader2, Lock,
 } from 'lucide-react'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
 
 const QUICK_PATHS = [
   { label: '~', path: '/root' }, { label: '/', path: '/' },
@@ -30,6 +31,7 @@ type Target = { kind: 'host' } | { kind: 'container'; name: string }
 type OTPState = 'idle' | 'requesting' | 'enter_code' | 'verifying' | 'ready' | 'error'
 
 export default function TerminalPage() {
+  const { can } = usePermissions()
   const [target, setTarget] = useState<Target | null>(null)
   const [shell, setShell] = useState<'sh' | 'bash' | 'zsh'>('bash')
   const [containers, setContainers] = useState<ContainerInfo[]>([])
@@ -129,6 +131,15 @@ export default function TerminalPage() {
     : target?.kind === 'container' ? `/api/v1/terminal/container/ws?container=${encodeURIComponent(target.name)}&shell=${shell}` : ''
   const termKey = isHost ? `host-${key}` : `${(target as any)?.name ?? ''}-${shell}-${key}`
   const title = isHost ? 'root@host — host shell' : target?.kind === 'container' ? `docker exec -it ${target.name} ${shell}` : ''
+
+  if (!can(PERMS.terminal)) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full gap-4 text-slate-400">
+        <Lock className="w-10 h-10 opacity-40" />
+        <p className="text-sm font-medium">You don't have permission to use the terminal.</p>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col h-full bg-[#0d1117]">

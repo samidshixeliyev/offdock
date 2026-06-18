@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -21,13 +22,21 @@ import (
 	"offdock/internal/store"
 )
 
+// oauthSettingsSnapshot returns a copy of oauthSettings under a read lock.
+// All read paths must use this instead of accessing h.oauthSettings directly.
+func (h *H) oauthSettingsSnapshot() store.OAuthSettings {
+	h.settingsMu.RLock()
+	defer h.settingsMu.RUnlock()
+	return h.oauthSettings
+}
+
 // ─── Public status (no auth required) ────────────────────────────────────────
 
 // OAuthStatus returns whether OAuth2 login is ready to use. Called by the login
 // page (unauthenticated) to decide whether to show the SSO button.
 // Returns ready=true only when enabled=true AND issuer+clientID are configured.
 func (h *H) OAuthStatus(w http.ResponseWriter, r *http.Request) {
-	s := h.oauthSettings
+	s := h.oauthSettingsSnapshot()
 	ready := s.Enabled && strings.TrimSpace(s.Issuer) != "" && strings.TrimSpace(s.ClientID) != ""
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled": ready,
@@ -38,11 +47,14 @@ func (h *H) OAuthStatus(w http.ResponseWriter, r *http.Request) {
 // OAuthLogout clears the Offdock session cookie and redirects to the IdP's
 // RP-initiated logout endpoint so the SSO session is also terminated.
 func (h *H) OAuthLogout(w http.ResponseWriter, r *http.Request) {
-	// Revoke server-side session if present.
+	// Revoke server-side session if present, and recover its id_token (used below
+	// as id_token_hint so the IdP honours our post_logout_redirect_uri).
+	idTokenHint := ""
 	cookie, err := r.Cookie("offdock_token")
 	if err == nil && cookie.Value != "" {
 		if claims, err := h.auth.Verify(cookie.Value); err == nil && claims.SessionID != "" {
 			if sess, err := h.db.Sessions.FindByID(claims.SessionID); err == nil {
+				idTokenHint = sess.IDToken
 				sess.Revoked = true
 				h.db.Sessions.Save(sess) //nolint:errcheck
 			}
@@ -61,17 +73,40 @@ func (h *H) OAuthLogout(w http.ResponseWriter, r *http.Request) {
 
 	// Build post-logout redirect URI (back to Offdock login page).
 	postLogoutURI := ""
-	if h.oauthSettings.RedirectURI != "" {
-		// Strip /api/v1/auth/oauth/callback suffix to get the base URL.
-		base := strings.TrimSuffix(h.oauthSettings.RedirectURI, "/api/v1/auth/oauth/callback")
+	oauthCfgLogout := h.oauthSettingsSnapshot()
+	if oauthCfgLogout.PostLogoutRedirectURI != "" {
+		postLogoutURI = oauthCfgLogout.PostLogoutRedirectURI
+	} else if oauthCfgLogout.RedirectURI != "" {
+		// Derive from callback URI: strip /api/v1/auth/oauth/callback suffix.
+		base := strings.TrimSuffix(oauthCfgLogout.RedirectURI, "/api/v1/auth/oauth/callback")
 		base = strings.TrimRight(base, "/")
-		postLogoutURI = base + "/login"
+		postLogoutURI = base + "/login?logged_out=1"
 	}
 
-	if h.oauthSettings.Enabled && h.oauthSettings.Issuer != "" {
-		logoutURL := buildLogoutURL(strings.TrimRight(h.oauthSettings.Issuer, "/"))
+	oauthCfg2 := h.oauthSettingsSnapshot()
+	if oauthCfg2.Enabled && oauthCfg2.Issuer != "" {
+		// AO IDP can only resolve which application's Post Logout Redirect URI
+		// allowlist to validate against if it can resolve a client_id — either
+		// from this query param directly, or by parsing id_token_hint's JWT
+		// `aud` claim. We don't retain the id_token (only access_token), so we
+		// must pass client_id; without it AO IDP always falls through to its
+		// own /login?logged_out=1 instead of honoring post_logout_redirect_uri.
+		q := url.Values{}
+		// id_token_hint is the standard OIDC way to identify the session being
+		// ended. With it, compliant IdPs (Keycloak 18+, Azure AD, etc.) accept and
+		// honour post_logout_redirect_uri; client_id is kept as an AO IDP fallback.
+		if idTokenHint != "" {
+			q.Set("id_token_hint", idTokenHint)
+		}
+		if oauthCfg2.ClientID != "" {
+			q.Set("client_id", oauthCfg2.ClientID)
+		}
 		if postLogoutURI != "" {
-			logoutURL += "?post_logout_redirect_uri=" + url.QueryEscape(postLogoutURI)
+			q.Set("post_logout_redirect_uri", postLogoutURI)
+		}
+		logoutURL := buildLogoutURL(strings.TrimRight(oauthCfg2.Issuer, "/"))
+		if len(q) > 0 {
+			logoutURL += "?" + q.Encode()
 		}
 		http.Redirect(w, r, logoutURL, http.StatusFound)
 		return
@@ -89,39 +124,39 @@ func (h *H) OAuthLogout(w http.ResponseWriter, r *http.Request) {
 
 // GetOAuthSettings returns current OAuth2 configuration (secret masked).
 func (h *H) GetOAuthSettings(w http.ResponseWriter, r *http.Request) {
-	s := h.oauthSettings
-	claimSub, claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
+	s := h.oauthSettingsSnapshot()
+	claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"enabled":          s.Enabled,
-		"issuer":           s.Issuer,
-		"client_id":        s.ClientID,
-		"secret_set":       s.ClientSecret != "",
-		"redirect_uri":     s.RedirectURI,
-		"scope":            s.Scope,
-		"claim_sub":        claimSub,
-		"claim_email":      claimEmail,
-		"claim_username":   claimUsername,
-		"claim_name":       claimName,
-		"ca_cert_file":     s.CACertFile,
-		"tls_skip_verify":  s.TLSSkipVerify,
+		"enabled":                   s.Enabled,
+		"issuer":                    s.Issuer,
+		"client_id":                 s.ClientID,
+		"secret_set":                s.ClientSecret != "",
+		"redirect_uri":              s.RedirectURI,
+		"post_logout_redirect_uri":  s.PostLogoutRedirectURI,
+		"scope":                     s.Scope,
+		"claim_email":               claimEmail,
+		"claim_username":            claimUsername,
+		"claim_name":                claimName,
+		"ca_cert_file":              s.CACertFile,
+		"tls_skip_verify":           s.TLSSkipVerify,
 	})
 }
 
 // SaveOAuthSettings persists OAuth2 configuration to config.yaml (superadmin only).
 func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled       bool   `json:"enabled"`
-		Issuer        string `json:"issuer"`
-		ClientID      string `json:"client_id"`
-		ClientSecret  string `json:"client_secret"`
-		RedirectURI   string `json:"redirect_uri"`
-		Scope         string `json:"scope"`
-		ClaimSub      string `json:"claim_sub"`
-		ClaimEmail    string `json:"claim_email"`
-		ClaimUsername string `json:"claim_username"`
-		ClaimName     string `json:"claim_name"`
-		CACertFile    string `json:"ca_cert_file"`
-		TLSSkipVerify bool   `json:"tls_skip_verify"`
+		Enabled               bool   `json:"enabled"`
+		Issuer                string `json:"issuer"`
+		ClientID              string `json:"client_id"`
+		ClientSecret          string `json:"client_secret"`
+		RedirectURI           string `json:"redirect_uri"`
+		PostLogoutRedirectURI string `json:"post_logout_redirect_uri"`
+		Scope                 string `json:"scope"`
+		ClaimEmail            string `json:"claim_email"`
+		ClaimUsername         string `json:"claim_username"`
+		ClaimName             string `json:"claim_name"`
+		CACertFile            string `json:"ca_cert_file"`
+		TLSSkipVerify         bool   `json:"tls_skip_verify"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -132,36 +167,43 @@ func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 	// the user has fully configured the IdP.
 
 	// Keep existing secret if not provided.
+	h.settingsMu.RLock()
+	existingSecret := h.oauthSettings.ClientSecret
+	h.settingsMu.RUnlock()
 	secret := req.ClientSecret
 	if secret == "" {
-		secret = h.oauthSettings.ClientSecret
+		secret = existingSecret
 	}
 	if req.Scope == "" {
 		req.Scope = "openid profile email"
 	}
 
-	h.oauthSettings = store.OAuthSettings{
-		Enabled:       req.Enabled,
-		Issuer:        strings.TrimRight(req.Issuer, "/"),
-		ClientID:      req.ClientID,
-		ClientSecret:  secret,
-		RedirectURI:   req.RedirectURI,
-		Scope:         req.Scope,
-		ClaimSub:      req.ClaimSub,
-		ClaimEmail:    req.ClaimEmail,
-		ClaimUsername: req.ClaimUsername,
-		ClaimName:     req.ClaimName,
-		CACertFile:    req.CACertFile,
-		TLSSkipVerify: req.TLSSkipVerify,
+	newSettings := store.OAuthSettings{
+		Enabled:               req.Enabled,
+		Issuer:                strings.TrimRight(req.Issuer, "/"),
+		ClientID:              req.ClientID,
+		ClientSecret:          secret,
+		RedirectURI:           req.RedirectURI,
+		PostLogoutRedirectURI: req.PostLogoutRedirectURI,
+		Scope:                 req.Scope,
+		ClaimEmail:            req.ClaimEmail,
+		ClaimUsername:         req.ClaimUsername,
+		ClaimName:             req.ClaimName,
+		CACertFile:            req.CACertFile,
+		TLSSkipVerify:         req.TLSSkipVerify,
 	}
 
-	if err := updateOAuthConfigYAML(h.oauthSettings); err != nil {
+	if err := updateOAuthConfigYAML(newSettings); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":  "applied (could not persist: " + err.Error() + ")",
 			"warning": "settings will reset on service restart — fix /etc/offdock/config.yaml permissions",
 		})
 		return
 	}
+
+	h.settingsMu.Lock()
+	h.oauthSettings = newSettings
+	h.settingsMu.Unlock()
 
 	h.logAudit(r, "update_oauth_settings", "system", "", req.Issuer, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "saved"})
@@ -172,7 +214,7 @@ func (h *H) SaveOAuthSettings(w http.ResponseWriter, r *http.Request) {
 // oauthHTTPClient builds an *http.Client that trusts the configured CA cert and
 // optionally skips TLS verification for OAuth2/OIDC requests to the IdP.
 func (h *H) oauthHTTPClient() *http.Client {
-	s := h.oauthSettings
+	s := h.oauthSettingsSnapshot()
 	tlsCfg := &tls.Config{
 		InsecureSkipVerify: s.TLSSkipVerify, //nolint:gosec
 	}
@@ -192,7 +234,8 @@ func (h *H) oauthHTTPClient() *http.Client {
 // OAuthStart builds the authorization URL and redirects the browser to the IdP.
 // Query param: ?force=true → adds prompt=login to force re-authentication.
 func (h *H) OAuthStart(w http.ResponseWriter, r *http.Request) {
-	if !h.oauthSettings.Enabled || h.oauthSettings.Issuer == "" {
+	oauthCfg := h.oauthSettingsSnapshot()
+	if !oauthCfg.Enabled || oauthCfg.Issuer == "" {
 		writeError(w, http.StatusUnprocessableEntity, "OAuth2 login is not configured or disabled")
 		return
 	}
@@ -218,6 +261,11 @@ func (h *H) OAuthStart(w http.ResponseWriter, r *http.Request) {
 	codeChallenge := base64.RawURLEncoding.EncodeToString(h256[:])
 
 	// Store state+verifier in a signed cookie so we can verify on callback.
+	// MaxAge must outlast the full IdP round trip — login form, AO IDP's
+	// "continue as <user>" account picker, possible consent screens — which
+	// can easily run past 5 minutes for a human typing credentials. A cookie
+	// that expires mid-flow surfaces as a confusing "missing oauth state
+	// cookie" error on callback even though nothing actually went wrong.
 	payload := base64.RawURLEncoding.EncodeToString([]byte(state + "|" + codeVerifier))
 	sig := h.auth.HMACSign(payload)
 	cookieVal := payload + "." + sig
@@ -227,14 +275,14 @@ func (h *H) OAuthStart(w http.ResponseWriter, r *http.Request) {
 		Path:     "/api/v1/auth/oauth/callback",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   300,
+		MaxAge:   900,
 	})
 
 	q := url.Values{}
 	q.Set("response_type", "code")
-	q.Set("client_id", h.oauthSettings.ClientID)
-	q.Set("redirect_uri", h.oauthSettings.RedirectURI)
-	q.Set("scope", h.oauthSettings.Scope)
+	q.Set("client_id", oauthCfg.ClientID)
+	q.Set("redirect_uri", oauthCfg.RedirectURI)
+	q.Set("scope", ensureOpenIDScope(oauthCfg.Scope))
 	q.Set("state", state)
 	q.Set("code_challenge", codeChallenge)
 	q.Set("code_challenge_method", "S256")
@@ -246,7 +294,7 @@ func (h *H) OAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	// Build authorization URL. Try OIDC discovery first to find the exact endpoint,
 	// then fall back to common IdP path conventions.
-	authURL := buildAuthURL(h.oauthSettings.Issuer) + "?" + q.Encode()
+	authURL := buildAuthURL(oauthCfg.Issuer) + "?" + q.Encode()
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -275,6 +323,22 @@ func buildUserInfoURL(issuer string) string {
 	return issuer + "/oauth2/userinfo"
 }
 
+// ensureOpenIDScope guarantees the "openid" scope is present so the IdP returns
+// an id_token (required for RP-initiated logout via id_token_hint). Falls back to
+// the standard default when scope is empty.
+func ensureOpenIDScope(scope string) string {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return "openid profile email"
+	}
+	for _, s := range strings.Fields(scope) {
+		if s == "openid" {
+			return scope
+		}
+	}
+	return "openid " + scope
+}
+
 func buildLogoutURL(issuer string) string {
 	if strings.Contains(issuer, "/realms/") {
 		return issuer + "/protocol/openid-connect/logout"
@@ -285,7 +349,7 @@ func buildLogoutURL(issuer string) string {
 // OAuthCallback handles the IdP redirect back with code+state, exchanges the code
 // for tokens, verifies the access token, upserts the user, and issues an Offdock session.
 func (h *H) OAuthCallback(w http.ResponseWriter, r *http.Request) {
-	if !h.oauthSettings.Enabled {
+	if !h.oauthSettingsSnapshot().Enabled {
 		writeError(w, http.StatusUnprocessableEntity, "OAuth2 login is disabled")
 		return
 	}
@@ -297,35 +361,43 @@ func (h *H) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Everything below this point detects the same user-visible failure mode:
+	// the browser didn't carry the OAuth round-trip state back intact (missing
+	// code/state params, expired/absent/tampered state cookie, or a state value
+	// that doesn't match what we issued). Whatever the exact cause, the fix from
+	// the user's side is identical — start the login again — so we report one
+	// clear, actionable message instead of a half-dozen cryptic technical ones.
+	const expiredLoginErr = "/login?error=" + "Login+session+expired+or+was+interrupted+%E2%80%94+please+try+signing+in+again"
+
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
 	if code == "" || state == "" {
-		http.Redirect(w, r, "/login?error=missing+code+or+state", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 
 	// Verify state + recover PKCE verifier from signed cookie.
 	cookie, err := r.Cookie("offdock_oauth_state")
 	if err != nil {
-		http.Redirect(w, r, "/login?error=missing+oauth+state+cookie", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 
 	parts := strings.SplitN(cookie.Value, ".", 2)
 	if len(parts) != 2 || !h.auth.HMACVerify(parts[0], parts[1]) {
-		http.Redirect(w, r, "/login?error=invalid+oauth+state+cookie", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 
 	decoded, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		http.Redirect(w, r, "/login?error=malformed+state+cookie", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 
 	stateParts := strings.SplitN(string(decoded), "|", 2)
 	if len(stateParts) != 2 || stateParts[0] != state {
-		http.Redirect(w, r, "/login?error=state+mismatch", http.StatusFound)
+		http.Redirect(w, r, expiredLoginErr, http.StatusFound)
 		return
 	}
 	codeVerifier := stateParts[1]
@@ -363,6 +435,7 @@ func (h *H) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 		UserAgent: r.UserAgent(),
 		CreatedAt: now,
 		LastSeen:  now,
+		IDToken:   claims.IDToken,
 	}
 	if err := h.db.Sessions.Save(session); err != nil {
 		http.Redirect(w, r, "/login?error=could+not+create+session", http.StatusFound)
@@ -384,7 +457,7 @@ func (h *H) OAuthCallback(w http.ResponseWriter, r *http.Request) {
 		Expires:  time.Now().Add(8 * time.Hour),
 	})
 
-	h.logAuditDirect(user.ID, user.Username, authmw.RealIP(r), r.UserAgent(), "oauth_login", "user", user.ID, user.Username, h.oauthSettings.Issuer)
+	h.logAuditDirect(user.ID, user.Username, authmw.RealIP(r), r.UserAgent(), "oauth_login", "user", user.ID, user.Username, h.oauthSettingsSnapshot().Issuer)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -398,22 +471,28 @@ type oauthClaims struct {
 	Username    string
 	DisplayName string
 	Raw         map[string]interface{}
+	// IDToken is the raw OIDC id_token from the token response (when scope
+	// includes "openid"). Retained so RP-initiated logout can send it as
+	// id_token_hint — without it, standards-compliant IdPs (Keycloak 18+, etc.)
+	// ignore post_logout_redirect_uri and won't redirect back to OffDock.
+	IDToken string
 }
 
 // exchangeCodeForClaims exchanges an authorization code for an access token,
 // then fetches user claims from the IdP's /oauth2/userinfo endpoint.
 func (h *H) exchangeCodeForClaims(code, codeVerifier string) (*oauthClaims, error) {
-	issuer := strings.TrimRight(h.oauthSettings.Issuer, "/")
+	cfg := h.oauthSettingsSnapshot()
+	issuer := strings.TrimRight(cfg.Issuer, "/")
 	tokenURL := buildTokenURL(issuer)
 
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
-	form.Set("redirect_uri", h.oauthSettings.RedirectURI)
-	form.Set("client_id", h.oauthSettings.ClientID)
+	form.Set("redirect_uri", cfg.RedirectURI)
+	form.Set("client_id", cfg.ClientID)
 	form.Set("code_verifier", codeVerifier)
-	if h.oauthSettings.ClientSecret != "" {
-		form.Set("client_secret", h.oauthSettings.ClientSecret)
+	if cfg.ClientSecret != "" {
+		form.Set("client_secret", cfg.ClientSecret)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -433,6 +512,7 @@ func (h *H) exchangeCodeForClaims(code, codeVerifier string) (*oauthClaims, erro
 
 	var tokenResp struct {
 		AccessToken string `json:"access_token"`
+		IDToken     string `json:"id_token"`
 		TokenType   string `json:"token_type"`
 		Error       string `json:"error"`
 		ErrorDesc   string `json:"error_description"`
@@ -453,12 +533,14 @@ func (h *H) exchangeCodeForClaims(code, codeVerifier string) (*oauthClaims, erro
 	if err != nil {
 		return nil, fmt.Errorf("userinfo request failed: %w — check issuer URL and TLS settings", err)
 	}
+	// Retain the id_token for RP-initiated logout (id_token_hint).
+	claims.IDToken = tokenResp.IDToken
 	return claims, nil
 }
 
 // fetchUserInfo calls the IdP's /oauth2/userinfo endpoint with the access token.
 func (h *H) fetchUserInfo(accessToken string) (*oauthClaims, error) {
-	userInfoURL := buildUserInfoURL(strings.TrimRight(h.oauthSettings.Issuer, "/"))
+	userInfoURL := buildUserInfoURL(strings.TrimRight(h.oauthSettingsSnapshot().Issuer, "/"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -487,10 +569,14 @@ func (h *H) fetchUserInfo(accessToken string) (*oauthClaims, error) {
 }
 
 // mapClaims converts a raw claims map to oauthClaims using the configured field names.
+// AO IDP's /oauth2/userinfo always returns sub/ldap_username/email/display_name (its
+// admin-configured claim mappings only affect the JWT, not this endpoint), so the
+// fallback chains also try those plus standard OIDC names (email/preferred_username)
+// in case Offdock is pointed at a different IdP that passes through raw LDAP attributes.
 func (h *H) mapClaims(raw map[string]interface{}) (*oauthClaims, error) {
-	claimSub, claimEmail, claimUsername, claimName := h.oauthSettings.EffectiveClaimNames()
+	claimEmail, claimUsername, claimName := h.oauthSettingsSnapshot().EffectiveClaimNames()
 
-	strClaim := func(key string) string {
+	str := func(key string) string {
 		if v, ok := raw[key]; ok {
 			if s, ok := v.(string); ok {
 				return strings.TrimSpace(s)
@@ -498,16 +584,39 @@ func (h *H) mapClaims(raw map[string]interface{}) (*oauthClaims, error) {
 		}
 		return ""
 	}
+	firstNonEmpty := func(vals ...string) string {
+		for _, v := range vals {
+			if v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+
+	// Subject: always the standard OIDC "sub" claim — mandatory per spec and
+	// always returned by AO IDP. Not admin-configurable; nothing to map here.
+	sub := str("sub")
+
+	// Email: configured claim → AO IDP/OIDC "email" → sub as last resort.
+	email := firstNonEmpty(str(claimEmail), str("email"), sub)
+
+	// Username: configured claim → AO IDP "ldap_username" → OIDC "preferred_username" → sub.
+	// Falling through to sub (a UUID) is the symptom of a claim-name mismatch — it means
+	// none of the expected username claims were present in the userinfo response.
+	username := firstNonEmpty(str(claimUsername), str("ldap_username"), str("preferred_username"), sub)
+
+	// Full name: configured claim → AO IDP "display_name" → username → preferred_username.
+	displayName := firstNonEmpty(str(claimName), str("display_name"), username, str("preferred_username"))
 
 	c := &oauthClaims{
-		Sub:         strClaim(claimSub),
-		Email:       strClaim(claimEmail),
-		Username:    strClaim(claimUsername),
-		DisplayName: strClaim(claimName),
+		Sub:         sub,
+		Email:       email,
+		Username:    username,
+		DisplayName: displayName,
 		Raw:         raw,
 	}
 	if c.Sub == "" {
-		return nil, fmt.Errorf("'%s' (sub) claim missing in userinfo response", claimSub)
+		return nil, fmt.Errorf("'sub' claim missing in userinfo response")
 	}
 	return c, nil
 }
@@ -521,11 +630,19 @@ func (h *H) upsertOAuthUser(claims *oauthClaims) (*store.User, error) {
 	})
 	if len(matches) > 0 {
 		u := matches[0]
-		u.Email = claims.Email
+		// Refresh mutable attributes from IdP on every login.
+		if claims.Email != "" {
+			u.Email = claims.Email
+		}
+		if claims.Username != "" && claims.Username != u.Username {
+			// Username changed at the IdP (e.g. uid claim updated) — sync it.
+			u.Username = claims.Username
+		}
 		u.UpdatedAt = timeNow()
 		if err := h.db.Users.Save(u); err != nil {
 			return nil, err
 		}
+		slog.Info("oauth_login_refresh", "user_id", u.ID, "username", u.Username, "provider", u.OAuthProvider)
 		return &u, nil
 	}
 
@@ -581,19 +698,19 @@ func updateOAuthConfigYAML(s store.OAuthSettings) error {
 		return err
 	}
 
-	claimSub, claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
+	claimEmail, claimUsername, claimName := s.EffectiveClaimNames()
 	updates := map[string]string{
-		"oauth_enabled":          boolStr(s.Enabled),
-		"oauth_issuer":           s.Issuer,
-		"oauth_client_id":        s.ClientID,
-		"oauth_redirect_uri":     s.RedirectURI,
-		"oauth_scope":            s.Scope,
-		"oauth_claim_sub":        claimSub,
-		"oauth_claim_email":      claimEmail,
-		"oauth_claim_username":   claimUsername,
-		"oauth_claim_name":       claimName,
-		"oauth_ca_cert_file":     s.CACertFile,
-		"oauth_tls_skip_verify":  boolStr(s.TLSSkipVerify),
+		"oauth_enabled":                   boolStr(s.Enabled),
+		"oauth_issuer":                    s.Issuer,
+		"oauth_client_id":                 s.ClientID,
+		"oauth_redirect_uri":              s.RedirectURI,
+		"oauth_post_logout_redirect_uri":  s.PostLogoutRedirectURI,
+		"oauth_scope":                     s.Scope,
+		"oauth_claim_email":               claimEmail,
+		"oauth_claim_username":            claimUsername,
+		"oauth_claim_name":                claimName,
+		"oauth_ca_cert_file":              s.CACertFile,
+		"oauth_tls_skip_verify":           boolStr(s.TLSSkipVerify),
 	}
 	if s.ClientSecret != "" {
 		updates["oauth_client_secret"] = s.ClientSecret

@@ -192,6 +192,41 @@ func (h *H) DeleteImage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// PruneImages removes unused Docker images and reconciles the DB.
+// Query param ?all=true removes ALL images not referenced by any container
+// (not just dangling ones). Default: dangling only.
+func (h *H) PruneImages(w http.ResponseWriter, r *http.Request) {
+	all := r.URL.Query().Get("all") == "true"
+	out, err := h.docker.PruneImages(all)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "prune failed: "+err.Error())
+		return
+	}
+
+	// Reconcile DB: remove records for images that no longer exist in Docker.
+	removed := 0
+	if dbImages, err := h.db.Images.FindAll(); err == nil {
+		dockerImages, _ := h.docker.ImageList()
+		activeIDs := make(map[string]bool, len(dockerImages))
+		for _, di := range dockerImages {
+			activeIDs[di.ID] = true
+		}
+		for _, img := range dbImages {
+			if img.DockerImageID != "" && !activeIDs[img.DockerImageID] {
+				if h.db.Images.Delete(img.ID) == nil {
+					removed++
+				}
+			}
+		}
+	}
+
+	h.logAudit(r, "prune_images", "system", "", "", "")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"output":          strings.TrimSpace(out),
+		"removed_records": removed,
+	})
+}
+
 // --- helpers ----------------------------------------------------------------
 
 func splitImageRef(ref string) (name, tag string) {

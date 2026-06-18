@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, Project, SystemStats, RecentDeployment, ContainerStats } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
 import clsx from 'clsx'
 import {
   LayoutDashboard, Plus, Cpu, MemoryStick, HardDrive, Container as ContainerIcon,
@@ -300,6 +301,7 @@ const HISTORY_LEN = 30
 const PROJECTS_PER_PAGE = 6
 
 export default function DashboardPage() {
+  const { can } = usePermissions()
   const [projects, setProjects] = useState<Project[]>([])
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [recent, setRecent] = useState<RecentDeployment[]>([])
@@ -366,7 +368,7 @@ export default function DashboardPage() {
 
       <PageHeader
         title="Dashboard" subtitle={subtitle} icon={LayoutDashboard}
-        actions={<Link to="/projects/new" className="btn-primary"><Plus className="w-4 h-4" /> New Project</Link>}
+        actions={can(PERMS.manageProjects) ? <Link to="/projects/new" className="btn-primary"><Plus className="w-4 h-4" /> New Project</Link> : null}
       />
 
       {/* System stats */}
@@ -419,7 +421,7 @@ export default function DashboardPage() {
               <EmptyState icon={LayoutDashboard}
                 title={query ? 'No matching projects' : 'No projects yet'}
                 description={query ? 'Try a different search.' : 'Create a project to start managing deployments.'}
-                action={!query && <Link to="/projects/new" className="btn-primary"><Plus className="w-4 h-4" /> Create project</Link>} />
+                action={!query && can(PERMS.manageProjects) ? <Link to="/projects/new" className="btn-primary"><Plus className="w-4 h-4" /> Create project</Link> : undefined} />
             ) : (
               <div className="p-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

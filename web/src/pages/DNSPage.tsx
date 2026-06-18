@@ -50,12 +50,14 @@ export default function DNSPage() {
       setSMTP(s)
       setSmtpForm({
         host: s.host, port: s.port, username: s.username,
-        from: s.from, mode: s.mode || 'starttls', starttls: s.starttls,
+        from: s.from, from_name: s.from_name, mode: s.mode || 'starttls', starttls: s.starttls,
         insecure_skip_verify: s.insecure_skip_verify,
         ca_cert_file: s.ca_cert_file,
         client_cert_file: s.client_cert_file,
         client_key_file: s.client_key_file,
         dns_admin_email: s.dns_admin_email,
+        otp_subject: s.otp_subject, otp_body: s.otp_body,
+        dns_subject: s.dns_subject, dns_body: s.dns_body,
       })
     } catch { }
     setLoading(false)
@@ -351,6 +353,12 @@ export default function DNSPage() {
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
             </div>
             <div>
+              <label className="block text-xs text-slate-500 mb-1">From Name <span className="text-slate-600">(display name in email clients)</span></label>
+              <input value={smtpForm.from_name ?? ''} onChange={e => setSmtpForm(f => ({ ...f, from_name: e.target.value }))}
+                placeholder="OffDock Alerts"
+                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+            </div>
+            <div>
               <label className="block text-xs text-slate-500 mb-1">DNS Admin Email</label>
               <input value={smtpForm.dns_admin_email ?? ''} onChange={e => setSmtpForm(f => ({ ...f, dns_admin_email: e.target.value }))}
                 placeholder="dns-admin@corp.local"
@@ -389,6 +397,41 @@ export default function DNSPage() {
                   className="rounded border-slate-600 bg-slate-800" />
                 Skip TLS verification <span className="text-xs text-slate-600">(not recommended — use CA cert instead)</span>
               </label>
+            </div>
+
+            {/* Email template customization */}
+            <div className="col-span-2 border-t border-slate-700/50 pt-4">
+              <p className="text-xs font-medium text-slate-400 mb-3">Email Templates <span className="text-slate-600 font-normal">— leave blank to use built-in defaults</span></p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">OTP Email Subject</label>
+                  <input value={smtpForm.otp_subject ?? ''} onChange={e => setSmtpForm(f => ({ ...f, otp_subject: e.target.value }))}
+                    placeholder="OffDock Root Terminal — OTP Code"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+                  <p className="text-[11px] text-slate-600 mt-1">No variables needed</p>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">DNS Email Subject</label>
+                  <input value={smtpForm.dns_subject ?? ''} onChange={e => setSmtpForm(f => ({ ...f, dns_subject: e.target.value }))}
+                    placeholder="[DNS Request] {{record_type}} {{hostname}} → {{value}}"
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+                  <p className="text-[11px] text-slate-600 mt-1">Vars: {'{{record_type}} {{hostname}} {{value}}'}</p>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">OTP Email Body</label>
+                  <textarea value={smtpForm.otp_body ?? ''} onChange={e => setSmtpForm(f => ({ ...f, otp_body: e.target.value }))}
+                    rows={6} placeholder={"Hello {{username}},\n\nYour one-time password is:\n\n    {{code}}\n\nExpires in {{expires_minutes}} minutes.\n\n— OffDock"}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-blue-500 resize-y" />
+                  <p className="text-[11px] text-slate-600 mt-1">Vars: {'{{username}} {{code}} {{expires_minutes}}'}</p>
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">DNS Email Body</label>
+                  <textarea value={smtpForm.dns_body ?? ''} onChange={e => setSmtpForm(f => ({ ...f, dns_body: e.target.value }))}
+                    rows={6} placeholder={"Please create the DNS record:\n\nType:     {{record_type}}\nHostname: {{hostname}}\nValue:    {{value}}\nNotes:    {{notes}}\n\nRequested by: {{requested_by}}"}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-blue-500 resize-y" />
+                  <p className="text-[11px] text-slate-600 mt-1">Vars: {'{{record_type}} {{hostname}} {{value}} {{ttl}} {{notes}} {{requested_by}}'}</p>
+                </div>
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-3 pt-2">

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, SystemStats } from '../api/client'
+import { api, SystemStats, DiskUsageRow } from '../api/client'
 import clsx from 'clsx'
 
 function fmtBytes(bytes: number, decimals = 1) {
@@ -80,6 +80,7 @@ function CpuBar({ pct, label }: { pct: number; label: string }) {
 export default function SystemPage() {
   const [stats, setStats] = useState<SystemStats | null>(null)
   const [history, setHistory] = useState<number[]>([]) // CPU history for sparkline
+  const [dockerDf, setDockerDf] = useState<DiskUsageRow[]>([])
 
   // Nginx setup state
   const [nginxStatus, setNginxStatus] = useState<{ available: boolean; status: string } | null>(null)
@@ -88,6 +89,10 @@ export default function SystemPage() {
   const [nginxConfigPreview, setNginxConfigPreview] = useState('')
   const [nginxApplyMessage, setNginxApplyMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [nginxLoading, setNginxLoading] = useState(false)
+
+  useEffect(() => {
+    api.getSystemDf().then(d => setDockerDf(d.rows ?? [])).catch(() => {})
+  }, [])
 
   useEffect(() => {
     const es = new EventSource('/api/v1/system/stats')
@@ -229,9 +234,9 @@ export default function SystemPage() {
             </div>
           )}
           <div className="flex justify-between mt-2 text-xs text-slate-600">
-            <span>Min {Math.min(...history).toFixed(1)}%</span>
+            <span>Min {history.length ? Math.min(...history).toFixed(1) : 0}%</span>
             <span>Avg {history.length ? (history.reduce((a, b) => a + b, 0) / history.length).toFixed(1) : 0}%</span>
-            <span>Max {Math.max(...history).toFixed(1)}%</span>
+            <span>Max {history.length ? Math.max(...history).toFixed(1) : 0}%</span>
           </div>
         </div>
 
@@ -285,6 +290,25 @@ export default function SystemPage() {
           <MetricRow label="Cached / Buffers" value={fmtBytes(stats.ram_cached_bytes ?? 0)} />
         </div>
       </div>
+
+      {/* Docker disk usage breakdown */}
+      {dockerDf.length > 0 && (
+        <section>
+          <p className="section-heading mb-3">Docker Disk Usage</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {dockerDf.map(row => (
+              <div key={row.type} className="card">
+                <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">{row.type}</div>
+                <div className="text-lg font-semibold text-white">{row.size}</div>
+                <div className="text-xs text-slate-500 mt-1">{row.total} objects · {row.active} active</div>
+                {row.reclaimable && (
+                  <div className="text-[11px] text-amber-400/80 mt-0.5">{row.reclaimable} reclaimable</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Containers */}
       {containers.length > 0 && (
@@ -524,6 +548,7 @@ sudo apt-get install nginx
 
       {/* Self-update section */}
       <SystemUpdateSection />
+      <ScheduledUpdateSection />
     </div>
   )
 }
@@ -1004,8 +1029,263 @@ sudo bash install.sh --uninstall      # remove (keeps /var/offdock data)`}</pre>
         )}
 
         <p className="text-xs text-slate-700">
-          The update replaces only the binary and restarts the service. All data, configuration, and settings are preserved.
-          Use <code className="font-mono">sudo bash install.sh --update</code> on the server for the same effect.
+          The update replaces the binary, refreshes the bundled OpenTelemetry tracers
+          (<code className="font-mono">/var/offdock/otel</code>) if the archive includes them, then restarts the service.
+          All data, configuration, and settings are preserved. Running
+          <code className="font-mono"> sudo bash install.sh --update</code> on the server does the same thing,
+          and also installs any missing bundled <code className="font-mono">.deb</code> packages (docker, nginx, tcpdump).
+        </p>
+      </div>
+    </section>
+  )
+}
+
+// ─── Scheduled self-update ────────────────────────────────────────────────────
+
+type ScheduledUpdateStatus = Awaited<ReturnType<typeof api.getScheduledUpdate>>
+
+// toLocalInputValue formats a Date as the naive "YYYY-MM-DDTHH:mm" string that
+// <input type="datetime-local"> expects, in the browser's local time zone
+// (the input has no time zone of its own — new Date(value) below interprets
+// it as local time too, so the round trip stays consistent).
+function toLocalInputValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function ScheduledUpdateSection() {
+  const fileRef = useRef<HTMLInputElement>(null)
+  const [log, setLog] = useState<{ status: string; message: string }[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [runAt, setRunAt] = useState('')
+  const [pending, setPending] = useState<ScheduledUpdateStatus | null>(null)
+  const [loadingStatus, setLoadingStatus] = useState(true)
+  const [cancelling, setCancelling] = useState(false)
+  const [confirmCancel, setConfirmCancel] = useState(false)
+  const logEndRef = useRef<HTMLDivElement>(null)
+
+  const refresh = () => {
+    api.getScheduledUpdate().then(setPending).catch(() => {}).finally(() => setLoadingStatus(false))
+  }
+
+  useEffect(() => {
+    refresh()
+    const id = setInterval(refresh, 30000)
+    return () => clearInterval(id)
+  }, [])
+
+  const runScheduledUpdate = (file: File) => {
+    if (!file.name.endsWith('.tar.gz') && !file.name.endsWith('.tgz')) {
+      setLog([{ status: 'error', message: 'File must be a .tar.gz archive' }])
+      return
+    }
+    if (!runAt) {
+      setLog([{ status: 'error', message: 'Pick a date and time to install the update first' }])
+      return
+    }
+
+    setUploading(true)
+    setLog([{ status: 'info', message: `Uploading ${file.name} (${(file.size / 1e6).toFixed(1)} MB)…` }])
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', api.scheduleUpdateUrl())
+
+    xhr.onload = () => {
+      setUploading(false)
+      if (xhr.status >= 400) {
+        setLog(prev => [...prev, { status: 'error', message: `Server error: ${xhr.status}` }])
+      }
+    }
+    xhr.onerror = () => {
+      setUploading(false)
+      setLog(prev => [...prev, { status: 'error', message: 'Upload failed — connection error' }])
+    }
+
+    let lastIdx = 0
+    xhr.onreadystatechange = () => {
+      if (xhr.readyState >= 3 && xhr.responseText.length > lastIdx) {
+        const chunk = xhr.responseText.slice(lastIdx)
+        lastIdx = xhr.responseText.length
+        for (const line of chunk.split('\n')) {
+          if (!line.startsWith('data:')) continue
+          try {
+            const ev = JSON.parse(line.slice(5)) as { status: string; message: string }
+            setLog(prev => [...prev, ev])
+            if (ev.status === 'success') {
+              setUploading(false)
+              setRunAt('')
+              refresh()
+            }
+          } catch {}
+        }
+      }
+    }
+
+    const form = new FormData()
+    form.append('file', file)
+    // Convert the naive local datetime-local value to an absolute instant —
+    // new Date() on a "YYYY-MM-DDTHH:mm" string parses it as local time,
+    // and toISOString() gives the unambiguous UTC instant the server expects.
+    form.append('run_at', new Date(runAt).toISOString())
+    xhr.send(form)
+  }
+
+  const cancelScheduled = () => {
+    setCancelling(true)
+    api.cancelScheduledUpdate()
+      .then(() => { setConfirmCancel(false); setLog([]); refresh() })
+      .finally(() => setCancelling(false))
+  }
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [log])
+
+  const statusColor = (s: string) => ({
+    info:    'text-slate-400',
+    success: 'text-emerald-400',
+    error:   'text-red-400',
+  } as Record<string, string>)[s] ?? 'text-slate-400'
+
+  const statusIcon = (s: string) => ({
+    info:    '›',
+    success: '✓',
+    error:   '✕',
+  } as Record<string, string>)[s] ?? '›'
+
+  // Mirrors the server's "must be at least 2 minutes from now" requirement —
+  // shown as the picker's floor so the browser enforces it up front too.
+  const minDateTime = toLocalInputValue(new Date(Date.now() + 2 * 60 * 1000))
+
+  return (
+    <section className="mt-6">
+      <p className="section-heading mb-3">Scheduled Update</p>
+      <div className="card space-y-4">
+        <p className="text-xs text-slate-500">
+          Upload a bundle now and OffDock will install it — replacing only the binary, then restarting —
+          automatically at a time you choose. The job is handed off to the host's OS scheduler, so it still
+          runs even if OffDock itself restarts or crashes before then.
+        </p>
+
+        {!loadingStatus && pending?.scheduled ? (
+          <div className="rounded-xl border border-blue-900/50 bg-blue-500/5 p-4">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-slate-200">
+                  Update scheduled for {pending.run_at ? new Date(pending.run_at).toLocaleString() : '—'}
+                </p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {pending.filename}
+                  {pending.version ? ` · version ${pending.version}` : ''}
+                  {pending.uploaded_by ? ` · uploaded by ${pending.uploaded_by}` : ''}
+                </p>
+                <p className="text-xs mt-1.5 flex items-center gap-1.5">
+                  <span className={clsx('w-1.5 h-1.5 rounded-full', pending.active ? 'bg-emerald-400' : 'bg-amber-400')} />
+                  <span className={pending.active ? 'text-emerald-400' : 'text-amber-400'}>
+                    {pending.active ? 'Armed — will install and restart automatically' : 'Not armed — it may have already run, or scheduling failed'}
+                  </span>
+                </p>
+              </div>
+              {!confirmCancel ? (
+                <button onClick={() => setConfirmCancel(true)} className="btn-ghost text-xs shrink-0">
+                  Cancel scheduled update
+                </button>
+              ) : (
+                <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+                  <span className="text-xs text-slate-500">Discard the staged update?</span>
+                  <button onClick={cancelScheduled} disabled={cancelling} className="btn-danger text-xs disabled:opacity-50">
+                    {cancelling ? 'Cancelling…' : 'Yes, cancel it'}
+                  </button>
+                  <button onClick={() => setConfirmCancel(false)} className="btn-ghost text-xs">Keep it</button>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : !loadingStatus && (
+          <>
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">Install at</label>
+              <input
+                type="datetime-local"
+                value={runAt}
+                min={minDateTime}
+                onChange={e => setRunAt(e.target.value)}
+                className="bg-slate-900 border border-slate-800 rounded px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-slate-700"
+              />
+              <p className="text-xs text-slate-700 mt-1">Must be at least a couple of minutes from now.</p>
+            </div>
+
+            {/* Drop zone */}
+            <div
+              onDragOver={e => { if (runAt) { e.preventDefault(); setDragOver(true) } }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={e => {
+                e.preventDefault(); setDragOver(false)
+                if (!runAt) return
+                const f = e.dataTransfer.files[0]
+                if (f) runScheduledUpdate(f)
+              }}
+              onClick={() => !uploading && runAt && fileRef.current?.click()}
+              className={clsx(
+                'relative flex flex-col items-center justify-center gap-2 p-8 rounded-xl border-2 border-dashed transition-all',
+                !runAt && 'cursor-not-allowed opacity-50 border-slate-800',
+                runAt && !dragOver && 'cursor-pointer border-slate-700 hover:border-slate-600 hover:bg-slate-800/30',
+                runAt && dragOver && 'cursor-pointer border-blue-500 bg-blue-500/5',
+                uploading && 'pointer-events-none opacity-60',
+              )}
+            >
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".tar.gz,.tgz"
+                className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) { runScheduledUpdate(f); e.target.value = '' } }}
+              />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-8 h-8 text-slate-600">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v8m4-4H8m9 8H7a2 2 0 01-2-2V6a2 2 0 012-2h6l4 4v10a2 2 0 01-2 2z" />
+              </svg>
+              {uploading ? (
+                <p className="text-sm text-blue-400 font-medium">Uploading & staging…</p>
+              ) : runAt ? (
+                <>
+                  <p className="text-sm text-slate-300 font-medium">Drop <code className="font-mono">offdock-offline-*.tar.gz</code> here to schedule</p>
+                  <p className="text-xs text-slate-600">or click to browse</p>
+                </>
+              ) : (
+                <p className="text-sm text-slate-500 font-medium">Pick an install time above first</p>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Schedule log */}
+        {log.length > 0 && (
+          <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 max-h-48 overflow-y-auto">
+            {log.map((l, i) => (
+              <div key={i} className={clsx('font-mono text-xs flex gap-2', statusColor(l.status))}>
+                <span className="shrink-0">{statusIcon(l.status)}</span>
+                <span>{l.message}</span>
+              </div>
+            ))}
+            {uploading && <div className="font-mono text-xs text-blue-400 animate-pulse">▌</div>}
+            <div ref={logEndRef} />
+          </div>
+        )}
+
+        {/* Most recent completed scheduled update, if any */}
+        {pending?.last_result && (
+          <details className="text-xs">
+            <summary className={clsx('cursor-pointer select-none font-medium', pending.last_result === 'ok' ? 'text-emerald-400' : 'text-red-400')}>
+              {pending.last_result === 'ok' ? '✓ Last scheduled update completed successfully' : '✕ Last scheduled update failed'} — view log
+            </summary>
+            <pre className="mt-2 bg-slate-950 border border-slate-800 rounded p-3 text-[11px] text-slate-500 font-mono whitespace-pre-wrap overflow-x-auto">{pending.last_log}</pre>
+          </details>
+        )}
+
+        <p className="text-xs text-slate-700">
+          Same safe binary-only swap as the immediate update above — only deferred. Scheduling a new update
+          replaces any update already pending.
         </p>
       </div>
     </section>

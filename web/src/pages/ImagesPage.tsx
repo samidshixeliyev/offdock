@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, DockerImage } from '../api/client'
+import { api, DockerImage, DiskUsageRow } from '../api/client'
 import ConfirmModal from '../components/ConfirmModal'
 import { Page, PageHeader, Panel, EmptyState, IconButton } from '../components/ui'
 import { Modal } from '../components/Modal'
@@ -10,6 +10,8 @@ import {
   Boxes, Upload, RefreshCw, RotateCw, Trash2, FileArchive, HardDriveUpload,
   Loader2, CheckCircle2,
 } from 'lucide-react'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 
 type UploadTab = 'computer' | 'server'
 
@@ -119,19 +121,35 @@ function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => v
 
 export default function ImagesPage() {
   const toast = useToast()
+  const { can } = usePermissions()
   const [images, setImages] = useState<DockerImage[]>([])
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  const [pruning, setPruning] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<DockerImage | null>(null)
+  const [diskRows, setDiskRows] = useState<DiskUsageRow[]>([])
 
   const reload = () => api.listImages().then(d => setImages(d ?? [])).catch(() => {}).finally(() => setLoading(false))
-  useEffect(() => { reload() }, [])
+  useEffect(() => {
+    reload()
+    api.getSystemDf().then(d => setDiskRows(d.rows ?? [])).catch(() => {})
+  }, [])
 
   const handleSync = async () => {
     setSyncing(true)
     try { const res = await api.syncImages(); toast.success(`Synced ${res.synced} new image${res.synced !== 1 ? 's' : ''} from Docker`); reload() }
     catch (e) { toast.error('Sync failed: ' + (e instanceof Error ? e.message : 'unknown')) } finally { setSyncing(false) }
+  }
+  const handlePrune = async (all: boolean) => {
+    setPruning(true)
+    try {
+      const res = await api.pruneImages(all)
+      toast.success(`Pruned. ${res.output || 'No space reclaimed.'}`)
+      reload()
+      api.getSystemDf().then(d => setDiskRows(d.rows ?? [])).catch(() => {})
+    }
+    catch (e) { toast.error(e instanceof Error ? e.message : 'Prune failed') } finally { setPruning(false) }
   }
   const handleDelete = async (img: DockerImage) => {
     try { await api.deleteImage(img.id); toast.success('Image deleted'); reload() }
@@ -140,13 +158,30 @@ export default function ImagesPage() {
 
   return (
     <Page>
+      {!can(PERMS.manageImages) && <ReadOnlyBanner message="You don't have permission to manage images. Viewing in read-only mode." />}
       <PageHeader title="Images" subtitle={`${images.length} tracked image${images.length !== 1 ? 's' : ''}`} icon={Boxes}
         actions={<>
+          {can(PERMS.manageImages) && <button onClick={() => handlePrune(false)} disabled={pruning} title="Remove dangling (unused) images" className="btn-secondary">
+            {pruning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />} Prune
+          </button>}
           <button onClick={handleSync} disabled={syncing} className="btn-secondary">
             {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCw className="w-4 h-4" />} Sync from Docker
           </button>
-          <button onClick={() => setShowUpload(true)} className="btn-primary"><Upload className="w-4 h-4" /> Add Image (.tar)</button>
+          {can(PERMS.manageImages) && <button onClick={() => setShowUpload(true)} className="btn-primary"><Upload className="w-4 h-4" /> Add Image (.tar)</button>}
         </>} />
+
+      {/* Docker disk usage summary */}
+      {diskRows.length > 0 && (
+        <div className="mx-4 mb-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {diskRows.map(row => (
+            <div key={row.type} className="bg-slate-900/60 border border-slate-800 rounded-lg p-3">
+              <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">{row.type}</div>
+              <div className="text-sm font-semibold text-slate-200">{row.size}</div>
+              <div className="text-[10px] text-slate-500 mt-0.5">{row.total} total · {row.reclaimable && <span className="text-amber-400/80">{row.reclaimable} reclaimable</span>}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {showUpload && <UploadModal onDone={reload} onClose={() => setShowUpload(false)} />}
       {confirmDelete && (
@@ -181,7 +216,7 @@ export default function ImagesPage() {
                     <td className="px-4 py-3 text-xs font-mono text-slate-500">{(img.docker_image_id ?? '').replace('sha256:', '').slice(0, 12)}</td>
                     <td className="px-4 py-3 text-xs text-slate-400 tabular-nums">{img.size_bytes ? formatBytes(img.size_bytes) : '—'}</td>
                     <td className="px-4 py-3 text-xs text-slate-500">{formatDateTime(img.loaded_at)}</td>
-                    <td className="px-4 py-3 text-right"><IconButton icon={Trash2} tone="danger" title="Delete" onClick={() => setConfirmDelete(img)} /></td>
+                    <td className="px-4 py-3 text-right"><IconButton icon={Trash2} tone="danger" title={can(PERMS.manageImages) ? "Delete" : "Delete (no permission)"} disabled={!can(PERMS.manageImages)} onClick={() => can(PERMS.manageImages) && setConfirmDelete(img)} /></td>
                   </tr>
                 ))}
               </tbody>

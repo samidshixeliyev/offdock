@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { api, ComposeConfig, DeploymentRecord, DeploySettings, EnvVarSet, DeployTag } from '../api/client'
+import { api, ComposeConfig, ComposeServiceInfo, DeploymentRecord, DeploySettings, EnvVarSet, DeployTag } from '../api/client'
 import clsx from 'clsx'
 import {
   Search, FileText, Container as ContainerIcon, HeartPulse, Server, CheckCircle2,
   Loader2, AlertCircle, RotateCcw, Rocket,
 } from 'lucide-react'
+import { useToast } from '../components/Toast'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 
 function duration(d: DeploymentRecord) {
   if (!d.finished_at) return '—'
@@ -136,6 +139,8 @@ function PipelineBar({ log, deploying }: { log: string[]; deploying: boolean }) 
 }
 
 export default function DeployPage() {
+  const toast = useToast()
+  const { can } = usePermissions()
   const { id } = useParams<{ id: string }>()
 
   const [deployments, setDeployments] = useState<DeploymentRecord[]>([])
@@ -143,10 +148,15 @@ export default function DeployPage() {
   const [envHistory, setEnvHistory] = useState<EnvVarSet[]>([])
   const [settings, setSettings] = useState<DeploySettings | null>(null)
   const [settingsDraft, setSettingsDraft] = useState<Omit<DeploySettings, 'id' | 'project_id'>>({
-    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5,
+    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5, webhook_url: '', otel_enabled: false,
   })
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
+  const [composeServices, setComposeServices] = useState<ComposeServiceInfo[]>([])
+  const [langOverrides, setLangOverrides] = useState<Record<string, string>>({})
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualName, setManualName] = useState('')
+  const [manualLang, setManualLang] = useState('java')
 
   const [log, setLog] = useState<string[]>([])
   const [deploying, setDeploying] = useState(false)
@@ -191,8 +201,14 @@ export default function DeployPage() {
     }).catch(() => {})
     api.getDeploySettings(id).then(s => {
       setSettings(s)
-      setSettingsDraft({ health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs, health_stable_secs: s.health_stable_secs })
+      setSettingsDraft({
+        health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs,
+        health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '', otel_enabled: s.otel_enabled ?? false,
+        otel_language_overrides: s.otel_language_overrides,
+      })
+      setLangOverrides(s.otel_language_overrides ?? {})
     }).catch(() => {})
+    api.getComposeServices(id).then(r => setComposeServices(r.services ?? [])).catch(() => {})
     api.listDeployTags(id).then(t => setTags(t ?? [])).catch(() => {})
   }, [id])
 
@@ -258,11 +274,17 @@ export default function DeployPage() {
     if (!id) return
     setSettingsSaving(true)
     try {
-      const s = await api.saveDeploySettings(id, settingsDraft)
+      const payload = {
+        ...settingsDraft,
+        otel_language_overrides: Object.keys(langOverrides).length > 0 ? langOverrides : undefined,
+      }
+      const s = await api.saveDeploySettings(id, payload)
       setSettings(s)
       setSettingsSaved(true)
       setTimeout(() => setSettingsSaved(false), 2000)
-    } catch {}
+    } catch (e) {
+      toast.error('Failed to save settings: ' + (e instanceof Error ? e.message : 'unknown'))
+    }
     setSettingsSaving(false)
   }
 
@@ -279,7 +301,9 @@ export default function DeployPage() {
   )
 
   return (
-    <div className="p-6 max-w-5xl space-y-6 animate-fadeIn">
+    <div className="flex flex-col h-full overflow-hidden">
+    {!can(PERMS.deploy) && <ReadOnlyBanner message="You don't have permission to deploy. Viewing in read-only mode." />}
+    <div className="p-6 max-w-5xl space-y-6 animate-fadeIn flex-1 overflow-y-auto">
 
       {/* ── Deploy now ─────────────────────────────────────────────────────── */}
       <div className="card-static">
@@ -295,7 +319,8 @@ export default function DeployPage() {
           </div>
           <button
             onClick={() => startDeploy()}
-            disabled={deploying || !latestCompose}
+            disabled={deploying || !latestCompose || !can(PERMS.deploy)}
+            title={!can(PERMS.deploy) ? 'You do not have permission to deploy' : undefined}
             className="btn-primary flex items-center gap-2"
           >
             {deploying ? (
@@ -508,7 +533,7 @@ export default function DeployPage() {
         {showTagForm && (
           <div className="p-4 rounded-xl bg-slate-950/60 border border-blue-500/20 space-y-3">
             <p className="text-xs font-semibold text-slate-300">Tag current version</p>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-slate-500 mb-1">Tag name <span className="text-slate-600">(e.g. v1.0.0, stable)</span></label>
                 <input
@@ -573,7 +598,7 @@ export default function DeployPage() {
         {/* Manual version pickers */}
         <div className="border-t border-slate-800 pt-4">
           <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-3">Manual version selection</p>
-          <div className="grid grid-cols-2 gap-4 mb-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
             <div>
               <label className="block text-xs text-slate-400 mb-1.5">Compose version</label>
               <select
@@ -641,7 +666,7 @@ export default function DeployPage() {
       {/* ── Deploy settings ────────────────────────────────────────────────── */}
       <div className="card">
         <h2 className="text-sm font-semibold text-white mb-4">Deploy Settings</h2>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-xs text-slate-400 mb-1">Health timeout (seconds)</label>
             <input
@@ -679,6 +704,222 @@ export default function DeployPage() {
             <p className="text-xs text-slate-600 mt-1">Time a "running" container must stay up before considered healthy</p>
           </div>
         </div>
+
+        {/* Webhook URL */}
+        <div className="mt-4">
+          <label className="block text-xs text-slate-400 mb-1">Webhook URL <span className="text-slate-600">(optional — POST on deploy complete/fail)</span></label>
+          <input
+            type="url"
+            placeholder="http://monitoring.intranet/deploy-hook"
+            value={settingsDraft.webhook_url ?? ''}
+            onChange={e => setSettingsDraft(d => ({ ...d, webhook_url: e.target.value }))}
+            className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
+          />
+          <p className="text-xs text-slate-600 mt-1">
+            HTTP POST on deploy complete or fail — use for Slack webhooks, monitoring, CI/CD callbacks, or any HTTP endpoint.
+            Payload: <code className="text-slate-400 font-mono">{'{"status":"success|failed","project":"...","deploy_id":"...","timestamp":"..."}'}</code>
+          </p>
+        </div>
+
+        {/* OpenTelemetry — toggle + per-service language picker */}
+        <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/30 overflow-hidden">
+          <div className="flex items-center justify-between p-4">
+            <div>
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.otel_enabled ?? false}
+                  onChange={e => setSettingsDraft(d => ({ ...d, otel_enabled: e.target.checked }))}
+                  className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-blue-500"
+                />
+                <span className="text-sm font-medium text-slate-200">Enable OpenTelemetry tracing</span>
+              </label>
+              <p className="text-xs text-slate-500 mt-1 ml-[26px]">
+                Injects OTEL_* env vars and tracer agents automatically per service.
+                {settingsDraft.otel_enabled && <><br /><a href="/otel-traces" className="text-blue-400 hover:underline">Open App Traces →</a></>}
+              </p>
+            </div>
+            <div className={`text-[10px] px-2 py-0.5 rounded font-semibold ${settingsDraft.otel_enabled ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-600'}`}>
+              {settingsDraft.otel_enabled ? 'ON' : 'OFF'}
+            </div>
+          </div>
+
+          {settingsDraft.otel_enabled && (() => {
+            const composeNames = new Set(composeServices.map(s => s.name))
+            // Manual overrides = entries in langOverrides whose key isn't a known compose service.
+            const manualNames = Object.keys(langOverrides).filter(n => !composeNames.has(n)).sort()
+            const addManual = () => {
+              const name = manualName.trim()
+              if (!name) return
+              setLangOverrides(prev => ({ ...prev, [name]: manualLang }))
+              setManualName('')
+              setManualLang('java')
+              setManualOpen(false)
+            }
+            const removeOverride = (name: string) => {
+              setLangOverrides(prev => {
+                const next = { ...prev }
+                delete next[name]
+                return next
+              })
+            }
+            return (
+            <div className="border-t border-slate-800 px-4 pb-4 pt-3">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                Service Language Overrides
+              </p>
+              <p className="text-[11px] text-slate-600 mb-3">
+                OffDock auto-detects languages from image names. Override here when detection is wrong or the image name gives no hint (e.g. <code className="text-slate-400">keycloak</code>, custom builds). You can also add a service by name manually if it isn't in the compose file yet.
+              </p>
+
+              <div className="space-y-2">
+                {/* Auto-detected compose services */}
+                {composeServices.map(svc => {
+                  const detected = (svc.detected_langs ?? []).length > 0 ? (svc.detected_langs ?? []).join(', ') : 'none detected'
+                  const override = langOverrides[svc.name] ?? ''
+                  return (
+                    <div key={svc.name} className="flex items-center gap-3 text-sm">
+                      <div className="flex-1 min-w-0">
+                        <span className="font-mono text-slate-200 text-xs">{svc.name}</span>
+                        {svc.image && (
+                          <span className="ml-2 text-[10px] text-slate-600 font-mono truncate">{svc.image}</span>
+                        )}
+                      </div>
+                      <select
+                        value={override}
+                        onChange={e => {
+                          const v = e.target.value
+                          setLangOverrides(prev => {
+                            const next = { ...prev }
+                            if (v === '') { delete next[svc.name] } else { next[svc.name] = v }
+                            return next
+                          })
+                        }}
+                        className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
+                      >
+                        <option value="">Auto ({detected})</option>
+                        <option value="java">Java</option>
+                        <option value="nodejs">Node.js</option>
+                        <option value="php">PHP</option>
+                        <option value="python">Python</option>
+                        <option value="ruby">Ruby</option>
+                        <option value="dotnet">.NET / C#</option>
+                        <option value="go">Go</option>
+                        <option value="none">Disabled (skip)</option>
+                      </select>
+                      {override && override !== 'none' && (
+                        <span className="text-[10px] text-blue-400 font-semibold shrink-0">overridden</span>
+                      )}
+                      {override === 'none' && (
+                        <span className="text-[10px] text-slate-500 shrink-0">skipped</span>
+                      )}
+                    </div>
+                  )
+                })}
+
+                {/* Manual overrides — services not present in the compose file */}
+                {manualNames.map(name => {
+                  const override = langOverrides[name] ?? ''
+                  return (
+                    <div key={name} className="flex items-center gap-3 text-sm">
+                      <div className="flex-1 min-w-0">
+                        <span className="font-mono text-slate-200 text-xs">{name}</span>
+                        <span className="ml-2 text-[10px] text-amber-500/80 font-semibold shrink-0">manual</span>
+                      </div>
+                      <select
+                        value={override}
+                        onChange={e => {
+                          const v = e.target.value
+                          setLangOverrides(prev => ({ ...prev, [name]: v }))
+                        }}
+                        className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
+                      >
+                        <option value="java">Java</option>
+                        <option value="nodejs">Node.js</option>
+                        <option value="php">PHP</option>
+                        <option value="python">Python</option>
+                        <option value="ruby">Ruby</option>
+                        <option value="dotnet">.NET / C#</option>
+                        <option value="go">Go</option>
+                        <option value="none">Disabled (skip)</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => removeOverride(name)}
+                        className="text-[10px] text-slate-500 hover:text-red-400 shrink-0 px-1"
+                        title="Remove override"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )
+                })}
+
+                {composeServices.length === 0 && manualNames.length === 0 && (
+                  <p className="text-[11px] text-slate-600 italic">No compose services detected. Use “Add manual override” below to map a service name to a language.</p>
+                )}
+              </div>
+
+              {/* Add manual override */}
+              <div className="mt-3 pt-3 border-t border-slate-800/60">
+                {manualOpen ? (
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <input
+                      type="text"
+                      autoFocus
+                      placeholder="service name (e.g. keycloak)"
+                      value={manualName}
+                      onChange={e => setManualName(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManual() } }}
+                      className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+                    />
+                    <select
+                      value={manualLang}
+                      onChange={e => setManualLang(e.target.value)}
+                      className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
+                    >
+                      <option value="java">Java</option>
+                      <option value="nodejs">Node.js</option>
+                      <option value="php">PHP</option>
+                      <option value="python">Python</option>
+                      <option value="ruby">Ruby</option>
+                      <option value="dotnet">.NET / C#</option>
+                      <option value="go">Go</option>
+                      <option value="none">Disabled (skip)</option>
+                    </select>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={addManual}
+                        disabled={!manualName.trim()}
+                        className="text-xs rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-3 py-1"
+                      >
+                        Add
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setManualOpen(false); setManualName(''); setManualLang('java') }}
+                        className="text-xs text-slate-500 hover:text-slate-300 px-1"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setManualOpen(true)}
+                    className="text-xs text-blue-400 hover:text-blue-300 font-medium"
+                  >
+                    + Add manual override
+                  </button>
+                )}
+              </div>
+            </div>
+            )
+          })()}
+        </div>
+
         <div className="flex items-center gap-3 mt-4">
           <button
             onClick={saveSettings}
@@ -703,7 +944,7 @@ export default function DeployPage() {
           <div className="card text-slate-500 text-sm text-center py-8">No deployments yet</div>
         ) : (
           <div className="card overflow-x-auto p-0">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-500 text-xs">
                   <th className="text-left px-4 py-2.5">Status</th>
@@ -784,6 +1025,7 @@ export default function DeployPage() {
           </div>
         )}
       </section>
+    </div>
     </div>
   )
 }

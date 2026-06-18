@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import Editor from '@monaco-editor/react'
 import { api, ComposeConfig } from '../api/client'
+import { usePermissions, PERMS } from '../hooks/usePermissions'
+import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 
 export default function ComposePage() {
   const { id } = useParams<{ id: string }>()
+  const { can } = usePermissions()
   const [yaml, setYaml] = useState('')
   const [history, setHistory] = useState<ComposeConfig[]>([])
   const [selected, setSelected] = useState<ComposeConfig | null>(null)
@@ -38,12 +41,14 @@ export default function ComposePage() {
   }
 
   return (
-    <div className="p-6 max-w-6xl">
+    <div className="flex flex-col h-full overflow-hidden">
+    {!can(PERMS.editCompose) && <ReadOnlyBanner message="You don't have permission to edit compose configs. Viewing in read-only mode." />}
+    <div className="p-6 max-w-6xl flex-1 overflow-y-auto">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold text-white">docker-compose.yml</h1>
         <div className="flex items-center gap-3">
           {msg && <span className={`text-sm ${msgType === 'err' ? 'text-red-400' : 'text-slate-400'}`}>{msg}</span>}
-          <button onClick={save} disabled={saving} className="btn-primary">
+          <button onClick={save} disabled={saving || !can(PERMS.editCompose)} title={!can(PERMS.editCompose) ? 'No permission to edit compose' : undefined} className="btn-primary">
             {saving ? 'Saving…' : 'Save Version'}
           </button>
         </div>
@@ -78,6 +83,7 @@ export default function ComposePage() {
           </div>
         </div>
       </div>
+    </div>
     </div>
   )
 }

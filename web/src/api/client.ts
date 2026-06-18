@@ -114,6 +114,88 @@ export interface DeploySettings {
   dns_servers?: string[]
   dns_search?: string[]
   extra_hosts?: string[]
+  webhook_url?: string
+  // OpenTelemetry — one toggle, everything auto-configured (native OTLP receiver)
+  otel_enabled?: boolean
+  // Manual language overrides: service name → "java"|"nodejs"|"php"|"python"|"ruby"|"dotnet"|"go"|"none"
+  otel_language_overrides?: Record<string, string>
+}
+
+export interface ComposeServiceInfo {
+  name: string
+  image: string
+  detected_langs: string[] | null
+}
+
+// ─── OpenTelemetry / Jaeger types ──────────────────────────────────────────
+
+export interface OTelTag {
+  key: string
+  type: string
+  value: string | number | boolean
+}
+
+export interface OTelSpanRef {
+  refType: 'CHILD_OF' | 'FOLLOWS_FROM'
+  traceID: string
+  spanID: string
+}
+
+export interface OTelSpanLog {
+  timestamp: number    // microseconds since epoch
+  fields: OTelTag[]
+}
+
+export interface OTelSpan {
+  traceID: string
+  spanID: string
+  operationName: string
+  references: OTelSpanRef[]
+  startTime: number    // microseconds since epoch
+  duration: number     // microseconds
+  tags: OTelTag[]
+  logs: OTelSpanLog[] | null   // span events (exception stack traces, custom events)
+  processID: string
+  warnings: string[] | null
+  scopeName?: string
+  scopeVersion?: string
+}
+
+export interface OTelProcess {
+  serviceName: string
+  tags: OTelTag[]
+}
+
+export interface OTelTrace {
+  traceID: string
+  spans: OTelSpan[]
+  processes: Record<string, OTelProcess>
+  warnings: string[] | null
+}
+
+export interface OTelTraceSummary {
+  traceID: string
+  rootSpan: OTelSpan
+  service: string
+  spans: number
+  duration: number   // microseconds
+  startTime: number  // microseconds
+  hasError: boolean
+}
+
+export interface OTelStatus {
+  available: boolean
+  message?: string
+  otlp_http?: string   // e.g. http://HOST_IP:7070/v1/traces
+  span_count?: number
+}
+
+export interface DiskUsageRow {
+  type: string
+  total: string
+  active: string
+  size: string
+  reclaimable: string
 }
 
 export interface DockerImage {
@@ -391,9 +473,11 @@ export interface DNSTicket {
 }
 export interface SMTPSettings {
   host: string; port: number; username: string; password_set: boolean
-  from: string; mode: string; starttls: boolean; insecure_skip_verify: boolean
+  from: string; from_name: string; mode: string; starttls: boolean; insecure_skip_verify: boolean
   ca_cert_file: string; client_cert_file: string; client_key_file: string
   dns_admin_email: string; configured: boolean
+  otp_subject: string; otp_body: string
+  dns_subject: string; dns_body: string
 }
 
 export interface UsbDrive {
@@ -409,13 +493,23 @@ export interface OAuthSettings {
   client_id: string
   secret_set: boolean
   redirect_uri: string
+  post_logout_redirect_uri: string
   scope: string
-  claim_sub: string
   claim_email: string
   claim_username: string
   claim_name: string
   ca_cert_file: string
   tls_skip_verify: boolean
+}
+
+export interface RetentionSettings {
+  otel_spans_max_count: number
+  otel_spans_max_age_days: number
+  trace_sessions_max_count: number
+  trace_sessions_max_age_days: number
+  audit_events_max_count: number
+  audit_events_max_age_days: number
+  app_logs_max_lines: number
 }
 
 class ApiError extends Error {
@@ -661,6 +755,9 @@ export const api = {
       method: 'PUT', body: JSON.stringify(data),
     }),
 
+  getComposeServices: (projectId: string) =>
+    request<{ services: ComposeServiceInfo[] }>(`/api/v1/projects/${projectId}/compose/services`),
+
   // Containers — per-project
   listContainers: (projectId: string) =>
     request<ContainerInfo[]>(`/api/v1/projects/${projectId}/containers`),
@@ -819,9 +916,76 @@ export const api = {
     window.open('/api/v1/system/backup')
   },
 
-  // Self-update
-  getUpdateStatus: () => request<{ can_update: boolean; install_path: string }>('/api/v1/system/update/status'),
+  // App logs
+  getAppLogs: (n = 500) => request<{ source: string; lines: string[] }>(`/api/v1/system/app-logs?n=${n}`),
+  appLogsStreamUrl: () => '/api/v1/system/app-logs/stream',
+
+  // OpenTelemetry / Jaeger proxy
+  otelStatus: () => request<OTelStatus>('/api/v1/otel/status'),
+  otelServices: () => request<{ data: string[] }>('/api/v1/otel/services'),
+  otelOperations: (service: string) =>
+    request<{ data: Array<{ name: string; spanKind: string }> }>(`/api/v1/otel/operations?service=${encodeURIComponent(service)}`),
+  otelTraces: (params: {
+    service?: string; limit?: number; operation?: string
+    search?: string; status?: string; min_duration_ms?: number; time_range?: string
+  } = {}) => {
+    const q = new URLSearchParams()
+    if (params.service) q.set('service', params.service)
+    if (params.limit) q.set('limit', String(params.limit))
+    if (params.operation) q.set('operation', params.operation)
+    if (params.search) q.set('search', params.search)
+    if (params.status) q.set('status', params.status)
+    if (params.min_duration_ms) q.set('min_duration_ms', String(params.min_duration_ms))
+    if (params.time_range) q.set('time_range', params.time_range)
+    return request<{ data: OTelTrace[] }>(`/api/v1/otel/traces?${q}`)
+  },
+  otelTrace: (id: string) => request<{ data: OTelTrace[] }>(`/api/v1/otel/traces/${id}`),
+  otelDeleteTraces: () => request<{ deleted: number }>('/api/v1/otel/traces', { method: 'DELETE' }),
+
+  // Retention settings
+  getRetentionSettings: () => request<RetentionSettings>('/api/v1/settings/retention'),
+  saveRetentionSettings: (s: RetentionSettings) => request<RetentionSettings>('/api/v1/settings/retention', {
+    method: 'PUT', body: JSON.stringify(s),
+  }),
+
+  // App log management
+  clearAppLogs: () => request<{ status: string }>('/api/v1/system/app-logs', { method: 'DELETE' }),
+
+  // Docker disk usage + image prune
+  getSystemDf: () => request<{ rows: DiskUsageRow[] }>('/api/v1/system/df'),
+  pruneImages: (all = false) =>
+    request<{ output: string; removed_records: number }>(`/api/v1/images/prune${all ? '?all=true' : ''}`, { method: 'POST', body: '{}' }),
+
+  // Project clone
+  cloneProject: (projectId: string, name: string, description?: string) =>
+    request<{ id: string; name: string; description: string; status: string }>(`/api/v1/projects/${projectId}/clone`, {
+      method: 'POST', body: JSON.stringify({ name, description }),
+    }),
+
+  // Self-update, rollback, and DB compaction
+  getUpdateStatus: () => request<{ can_update: boolean; can_rollback: boolean; install_path: string; backup_path: string }>('/api/v1/system/update/status'),
   systemUpdateUrl: () => '/api/v1/system/update',
+  systemRollbackUrl: () => '/api/v1/system/rollback',
+
+  // Scheduled self-update — upload now, install automatically at a chosen time.
+  scheduleUpdateUrl: () => '/api/v1/system/update/schedule',
+  getScheduledUpdate: () => request<{
+    scheduled: boolean
+    run_at?: string
+    filename?: string
+    version?: string
+    uploaded_by?: string
+    uploaded_at?: string
+    active: boolean
+    last_result?: string
+    last_log?: string
+  }>('/api/v1/system/update/scheduled'),
+  cancelScheduledUpdate: () => request<{ status: string }>('/api/v1/system/update/scheduled', { method: 'DELETE' }),
+  compactDB: () => request<{ status: string; bytes_before: number; bytes_after: number; bytes_freed: number }>('/api/v1/system/compact', { method: 'POST', body: '{}' }),
+  pruneAll: (params?: { sessions?: number; otel_spans?: number; audit?: number; deployments?: number }) => {
+    const q = params ? '?' + new URLSearchParams(Object.entries(params).filter(([,v]) => v !== undefined).map(([k,v]) => [k, String(v)])).toString() : ''
+    return request<{ status: string; sessions_deleted: number; otel_spans_deleted: number; audit_deleted: number; deployments_deleted: number }>(`/api/v1/system/prune${q}`, { method: 'POST', body: '{}' })
+  },
 
   // File upload — uses XHR (not fetch) so upload.onprogress fires for large files.
   uploadFile: (

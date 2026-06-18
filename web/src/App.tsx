@@ -27,6 +27,9 @@ import DNSPage from './pages/DNSPage'
 import SettingsPage from './pages/SettingsPage'
 import TracingPage from './pages/TracingPage'
 import DocsPage from './pages/DocsPage'
+import AppLogsPage from './pages/AppLogsPage'
+import OTelTracesPage from './pages/OTelTracesPage'
+import HelpPage from './pages/HelpPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -66,6 +69,9 @@ export default function App() {
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/tracing" element={<TracingPage />} />
             <Route path="/docs" element={<DocsPage />} />
+            <Route path="/app-logs" element={<AppLogsPage />} />
+            <Route path="/otel-traces" element={<OTelTracesPage />} />
+            <Route path="/help" element={<HelpPage />} />
           </Route>
         </Routes>
       </AuthProvider>

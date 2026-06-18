@@ -3,6 +3,8 @@
 #
 # Usage:
 #   sudo bash install.sh            — interactive setup (recommended)
+#   sudo bash install.sh --update   — replace binary + restart service
+#   sudo bash install.sh --deps     — install bundled packages + OTel only (no binary swap)
 #   sudo bash install.sh --uninstall — remove OffDock
 
 set -euo pipefail
@@ -34,6 +36,7 @@ BUNDLE=false        # --bundle [outdir]: build the offline tar.gz
 BUNDLE_OUT=""
 WANT_SSL=false      # --ssl with --full: generate self-signed cert
 NGINX_CONF=""       # --nginx-conf PATH: install a custom vhost instead of generated
+DEPS=false          # --deps:    install bundled packages + OTel agents only, no binary swap/restart
 
 usage() {
   cat <<USAGE
@@ -67,6 +70,7 @@ while [[ $# -gt 0 ]]; do
     --uninstall) UNINSTALL=true; shift ;;
     --update)    UPDATE=true; shift ;;
     --full)      FULL=true; NONINTERACTIVE=true; shift ;;
+    --deps)      DEPS=true;   shift ;;
     --restore)   RESTORE_ARCHIVE="${2:-}"; shift 2 ;;
     --bundle)    BUNDLE=true; if [[ -n "${2:-}" && "${2:-}" != --* ]]; then BUNDLE_OUT="$2"; shift 2; else shift; fi ;;
     --domain)    DOMAIN="${2:-}"; shift 2 ;;
@@ -145,6 +149,25 @@ _hold_core_packages() {
   done
   [[ ${#_held[@]} -gt 0 ]] && echo "  Protected packages held: ${_held[*]}"
   return 0   # never let a false [[ ]] abort the caller under set -e
+}
+
+# _deploy_otel_agents copies the bundled OpenTelemetry language tracers into
+# /var/offdock/otel so the deploy engine can mount them into containers when a
+# project enables OTel. Every copy is guarded — a missing tracer is skipped, not
+# fatal — so this can never crash an install/update. Idempotent (refresh-safe).
+_deploy_otel_agents() {
+  local OTEL_DIR="/var/offdock/otel"
+  [[ -d "${SCRIPT_DIR}/otel" ]] || { echo "  No bundled otel/ — skipping tracer deploy."; return 0; }
+  mkdir -p "${OTEL_DIR}"/{node,php,python,ruby,dotnet,go} 2>/dev/null || true
+  # Mirror the whole tree (preserves dotnet/<rid> native libs and any new langs)
+  # then normalise perms. cp failures are non-fatal.
+  cp -a "${SCRIPT_DIR}/otel/." "${OTEL_DIR}/" 2>/dev/null || true
+  find "${OTEL_DIR}" -type f -exec chmod 644 {} \; 2>/dev/null || true
+  find "${OTEL_DIR}" -type d -exec chmod 755 {} \; 2>/dev/null || true
+  local _n
+  _n=$(find "${OTEL_DIR}" -type f 2>/dev/null | wc -l | tr -d ' ')
+  echo "  OpenTelemetry agents deployed to ${OTEL_DIR} (${_n} files)."
+  return 0
 }
 
 # _gen_self_signed PEM_OUT CN — generate a self-signed combined PEM (key+cert)
@@ -285,6 +308,8 @@ do_bundle() {
   cp "${SCRIPT_DIR}/offdock.service"     "$_dst/"
   [[ -d "${SCRIPT_DIR}/debs"   ]] && cp -a "${SCRIPT_DIR}/debs"   "$_dst/"
   [[ -d "${SCRIPT_DIR}/images" ]] && cp -a "${SCRIPT_DIR}/images" "$_dst/"
+  # OpenTelemetry language tracers (node/python/php/ruby/dotnet/go + Java agent jar).
+  [[ -d "${SCRIPT_DIR}/otel"   ]] && cp -a "${SCRIPT_DIR}/otel"   "$_dst/"
   [[ -d "${SCRIPT_DIR}/assets" ]] && { mkdir -p "$_dst/images"; cp -a "${SCRIPT_DIR}/assets/"*.tar "$_dst/images/" 2>/dev/null || true; }
   # Optional: bundle a custom PEM (certs/offdock.pem) and/or custom nginx
   # vhost(s) (nginx/*.conf). --full auto-detects and uses them.
@@ -384,6 +409,10 @@ EOF
     echo "  keeping existing ${CONFIG_FILE}"
   fi
   for _d in "${DATA_DIR}" "${LOG_DIR}" "${CERTS_DIR}" "${PROJECTS_DIR}"; do mkdir -p "$_d"; chmod 700 "$_d"; done
+
+  # OpenTelemetry language tracers (node/python/php/ruby/dotnet/go + Java agent).
+  echo "=== OpenTelemetry agents ==="
+  _deploy_otel_agents
 
   # Binary + service (atomic replace).
   echo "=== Binary + service ==="
@@ -546,12 +575,53 @@ if [[ "$UNINSTALL" == "true" ]]; then
 fi
 
 # --- check required files ---------------------------------------------------
-if [[ ! -f "${SCRIPT_DIR}/${BINARY_NAME}" ]]; then
-  echo "ERROR: '${BINARY_NAME}' binary not found in ${SCRIPT_DIR}" >&2
-  echo "       Build it first: make all" >&2; exit 1
+# --deps skips the binary entirely; only needs the debs/ and otel/ directories.
+if [[ "$DEPS" == "false" ]]; then
+  if [[ ! -f "${SCRIPT_DIR}/${BINARY_NAME}" ]]; then
+    echo "ERROR: '${BINARY_NAME}' binary not found in ${SCRIPT_DIR}" >&2
+    echo "       Build it first: make all" >&2; exit 1
+  fi
+  if [[ ! -f "${SCRIPT_DIR}/offdock.service" ]]; then
+    echo "ERROR: offdock.service not found in ${SCRIPT_DIR}" >&2; exit 1
+  fi
 fi
-if [[ ! -f "${SCRIPT_DIR}/offdock.service" ]]; then
-  echo "ERROR: offdock.service not found in ${SCRIPT_DIR}" >&2; exit 1
+
+# ============================================================================
+# DEPS PATH — install bundled packages + OTel agents, no binary/service change
+# ============================================================================
+# Use this to install docker/nginx/tcpdump and refresh OTel agents without
+# touching the running OffDock service. Safe to run independently on any
+# machine that has the bundle extracted — OffDock does not need to be installed.
+if [[ "$DEPS" == "true" ]]; then
+  echo ""
+  echo "╔══════════════════════════════════════════════════╗"
+  echo "║         OffDock Dependency Setup                 ║"
+  echo "╚══════════════════════════════════════════════════╝"
+
+  echo ""
+  echo "=== Installing bundled packages ==="
+  for _component in docker nginx tcpdump; do
+    if [[ -d "${SCRIPT_DIR}/debs/${_component}" ]] && ls "${SCRIPT_DIR}/debs/${_component}"/*.deb &>/dev/null 2>&1; then
+      echo "  Installing ${_component}..."
+      _install_debs_safe "${SCRIPT_DIR}/debs/${_component}" "${_component}"
+    else
+      echo "  No debs for ${_component} — skipping."
+    fi
+  done
+
+  # Ensure docker and nginx start if they were just installed.
+  command -v docker &>/dev/null && { systemctl enable docker 2>/dev/null || true; systemctl start docker 2>/dev/null || true; }
+  command -v nginx  &>/dev/null && { systemctl enable nginx  2>/dev/null || true; systemctl start nginx  2>/dev/null || true; }
+
+  # Install OpenTelemetry agent files.
+  echo ""
+  echo "=== Installing OpenTelemetry agents ==="
+  _deploy_otel_agents
+
+  echo ""
+  echo "  Done. Packages and OTel agents are ready."
+  echo "  Run 'sudo bash install.sh' to complete OffDock setup, or '--update' to swap the binary."
+  exit 0
 fi
 
 # ============================================================================
@@ -579,7 +649,17 @@ if [[ "$UPDATE" == "true" ]]; then
   fi
 
   # Graceful restart: systemd sends SIGTERM, waits for clean shutdown, then starts fresh.
+  # If the service doesn't exist yet (first binary drop), install the service file and enable it.
   echo "  Restarting service (brief downtime expected — a few seconds)..."
+  if ! systemctl is-enabled --quiet "${BINARY_NAME}" 2>/dev/null; then
+    echo "  Service not found — installing service file..."
+    if [[ -f "${SCRIPT_DIR}/offdock.service" ]]; then
+      cp "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}"
+      chmod 644 "${SERVICE_FILE}"
+    fi
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable "${BINARY_NAME}" 2>/dev/null || true
+  fi
   systemctl restart "${BINARY_NAME}" 2>/dev/null || {
     echo "ERROR: restart failed — check: journalctl -u offdock -n 30" >&2; exit 1
   }
@@ -602,6 +682,25 @@ if [[ "$UPDATE" == "true" ]]; then
     echo "       Check: journalctl -u offdock -n 50" >&2
     exit 1
   fi
+
+  # Install any bundled deb packages that are not yet present on the system.
+  # This handles tcpdump (tracing), docker (container runtime), nginx (reverse proxy)
+  # — _install_debs_safe skips packages already at the same or newer version.
+  echo ""
+  echo "=== Installing bundled packages (if missing) ==="
+  for _component in docker nginx tcpdump; do
+    if [[ -d "${SCRIPT_DIR}/debs/${_component}" ]] && ls "${SCRIPT_DIR}/debs/${_component}"/*.deb &>/dev/null 2>&1; then
+      _install_debs_safe "${SCRIPT_DIR}/debs/${_component}" "${_component}"
+    fi
+  done
+  # Ensure docker and nginx services are running if they were just installed.
+  command -v docker &>/dev/null && { systemctl enable docker 2>/dev/null || true; systemctl start docker 2>/dev/null || true; }
+  command -v nginx  &>/dev/null && { systemctl enable nginx  2>/dev/null || true; systemctl start nginx  2>/dev/null || true; }
+
+  # Refresh OpenTelemetry agent files so new/updated tracers take effect.
+  echo ""
+  echo "=== Refreshing OpenTelemetry agents ==="
+  _deploy_otel_agents
   exit 0
 fi
 
@@ -858,6 +957,75 @@ if [[ -d "${SCRIPT_DIR}/images" ]] && ls "${SCRIPT_DIR}/images"/*.tar &>/dev/nul
 fi
 
 # ============================================================================
+# INSTALL OPENTELEMETRY AGENTS (for auto-instrumentation of deployed containers)
+# ============================================================================
+OTEL_DIR="/var/offdock/otel"
+mkdir -p "${OTEL_DIR}" "${OTEL_DIR}/node" "${OTEL_DIR}/php" "${OTEL_DIR}/python" "${OTEL_DIR}/ruby"
+
+# Java agent
+if [[ -f "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" ]]; then
+  cp "${SCRIPT_DIR}/otel/opentelemetry-javaagent.jar" "${OTEL_DIR}/opentelemetry-javaagent.jar"
+  chmod 644 "${OTEL_DIR}/opentelemetry-javaagent.jar"
+  AGENT_VER=$(cat "${SCRIPT_DIR}/otel/VERSION" 2>/dev/null | head -1 || echo "unknown")
+  echo "  Java agent: ${OTEL_DIR}/opentelemetry-javaagent.jar (v${AGENT_VER})"
+else
+  echo "  WARNING: OpenTelemetry Java agent not found — skipping." >&2
+fi
+
+# Node.js zero-dependency auto-tracer
+if [[ -f "${SCRIPT_DIR}/otel/node/tracer.js" ]]; then
+  cp "${SCRIPT_DIR}/otel/node/tracer.js" "${OTEL_DIR}/node/tracer.js"
+  chmod 644 "${OTEL_DIR}/node/tracer.js"
+  echo "  Node.js tracer: ${OTEL_DIR}/node/tracer.js"
+fi
+
+# PHP zero-dependency auto-tracer
+if [[ -f "${SCRIPT_DIR}/otel/php/tracer.php" ]]; then
+  cp "${SCRIPT_DIR}/otel/php/tracer.php" "${OTEL_DIR}/php/tracer.php"
+  cp "${SCRIPT_DIR}/otel/php/offdock.ini"  "${OTEL_DIR}/php/offdock.ini"
+  chmod 644 "${OTEL_DIR}/php/tracer.php" "${OTEL_DIR}/php/offdock.ini"
+  echo "  PHP tracer: ${OTEL_DIR}/php/tracer.php"
+fi
+
+# Python zero-dependency auto-tracer (sitecustomize.py — auto-imported by Python)
+if [[ -f "${SCRIPT_DIR}/otel/python/sitecustomize.py" ]]; then
+  cp "${SCRIPT_DIR}/otel/python/sitecustomize.py" "${OTEL_DIR}/python/sitecustomize.py"
+  chmod 644 "${OTEL_DIR}/python/sitecustomize.py"
+  echo "  Python tracer: ${OTEL_DIR}/python/sitecustomize.py"
+fi
+
+# Ruby zero-dependency auto-tracer
+if [[ -f "${SCRIPT_DIR}/otel/ruby/tracer.rb" ]]; then
+  cp "${SCRIPT_DIR}/otel/ruby/tracer.rb" "${OTEL_DIR}/ruby/tracer.rb"
+  chmod 644 "${OTEL_DIR}/ruby/tracer.rb"
+  echo "  Ruby tracer: ${OTEL_DIR}/ruby/tracer.rb"
+fi
+
+# OffDock itself is the OTLP receiver — no separate collector needed.
+echo "  OpenTelemetry receiver: built into OffDock at :7070/v1/traces"
+echo "  App Traces page: visible in the OffDock UI → App Traces"
+
+# ============================================================================
+# INSTALL TCPDUMP (required for container network tracing)
+# ============================================================================
+echo ""
+echo "=== Checking tcpdump ==="
+if command -v tcpdump &>/dev/null; then
+  echo "  tcpdump already installed: $(tcpdump --version 2>&1 | head -1)"
+elif [[ -d "${SCRIPT_DIR}/debs/tcpdump" ]] && ls "${SCRIPT_DIR}/debs/tcpdump"/*.deb &>/dev/null 2>&1; then
+  echo "  Installing tcpdump from bundled packages..."
+  _install_debs_safe "${SCRIPT_DIR}/debs/tcpdump" "tcpdump"
+  if command -v tcpdump &>/dev/null; then
+    echo "  tcpdump installed: $(tcpdump --version 2>&1 | head -1)"
+  else
+    echo "  WARNING: tcpdump not available after install — container tracing will not work." >&2
+  fi
+else
+  echo "  WARNING: tcpdump not installed and no offline packages found in ./debs/tcpdump/" >&2
+  echo "  Container network tracing will not work. Install tcpdump to enable it." >&2
+fi
+
+# ============================================================================
 # INSTALL NGINX
 # ============================================================================
 if [[ "$SKIP_NGINX" == "false" ]]; then
@@ -944,11 +1112,27 @@ else
 fi
 
 # ============================================================================
-# RUNTIME DIRECTORIES
+# RUNTIME DIRECTORIES + LOG ROTATION
 # ============================================================================
 for _dir in "${DATA_DIR}" "${LOG_DIR}" "${CERTS_DIR}" "${PROJECTS_DIR}"; do
   mkdir -p "${_dir}"; chmod 700 "${_dir}"
 done
+
+# Install logrotate config so /var/offdock/logs/offdock.log doesn't grow unbounded.
+if command -v logrotate &>/dev/null; then
+  cat > /etc/logrotate.d/offdock <<'LOGROTATEOF'
+/var/offdock/logs/offdock.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+LOGROTATEOF
+  echo "  Log rotation configured: daily, 14 days retention."
+fi
 
 # ============================================================================
 # INSTALL BINARY + SERVICE
