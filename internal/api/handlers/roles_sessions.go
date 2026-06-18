@@ -148,6 +148,9 @@ func (h *H) ListSessions(w http.ResponseWriter, r *http.Request) {
 		if userFilter != "" && s.UserID != userFilter {
 			continue
 		}
+		// Never expose the captured OIDC id_token to clients — it is a sensitive
+		// credential persisted only so OAuthLogout can send id_token_hint.
+		s.IDToken = ""
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })

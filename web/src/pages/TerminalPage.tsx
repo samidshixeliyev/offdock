@@ -83,8 +83,17 @@ export default function TerminalPage() {
     setOtpCode('')
     api.otpRequest()
       .then(res => {
-        setOtpChallengeId(res.challenge_id)
-        setOtpEmail(res.email)
+        // Bypass mode (set by superadmin): the server returns {bypass:true} and
+        // no challenge. Skip the OTP entry flow and open the shell directly — the
+        // WebSocket carries no token and the backend permits it for bypass users.
+        if (res.bypass) {
+          setTerminalToken('')
+          setOtpState('ready')
+          setKey(k => k + 1)
+          return
+        }
+        setOtpChallengeId(res.challenge_id ?? '')
+        setOtpEmail(res.email ?? '')
         setOtpState('enter_code')
         setTimeout(() => codeInputRef.current?.focus(), 100)
       })

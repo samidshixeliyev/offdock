@@ -114,6 +114,9 @@ export interface DeploySettings {
   dns_servers?: string[]
   dns_search?: string[]
   extra_hosts?: string[]
+  // Per-service image override (service name → repo:tag) to deploy a specific
+  // previously-loaded image version without editing the compose YAML.
+  image_overrides?: Record<string, string>
   webhook_url?: string
   // OpenTelemetry — one toggle, everything auto-configured (native OTLP receiver)
   otel_enabled?: boolean
@@ -207,6 +210,25 @@ export interface DockerImage {
   loaded_at: string
   size_bytes: number
   docker_image_id: string
+}
+
+export interface ImageUsage {
+  image_id: string
+  repository: string
+  tag: string
+  size: string
+  created_at: string
+  in_use: boolean
+  used_by: string[]
+  tracked: boolean
+  db_id: string
+}
+
+export interface ImageUsageResult {
+  images: ImageUsage[]
+  total: number
+  in_use: number
+  unused: number
 }
 
 export interface FileEntry {
@@ -592,6 +614,8 @@ export const api = {
   },
   composeHistory: (projectId: string) =>
     request<ComposeConfig[]>(`/api/v1/projects/${projectId}/compose/history`),
+  deleteComposeVersion: (projectId: string, version: number) =>
+    request<void>(`/api/v1/projects/${projectId}/compose/${version}`, { method: 'DELETE' }),
 
   // Env vars
   getEnv: (projectId: string) =>
@@ -606,12 +630,15 @@ export const api = {
     }
     return { env: res as EnvVarSet, unchanged: false }
   },
-  envHistory: (projectId: string) =>
-    request<EnvVarSet[]>(`/api/v1/projects/${projectId}/env/history`),
+  // reveal=true decrypts secret values (superadmin only, audited server-side).
+  envHistory: (projectId: string, reveal = false) =>
+    request<EnvVarSet[]>(`/api/v1/projects/${projectId}/env/history${reveal ? '?reveal=true' : ''}`),
   restoreEnv: (projectId: string, version: number) =>
     request<EnvVarSet>(`/api/v1/projects/${projectId}/env/restore`, {
       method: 'POST', body: JSON.stringify({ version }),
     }),
+  deleteEnvVersion: (projectId: string, version: number) =>
+    request<void>(`/api/v1/projects/${projectId}/env/${version}`, { method: 'DELETE' }),
 
   // Docker networks
   listNetworks: () => request<Networks>('/api/v1/networks'),
@@ -786,11 +813,14 @@ export const api = {
 
   // Images
   listImages: () => request<DockerImage[]>('/api/v1/images'),
+  imageUsage: () => request<ImageUsageResult>('/api/v1/images/usage'),
   loadImage: (data: { tar_file_path: string; project_id?: string; image_name?: string; image_tag?: string }) =>
     request<{ loaded: number; images: DockerImage[] }>('/api/v1/images/load', { method: 'POST', body: JSON.stringify(data) }),
   syncImages: () =>
     request<{ synced: number; images: DockerImage[] }>('/api/v1/images/sync', { method: 'POST' }),
   deleteImage: (id: string) => request<void>(`/api/v1/images/${id}`, { method: 'DELETE' }),
+  removeImageByRef: (data: { ref?: string; image_id?: string; force?: boolean }) =>
+    request<{ status: string }>('/api/v1/images/remove', { method: 'POST', body: JSON.stringify(data) }),
 
   // Terminal / exec
   execCommand: (command: string, cwd?: string) =>
@@ -798,8 +828,9 @@ export const api = {
       '/api/v1/terminal/exec',
       { method: 'POST', body: JSON.stringify({ command, cwd: cwd ?? '' }) }
     ),
+  // Returns either a challenge (otp mode) or {bypass:true} (bypass mode — no OTP).
   otpRequest: () =>
-    request<{ challenge_id: string; email: string; expires_in: number }>(
+    request<{ challenge_id?: string; email?: string; expires_in?: number; bypass?: boolean; message?: string }>(
       '/api/v1/terminal/otp/request', { method: 'POST', body: '{}' }
     ),
   otpVerify: (challenge_id: string, code: string) =>
@@ -928,6 +959,7 @@ export const api = {
   otelTraces: (params: {
     service?: string; limit?: number; operation?: string
     search?: string; status?: string; min_duration_ms?: number; time_range?: string
+    span_kind?: string; attr_key?: string; attr_val?: string
   } = {}) => {
     const q = new URLSearchParams()
     if (params.service) q.set('service', params.service)
@@ -937,6 +969,9 @@ export const api = {
     if (params.status) q.set('status', params.status)
     if (params.min_duration_ms) q.set('min_duration_ms', String(params.min_duration_ms))
     if (params.time_range) q.set('time_range', params.time_range)
+    if (params.span_kind) q.set('span_kind', params.span_kind)
+    if (params.attr_key) q.set('attr_key', params.attr_key)
+    if (params.attr_val) q.set('attr_val', params.attr_val)
     return request<{ data: OTelTrace[] }>(`/api/v1/otel/traces?${q}`)
   },
   otelTrace: (id: string) => request<{ data: OTelTrace[] }>(`/api/v1/otel/traces/${id}`),

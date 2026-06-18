@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -544,15 +545,51 @@ func (c *Client) DeleteVolume(ctx context.Context, name string) error {
 	return nil
 }
 
-// VolumeBackupImage is the helper image used to tar/untar volume contents.
-// It must be present on the (air-gapped) host; busybox/alpine both work.
+// VolumeBackupImage is the helper image used to tar/untar volume contents when
+// the volume's host mountpoint is not directly accessible (e.g. rootless or a
+// remote Docker daemon). Direct host tar is preferred and needs no image.
 var VolumeBackupImage = "alpine"
 
+// volumeMountpoint returns the host filesystem path of a named volume's data
+// (typically /var/lib/docker/volumes/<name>/_data), or "" if it can't be
+// resolved or isn't readable from this process.
+func (c *Client) volumeMountpoint(ctx context.Context, volume string) string {
+	out, err := run(ctx, "volume", "inspect", "--format", "{{.Mountpoint}}", volume)
+	if err != nil {
+		return ""
+	}
+	mp := strings.TrimSpace(out)
+	if mp == "" {
+		return ""
+	}
+	if fi, err := os.Stat(mp); err != nil || !fi.IsDir() {
+		return ""
+	}
+	return mp
+}
+
 // ExportVolume archives a named volume's contents to destTarGz (a .tar.gz path
-// on the host) by running a throwaway helper container that tars the mount.
+// on the host). It prefers tarring the volume's host mountpoint directly (OffDock
+// runs as root natively — no helper image, works fully offline). It falls back to
+// a throwaway helper container only when the mountpoint isn't directly readable.
 func (c *Client) ExportVolume(ctx context.Context, volume, destTarGz string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
+
+	// Preferred path: tar the mountpoint directly with host `tar`.
+	if mp := c.volumeMountpoint(ctx, volume); mp != "" {
+		cmd := exec.CommandContext(ctx, "tar", "czf", destTarGz, "-C", mp, ".")
+		var buf bytes.Buffer
+		cmd.Stderr = &buf
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		// Remove the partially-written archive so the helper fallback (or caller)
+		// never archives a truncated file.
+		_ = os.Remove(destTarGz)
+	}
+
+	// Fallback: helper container (requires VolumeBackupImage to be loaded).
 	destDir := filepath.Dir(destTarGz)
 	base := filepath.Base(destTarGz)
 	out, err := run(ctx, "run", "--rm",
@@ -561,17 +598,42 @@ func (c *Client) ExportVolume(ctx context.Context, volume, destTarGz string) err
 		VolumeBackupImage,
 		"sh", "-c", "tar czf /backup/"+base+" -C /from .")
 	if err != nil {
-		return fmt.Errorf("export volume %s: %w\n%s", volume, err, out)
+		return fmt.Errorf("export volume %s: %w (host tar unavailable; helper image %q also failed)\n%s",
+			volume, err, VolumeBackupImage, out)
 	}
 	return nil
 }
 
 // ImportVolume restores a .tar.gz (srcTarGz on the host) into a named volume,
-// creating the volume if needed. Existing content is overwritten.
+// creating the volume if needed. Existing content is overwritten. Like
+// ExportVolume it prefers the host mountpoint and falls back to a helper image.
 func (c *Client) ImportVolume(ctx context.Context, volume, srcTarGz string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	_, _ = run(ctx, "volume", "create", volume)
+
+	// Preferred path: extract straight into the mountpoint with host tar.
+	if mp := c.volumeMountpoint(ctx, volume); mp != "" {
+		// Validate the archive is readable BEFORE clearing the volume — otherwise a
+		// corrupt/truncated archive would leave the volume emptied (data loss).
+		if listErr := exec.CommandContext(ctx, "tar", "tzf", srcTarGz).Run(); listErr != nil {
+			return fmt.Errorf("import volume %s: backup archive is unreadable, volume left untouched: %w", volume, listErr)
+		}
+		// Clear existing content (best-effort), then extract. Since the archive
+		// validated above, we do NOT fall back to a second destructive helper run.
+		clear := exec.CommandContext(ctx, "sh", "-c",
+			"rm -rf -- "+shellQuote(mp)+"/* "+shellQuote(mp)+"/.[!.]* "+shellQuote(mp)+"/..?* 2>/dev/null; true")
+		_ = clear.Run()
+		cmd := exec.CommandContext(ctx, "tar", "xzf", srcTarGz, "-C", mp)
+		var buf bytes.Buffer
+		cmd.Stderr = &buf
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("import volume %s: extract failed: %w\n%s", volume, err, buf.String())
+		}
+		return nil
+	}
+
+	// Fallback only when the mountpoint isn't directly accessible (rootless/remote).
 	srcDir := filepath.Dir(srcTarGz)
 	base := filepath.Base(srcTarGz)
 	out, err := run(ctx, "run", "--rm",
@@ -580,9 +642,15 @@ func (c *Client) ImportVolume(ctx context.Context, volume, srcTarGz string) erro
 		VolumeBackupImage,
 		"sh", "-c", "rm -rf /to/* /to/..?* /to/.[!.]* 2>/dev/null; tar xzf /backup/"+base+" -C /to")
 	if err != nil {
-		return fmt.Errorf("import volume %s: %w\n%s", volume, err, out)
+		return fmt.Errorf("import volume %s: %w (host tar unavailable; helper image %q also failed)\n%s",
+			volume, err, VolumeBackupImage, out)
 	}
 	return nil
+}
+
+// shellQuote single-quotes a string for safe use in an sh -c command.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // PruneVolumes removes all unused Docker volumes and returns (names, spaceReclaimed).

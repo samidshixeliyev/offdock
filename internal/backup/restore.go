@@ -96,6 +96,7 @@ func (b *Builder) Restore(ctx context.Context, archivePath string, opts RestoreO
 			_ = writeUnder(b.NginxAvail, strings.TrimPrefix(name, "nginx/"), r)
 		case opts.Config && name == "config/config.yaml":
 			data, _ := io.ReadAll(r)
+			backupExistingConfig(b.ConfigPath) // preserve prior config (jwt_secret etc.)
 			if writeFileAtomic(b.ConfigPath, data, 0o600) == nil {
 				res.RestoredConfig = true
 			}
@@ -103,6 +104,7 @@ func (b *Builder) Restore(ctx context.Context, archivePath string, opts RestoreO
 			data, _ := io.ReadAll(r)
 			if b.Enc != nil {
 				if plain, err := b.Enc.Decrypt(string(data)); err == nil {
+					backupExistingConfig(b.ConfigPath) // preserve prior config (jwt_secret etc.)
 					if writeFileAtomic(b.ConfigPath, []byte(plain), 0o600) == nil {
 						res.RestoredConfig = true
 					}
@@ -132,6 +134,20 @@ func (b *Builder) Restore(ctx context.Context, archivePath string, opts RestoreO
 }
 
 // --- helpers --------------------------------------------------------------------
+
+// backupExistingConfig copies the current config.yaml to config.yaml.bak before a
+// restore overwrites it, so a bad restore (e.g. config from a different machine,
+// clobbering jwt_secret/SMTP/oauth secrets) can be rolled back. Best-effort.
+func backupExistingConfig(configPath string) {
+	if configPath == "" {
+		return
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return // no existing config to preserve
+	}
+	_ = os.WriteFile(configPath+".bak", data, 0o600)
+}
 
 func walkArchive(path string, fn func(*tar.Header, io.Reader) error) error {
 	f, err := os.Open(path)

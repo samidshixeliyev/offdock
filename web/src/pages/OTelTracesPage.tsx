@@ -878,26 +878,37 @@ export default function OTelTracesPage() {
   const [statusFilter, setStatusFilter] = useState('')
   const [minDurationMs, setMinDurationMs] = useState('')
   const [timeRange, setTimeRange] = useState('')
+  const [spanKind, setSpanKind] = useState('')
+  const [attrKey, setAttrKey] = useState('')
+  const [attrVal, setAttrVal] = useState('')
 
   const loadRef = useRef(0)
 
-  const loadTraces = useCallback(async (
-    svc: string, op: string, lim: number,
-    srch: string, stat: string, minDur: string, tRange: string,
-    isRefresh = false,
-  ) => {
+  type Filters = {
+    svc: string; op: string; lim: number; srch: string; stat: string
+    minDur: string; tRange: string; kind: string; aKey: string; aVal: string
+  }
+  const filters: Filters = {
+    svc: selectedService, op: selectedOp, lim: limit, srch: search, stat: statusFilter,
+    minDur: minDurationMs, tRange: timeRange, kind: spanKind, aKey: attrKey, aVal: attrVal,
+  }
+
+  const loadTraces = useCallback(async (f: Filters, isRefresh = false) => {
     const id = ++loadRef.current
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
     try {
       const res = await api.otelTraces({
-        service: svc || undefined,
-        operation: op || undefined,
-        limit: lim,
-        search: srch || undefined,
-        status: stat || undefined,
-        min_duration_ms: minDur ? Number(minDur) : undefined,
-        time_range: tRange || undefined,
+        service: f.svc || undefined,
+        operation: f.op || undefined,
+        limit: f.lim,
+        search: f.srch || undefined,
+        status: f.stat || undefined,
+        min_duration_ms: f.minDur ? Number(f.minDur) : undefined,
+        time_range: f.tRange || undefined,
+        span_kind: f.kind || undefined,
+        attr_key: f.aKey || undefined,
+        attr_val: f.aVal || undefined,
       })
       if (id === loadRef.current) setTraces(res.data ?? [])
     } catch {
@@ -911,7 +922,6 @@ export default function OTelTracesPage() {
   useEffect(() => {
     api.otelStatus().then(setStatus).catch(() => setStatus({ available: false }))
     api.otelServices().then(r => setServices(r.data ?? [])).catch(() => {})
-    loadTraces('', '', limit, '', '', '', '')
   }, []) // eslint-disable-line
 
   // Service change → load operations
@@ -921,12 +931,17 @@ export default function OTelTracesPage() {
     setSelectedOp('')
   }, [selectedService])
 
-  // Filter/limit change
+  // Filter/limit change (debounced for text inputs)
   useEffect(() => {
-    loadTraces(selectedService, selectedOp, limit, search, statusFilter, minDurationMs, timeRange)
-  }, [selectedService, selectedOp, limit, search, statusFilter, minDurationMs, timeRange]) // eslint-disable-line
+    const t = setTimeout(() => loadTraces(filters), 250)
+    return () => clearTimeout(t)
+  }, [selectedService, selectedOp, limit, search, statusFilter, minDurationMs, timeRange, spanKind, attrKey, attrVal]) // eslint-disable-line
 
-  const refresh = () => loadTraces(selectedService, selectedOp, limit, search, statusFilter, minDurationMs, timeRange, true)
+  const refresh = () => loadTraces(filters, true)
+  const resetFilters = () => {
+    setSelectedService(''); setSelectedOp(''); setSearch(''); setStatusFilter('')
+    setMinDurationMs(''); setTimeRange(''); setSpanKind(''); setAttrKey(''); setAttrVal('')
+  }
 
   const clearAll = async () => {
     if (!confirm('Delete all stored traces? This cannot be undone.')) return
@@ -936,7 +951,18 @@ export default function OTelTracesPage() {
   }
 
   const inputCls = 'bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-slate-500 transition-colors'
-  const hasFilters = search || statusFilter || minDurationMs || timeRange
+  const hasFilters = !!(selectedService || selectedOp || search || statusFilter || minDurationMs || timeRange || spanKind || (attrKey && attrKey.trim()))
+
+  // Active-filter chips for at-a-glance visibility + one-click removal.
+  const chips: Array<{ label: string; clear: () => void }> = []
+  if (selectedService) chips.push({ label: `service: ${selectedService}`, clear: () => setSelectedService('') })
+  if (selectedOp) chips.push({ label: `op: ${selectedOp}`, clear: () => setSelectedOp('') })
+  if (timeRange) chips.push({ label: `time: ${timeRange}`, clear: () => setTimeRange('') })
+  if (statusFilter) chips.push({ label: 'errors only', clear: () => setStatusFilter('') })
+  if (spanKind) chips.push({ label: `kind: ${spanKind}`, clear: () => setSpanKind('') })
+  if (minDurationMs) chips.push({ label: `≥ ${minDurationMs}ms`, clear: () => setMinDurationMs('') })
+  if (search) chips.push({ label: `“${search}”`, clear: () => setSearch('') })
+  if (attrKey && attrKey.trim()) chips.push({ label: `${attrKey}${attrVal ? `=${attrVal}` : ''}`, clear: () => { setAttrKey(''); setAttrVal('') } })
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
@@ -974,6 +1000,16 @@ export default function OTelTracesPage() {
           <option value="error">Errors only</option>
         </select>
 
+        {/* Span kind */}
+        <select value={spanKind} onChange={e => setSpanKind(e.target.value)} className={inputCls} title="Filter traces containing a span of this kind">
+          <option value="">All kinds</option>
+          <option value="server">Server</option>
+          <option value="client">Client</option>
+          <option value="producer">Producer</option>
+          <option value="consumer">Consumer</option>
+          <option value="internal">Internal</option>
+        </select>
+
         {/* Limit */}
         <select value={limit} onChange={e => setLimit(Number(e.target.value))} className={inputCls}>
           <option value={20}>20 traces</option>
@@ -982,9 +1018,14 @@ export default function OTelTracesPage() {
         </select>
 
         <div className="ml-auto flex items-center gap-2">
+          {!loading && (
+            <span className="text-[10px] text-slate-400 font-semibold tabular-nums">
+              {traces.length} trace{traces.length !== 1 ? 's' : ''}
+            </span>
+          )}
           {status?.span_count !== undefined && (
-            <span className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider">
-              {status.span_count.toLocaleString()} spans stored
+            <span className="text-[10px] text-slate-600 font-semibold uppercase tracking-wider">
+              · {status.span_count.toLocaleString()} spans stored
             </span>
           )}
           {traces.length > 0 && (
@@ -1001,7 +1042,7 @@ export default function OTelTracesPage() {
         </div>
       </div>
 
-      {/* Toolbar — row 2: search + min duration */}
+      {/* Toolbar — row 2: full-text search + span-attribute filter + min duration */}
       <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-2 border-b border-slate-800/60 bg-slate-900/10">
         <div className="relative flex-1 min-w-[180px] max-w-sm">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none" />
@@ -1018,6 +1059,28 @@ export default function OTelTracesPage() {
           )}
         </div>
 
+        {/* Span attribute filter: key [= value] (e.g. http.status_code = 500) */}
+        <div className="flex items-center gap-1" title="Keep traces with a span whose attribute matches (value optional, substring)">
+          <input
+            value={attrKey}
+            onChange={e => setAttrKey(e.target.value)}
+            placeholder="attribute key"
+            list="otel-attr-keys"
+            className="w-36 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500 font-mono"
+          />
+          <datalist id="otel-attr-keys">
+            {['http.status_code','http.method','http.route','http.target','db.system','db.statement','db.operation','db.name','rpc.method','rpc.service','messaging.system','net.peer.name','error'].map(k => <option key={k} value={k} />)}
+          </datalist>
+          <span className="text-slate-600 text-xs">=</span>
+          <input
+            value={attrVal}
+            onChange={e => setAttrVal(e.target.value)}
+            placeholder="value"
+            disabled={!attrKey}
+            className="w-24 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500 font-mono disabled:opacity-40"
+          />
+        </div>
+
         <div className="flex items-center gap-1.5">
           <label className="text-[10px] text-slate-500 whitespace-nowrap">Min duration</label>
           <div className="relative">
@@ -1032,15 +1095,25 @@ export default function OTelTracesPage() {
             <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-500">ms</span>
           </div>
         </div>
-
-        {hasFilters && (
-          <button
-            onClick={() => { setSearch(''); setStatusFilter(''); setMinDurationMs(''); setTimeRange('') }}
-            className="text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors">
-            <X className="w-3 h-3" /> Clear filters
-          </button>
-        )}
       </div>
+
+      {/* Active-filter chips */}
+      {chips.length > 0 && (
+        <div className="shrink-0 flex flex-wrap items-center gap-1.5 px-4 py-2 border-b border-slate-800/40 bg-slate-900/5">
+          <span className="text-[10px] text-slate-600 uppercase tracking-wider font-semibold mr-1">Filters</span>
+          {chips.map((c, i) => (
+            <button key={i} onClick={c.clear}
+              className="inline-flex items-center gap-1 pl-2 pr-1.5 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/25 text-blue-300 text-[11px] hover:bg-blue-500/20 transition-colors">
+              {c.label}
+              <X className="w-3 h-3 opacity-70" />
+            </button>
+          ))}
+          <button onClick={resetFilters}
+            className="ml-1 text-[11px] text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors">
+            Clear all
+          </button>
+        </div>
+      )}
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto min-h-0">
@@ -1086,10 +1159,17 @@ export default function OTelTracesPage() {
             <div className="w-12 h-12 rounded-xl bg-slate-800/60 border border-slate-700 flex items-center justify-center mb-4">
               <GitBranch className="w-6 h-6 text-slate-600" />
             </div>
-            <p className="text-sm font-medium text-slate-400 mb-1">No traces found</p>
+            <p className="text-sm font-medium text-slate-400 mb-1">{hasFilters ? 'No traces match your filters' : 'No traces found'}</p>
             <p className="text-xs text-slate-600 max-w-sm">
-              Deploy an app with OpenTelemetry enabled, then trigger some requests. Traces appear here within seconds.
+              {hasFilters
+                ? 'Try widening the time range or clearing some filters.'
+                : 'Deploy an app with OpenTelemetry enabled, then trigger some requests. Traces appear here within seconds.'}
             </p>
+            {hasFilters && (
+              <button onClick={resetFilters} className="mt-3 text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                <X className="w-3 h-3" /> Clear all filters
+              </button>
+            )}
           </div>
         ) : (
           <div>

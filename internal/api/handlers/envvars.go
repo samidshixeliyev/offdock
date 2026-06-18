@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -158,6 +159,8 @@ func (h *H) SaveEnv(w http.ResponseWriter, r *http.Request) {
 }
 
 // EnvHistory returns all env var set versions for a project, newest first.
+// With ?reveal=true AND a superadmin caller, secret values are decrypted
+// (audited) so an operator can inspect what a past version actually contained.
 func (h *H) EnvHistory(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")
 	sets, err := h.db.EnvVars.FindWhere(func(s store.EnvVarSet) bool {
@@ -169,9 +172,17 @@ func (h *H) EnvHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(sets, func(i, j int) bool { return sets[i].Version > sets[j].Version })
 
+	reveal := false
+	if r.URL.Query().Get("reveal") == "true" {
+		if claims := authmw.ClaimsFromContext(r.Context()); claims != nil && claims.Role == store.RoleSuperAdmin {
+			reveal = true
+			h.logAudit(r, "env_reveal_secrets", "project", projectID, "", "env history")
+		}
+	}
+
 	out := make([]any, len(sets))
 	for i, s := range sets {
-		out[i] = h.marshalEnvSet(s)
+		out[i] = h.marshalEnvSetOpts(s, reveal)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -231,6 +242,58 @@ func (h *H) RestoreEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, h.marshalEnvSet(set))
 }
 
+// DeleteEnvVersion deletes a single historical env version. Guards: refuses the
+// latest version (deploys use it), the only version, and any version referenced
+// by a deploy tag (the tag must be deleted first).
+func (h *H) DeleteEnvVersion(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	ver, err := strconv.Atoi(chi.URLParam(r, "version"))
+	if err != nil || ver <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid version")
+		return
+	}
+	all, _ := h.db.EnvVars.FindWhere(func(s store.EnvVarSet) bool { return s.ProjectID == projectID })
+	if len(all) <= 1 {
+		writeError(w, http.StatusConflict, "cannot delete the only env version")
+		return
+	}
+	var target *store.EnvVarSet
+	latest := 0
+	for i := range all {
+		if all[i].Version > latest {
+			latest = all[i].Version
+		}
+		if all[i].Version == ver {
+			target = &all[i]
+		}
+	}
+	if target == nil {
+		writeError(w, http.StatusNotFound, "env version not found")
+		return
+	}
+	if ver == latest {
+		writeError(w, http.StatusConflict, "cannot delete the latest env version (it is what deploys use)")
+		return
+	}
+	tags, _ := h.db.DeployTags.FindWhere(func(t store.DeployTag) bool {
+		return t.ProjectID == projectID && t.EnvVersion == ver
+	})
+	if len(tags) > 0 {
+		names := make([]string, 0, len(tags))
+		for _, t := range tags {
+			names = append(names, t.Name)
+		}
+		writeError(w, http.StatusConflict, "env v"+strconv.Itoa(ver)+" is referenced by tag(s): "+strings.Join(names, ", ")+" — delete those tags first")
+		return
+	}
+	if err := h.db.EnvVars.Delete(target.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete env version")
+		return
+	}
+	h.logAudit(r, "delete_env_version", "project", projectID, "v"+strconv.Itoa(ver), "")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // envSetContentHash computes the canonical content hash of a stored env set by
 // decrypting each value to plaintext. Used to backfill the hash on legacy
 // records (saved before ContentHash existed) so dedup works retroactively.
@@ -249,10 +312,17 @@ func (h *H) envSetContentHash(set store.EnvVarSet) string {
 // marshalEnvSet returns a JSON-safe map with non-secret values decrypted
 // and secret values replaced by the sentinel "********".
 func (h *H) marshalEnvSet(set store.EnvVarSet) map[string]any {
+	return h.marshalEnvSetOpts(set, false)
+}
+
+// marshalEnvSetOpts is like marshalEnvSet but, when reveal is true, decrypts
+// secret values too (used only for superadmin "reveal" requests, which are
+// audited by the caller).
+func (h *H) marshalEnvSetOpts(set store.EnvVarSet, reveal bool) map[string]any {
 	vars := make([]map[string]any, len(set.Vars))
 	for i, v := range set.Vars {
 		var val string
-		if v.IsSecret {
+		if v.IsSecret && !reveal {
 			val = "********"
 		} else {
 			plain, err := h.enc.Decrypt(v.Value)

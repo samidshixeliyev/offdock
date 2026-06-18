@@ -12,7 +12,16 @@ import (
 // On any parse error the original raw is returned (never break a deploy over a
 // transform), with the error surfaced to the caller for logging.
 func injectNetworkConfig(raw string, dns, dnsSearch, extraHosts []string) (string, error) {
-	if len(dns) == 0 && len(dnsSearch) == 0 && len(extraHosts) == 0 {
+	return applyComposeOverrides(raw, dns, dnsSearch, extraHosts, nil)
+}
+
+// applyComposeOverrides applies network config and per-service image overrides to
+// a compose document. imageOverrides maps a service name to a full image
+// reference (repo:tag) that replaces the service's `image:` — this is how
+// "deploy a previously-loaded image" works (e.g. roll an app back to myapp:1.2).
+// The raw YAML in the DB is never changed; this only affects the deploy-time file.
+func applyComposeOverrides(raw string, dns, dnsSearch, extraHosts []string, imageOverrides map[string]string) (string, error) {
+	if len(dns) == 0 && len(dnsSearch) == 0 && len(extraHosts) == 0 && len(imageOverrides) == 0 {
 		return raw, nil
 	}
 
@@ -36,7 +45,15 @@ func injectNetworkConfig(raw string, dns, dnsSearch, extraHosts []string) (strin
 	for name, svcRaw := range services {
 		svc, ok := svcRaw.(map[string]any)
 		if !ok {
-			continue
+			// A service written with an empty/nil body (e.g. `web:` with no
+			// fields) unmarshals to nil. If we have something to inject for it
+			// (notably an image override), start a fresh map rather than silently
+			// dropping the override.
+			if svcRaw == nil && (len(dns) > 0 || len(dnsSearch) > 0 || len(extraHosts) > 0 || imageOverrides[name] != "") {
+				svc = map[string]any{}
+			} else {
+				continue
+			}
 		}
 		if len(dns) > 0 {
 			svc["dns"] = toAnySlice(dns)
@@ -46,6 +63,9 @@ func injectNetworkConfig(raw string, dns, dnsSearch, extraHosts []string) (strin
 		}
 		if len(extraHosts) > 0 {
 			svc["extra_hosts"] = mergeStringList(svc["extra_hosts"], extraHosts)
+		}
+		if ref, ok := imageOverrides[name]; ok && ref != "" {
+			svc["image"] = ref
 		}
 		services[name] = svc
 	}

@@ -621,7 +621,7 @@ function PackagesSection() {
   const [busy, setBusy] = useState(false)
   const [blocked, setBlocked] = useState<string[] | null>(null)
 
-  useEffect(() => { api.packageStatus().then(s => setHeld(s.held)).catch(() => {}) }, [])
+  useEffect(() => { api.packageStatus().then(s => setHeld(s.held ?? [])).catch(() => {}) }, [])
 
   async function install(force = false) {
     const list = paths.split('\n').map(s => s.trim()).filter(Boolean)
@@ -654,7 +654,7 @@ function PackagesSection() {
             {held.length === 0 ? <span className="text-xs text-slate-600">none held yet</span> :
               held.map(p => <span key={p} className="px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-300 font-mono">{p}</span>)}
           </div>
-          <button onClick={() => api.ensurePackageHolds().then(r => setHeld(r.held))} className="btn-ghost text-xs mt-2">Re-assert holds</button>
+          <button onClick={() => api.ensurePackageHolds().then(r => setHeld(r.held ?? []))} className="btn-ghost text-xs mt-2">Re-assert holds</button>
         </div>
         <div className="border-t border-slate-800 pt-3">
           <p className="text-sm font-medium text-slate-200 mb-1">Install .deb files safely</p>
@@ -688,14 +688,15 @@ function BackupsSection() {
   const [opts, setOpts] = useState({ scope: 'full', include_volumes: true, include_config: false, encrypt: true })
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
-  const reload = () => api.listBackups().then(setList).catch(() => {})
+  const reload = () => api.listBackups().then(b => setList(b ?? [])).catch(() => {})
   useEffect(() => { reload(); api.getBackupSchedule().then(setSched).catch(() => {}) }, [])
 
   async function create() {
     setCreating(true); setMsg(null)
     try {
       const r = await api.createBackup(opts)
-      setMsg({ kind: 'ok', text: `Backup created (${r.status}) — ${fmtBytes(r.size_bytes)}, volumes: ${r.volumes.length}` })
+      const note = r.status === 'partial' && r.note ? ` — note: ${r.note}` : ''
+      setMsg({ kind: r.status === 'partial' ? 'err' : 'ok', text: `Backup ${r.status} — ${fmtBytes(r.size_bytes)}, ${r.volumes.length} volume(s)${note}` })
       reload()
     } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) } finally { setCreating(false) }
   }
@@ -736,6 +737,10 @@ function BackupsSection() {
           <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={opts.encrypt} onChange={e => setOpts({ ...opts, encrypt: e.target.checked })} />Encrypt config</label>
           <button onClick={create} disabled={creating} className="btn-primary text-xs disabled:opacity-50">{creating ? 'Creating…' : 'Create Backup'}</button>
         </div>
+        <p className="text-[11px] text-slate-600">
+          Volume data is archived directly from the host (<code className="font-mono">/var/lib/docker/volumes</code>) — no helper image needed.
+          If a volume can’t be read the backup still completes as <span className="text-amber-500">partial</span> and lists what was skipped.
+        </p>
 
         {msg && <div className={clsx('text-xs px-3 py-2 rounded border', msg.kind === 'ok' ? 'bg-green-900/20 border-green-900 text-green-400' : 'bg-red-900/20 border-red-900 text-red-400')}>{msg.text}</div>}
 
@@ -752,7 +757,7 @@ function BackupsSection() {
                     <td className="py-1.5 pr-3 text-slate-400">{new Date(b.created_at).toLocaleString()}</td>
                     <td className="pr-3 text-slate-400">{b.scope}{b.sensitive && <span title="contains config.yaml" className="ml-1 text-amber-500">●</span>}</td>
                     <td className="pr-3 text-slate-400 tabular-nums">{fmtBytes(b.size_bytes)}</td>
-                    <td className="pr-3 text-slate-500">{b.volumes.length}</td>
+                    <td className="pr-3 text-slate-500">{b.volumes?.length ?? 0}</td>
                     <td className="pr-3"><span className={clsx(b.status === 'ok' ? 'text-emerald-400' : 'text-amber-400')}>{b.status}</span></td>
                     <td className="text-right whitespace-nowrap">
                       <a href={api.downloadBackupURL(b.id)} className="btn-ghost text-xs">Download</a>
@@ -802,7 +807,7 @@ function TerminalPolicySection() {
 
   useEffect(() => {
     api.getTerminalPolicy().then(setPolicy).catch(() => {})
-    api.getTerminalPolicyDefaults().then(d => setDefaults(d.default_deny)).catch(() => {})
+    api.getTerminalPolicyDefaults().then(d => setDefaults(d.default_deny ?? [])).catch(() => {})
   }, [])
 
   function lines(s: string): string[] { return s.split('\n').map(x => x.trim()).filter(Boolean) }

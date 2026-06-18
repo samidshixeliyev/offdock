@@ -55,9 +55,9 @@ func (e *Engine) projectLock(projectID string) *sync.Mutex {
 // extra_hosts) to the raw compose YAML before it is written to disk. The raw
 // YAML in the DB is never changed. Transform errors fall back to the raw YAML.
 func (e *Engine) composeForDisk(settings store.DeploySettings, raw string) string {
-	out, err := injectNetworkConfig(raw, settings.DNSServers, settings.DNSSearch, settings.ExtraHosts)
+	out, err := applyComposeOverrides(raw, settings.DNSServers, settings.DNSSearch, settings.ExtraHosts, settings.ImageOverrides)
 	if err != nil {
-		slog.Warn("compose network injection failed; using raw compose", "err", err)
+		slog.Warn("compose override injection failed; using raw compose", "err", err)
 		return raw
 	}
 	return out
@@ -247,8 +247,8 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 					rec.LogText += "\nAuto-rollback FAILED: " + rbErr.Error() + "\n" + strings.TrimSpace(out)
 					log("Auto-rollback failed: %v", rbErr)
 				} else {
-					rec.LogText += "\nAuto-rolled back to previous good version."
-					log("Auto-rolled back to compose v%d, env v%d", prevComposeV, prevEnvV)
+					rec.LogText += fmt.Sprintf("\nAuto-rollback: re-deployed compose v%d, env v%d (stack restarted — health NOT re-verified; check container status).", prevComposeV, prevEnvV)
+					log("Auto-rollback: re-deployed compose v%d, env v%d (health not re-verified)", prevComposeV, prevEnvV)
 				}
 			}
 		}
@@ -409,10 +409,26 @@ func (e *Engine) applyVersionFiles(ctx context.Context, projectID, projectName s
 	if err != nil {
 		return "", err
 	}
+	// Mirror the primary deploy path's OTel injection so a rollback doesn't bring
+	// the stack up un-instrumented (env + per-service tracer mounts) when OTel is on.
+	isFile := func(p string) bool {
+		info, err := os.Stat(p)
+		return err == nil && !info.IsDir() && info.Size() > 0
+	}
+	if settings.OTelEnabled {
+		envContent = appendOTelEnv(envContent, projectName)
+	}
 	if err := atomicWrite(filepath.Join(projectDir, ".env"), []byte(envContent)); err != nil {
 		return "", err
 	}
-	return e.docker.ComposeUp(ctx, composeProjectName(projectName), composePath, true)
+	otelOverridePath := ""
+	if settings.OTelEnabled {
+		overridePath := filepath.Join(projectDir, ".otel-override.yml")
+		if err := writeOTelComposeOverride(composePath, overridePath, envContent, projectName, isFile, settings.OTelLanguageOverrides); err == nil {
+			otelOverridePath = overridePath
+		}
+	}
+	return e.docker.ComposeUp(ctx, composeProjectName(projectName), composePath, true, otelOverridePath)
 }
 
 // EnsureUp writes the latest compose+env for a project to disk and runs

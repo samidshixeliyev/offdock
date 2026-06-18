@@ -282,6 +282,12 @@ type DeploySettings struct {
 	DNSSearch  []string `json:"dns_search"`  // e.g. ["corp.local"]
 	ExtraHosts []string `json:"extra_hosts"` // "host:ip" entries
 
+	// ImageOverrides maps a compose service name to a full image reference
+	// (repo:tag) that replaces the service's image at deploy time. This is how a
+	// project deploys a specific previously-loaded image version (image rollback)
+	// without editing the canonical compose YAML. Empty = use the compose image.
+	ImageOverrides map[string]string `json:"image_overrides,omitempty"`
+
 	// OpenTelemetry auto-instrumentation — one toggle, everything auto-configured.
 	// When enabled, OffDock injects OTEL_* env vars and generates a compose override
 	// that mounts the language tracer and joins the offdock-otel Docker network so

@@ -121,20 +121,28 @@ func (b *Builder) Create(ctx context.Context, outPath string, opts Options) (Res
 	// config.yaml (optionally encrypted at rest).
 	if opts.IncludeConfig || opts.Scope == "config" {
 		if data, err := os.ReadFile(b.ConfigPath); err == nil {
-			res.Sensitive = true
-			man.HasConfig = true
+			added := false
 			if opts.Encrypt && b.Enc != nil {
 				if enc, err := b.Enc.Encrypt(string(data)); err == nil {
 					_ = addBytes(tw, "config/config.yaml.enc", []byte(enc))
 					res.Encrypted = true
 					man.Encrypted = true
+					added = true
 				} else {
-					_ = addBytes(tw, "config/config.yaml", data)
+					// Encryption was requested but failed — do NOT silently write the
+					// secret-bearing config in plaintext. Skip it and flag partial.
+					res.Status = "partial"
+					res.Note += fmt.Sprintf("config: encryption failed, config.yaml omitted: %v; ", err)
 				}
 			} else {
 				_ = addBytes(tw, "config/config.yaml", data)
+				added = true
 			}
-			res.Contents = append(res.Contents, "config")
+			if added {
+				res.Sensitive = true
+				man.HasConfig = true
+				res.Contents = append(res.Contents, "config")
+			}
 		}
 	}
 
@@ -153,9 +161,14 @@ func (b *Builder) Create(ctx context.Context, outPath string, opts Options) (Res
 				res.Note += fmt.Sprintf("volume %s: %v; ", v.Name, err)
 				continue
 			}
-			if addFileFromPath(tw, "volumes/"+v.Name+".tar.gz", tmpFile) == nil {
-				res.Volumes = append(res.Volumes, v.Name)
+			if err := addFileFromPath(tw, "volumes/"+v.Name+".tar.gz", tmpFile); err != nil {
+				// Exported but couldn't be written into the archive — mark partial
+				// rather than silently producing a backup missing this volume.
+				res.Status = "partial"
+				res.Note += fmt.Sprintf("volume %s: archive write failed: %v; ", v.Name, err)
+				continue
 			}
+			res.Volumes = append(res.Volumes, v.Name)
 		}
 		if len(res.Volumes) > 0 {
 			res.Contents = append(res.Contents, "volumes")
