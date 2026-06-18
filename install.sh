@@ -600,7 +600,9 @@ if [[ "$DEPS" == "true" ]]; then
 
   echo ""
   echo "=== Installing bundled packages ==="
-  for _component in docker nginx tcpdump; do
+  # Categories match the bundle layout: debs/{docker,nginx,network}. The network
+  # set carries tcpdump + dnsutils + iproute2 + iptables + … for tracing/DNS.
+  for _component in docker nginx network; do
     if [[ -d "${SCRIPT_DIR}/debs/${_component}" ]] && ls "${SCRIPT_DIR}/debs/${_component}"/*.deb &>/dev/null 2>&1; then
       echo "  Installing ${_component}..."
       _install_debs_safe "${SCRIPT_DIR}/debs/${_component}" "${_component}"
@@ -684,11 +686,12 @@ if [[ "$UPDATE" == "true" ]]; then
   fi
 
   # Install any bundled deb packages that are not yet present on the system.
-  # This handles tcpdump (tracing), docker (container runtime), nginx (reverse proxy)
-  # — _install_debs_safe skips packages already at the same or newer version.
+  # Categories match the bundle layout: debs/{docker,nginx,network}. The network
+  # set carries tcpdump (tracing), dnsutils, iproute2, iptables, etc.
+  # _install_debs_safe skips packages already at the same or newer version.
   echo ""
   echo "=== Installing bundled packages (if missing) ==="
-  for _component in docker nginx tcpdump; do
+  for _component in docker nginx network; do
     if [[ -d "${SCRIPT_DIR}/debs/${_component}" ]] && ls "${SCRIPT_DIR}/debs/${_component}"/*.deb &>/dev/null 2>&1; then
       _install_debs_safe "${SCRIPT_DIR}/debs/${_component}" "${_component}"
     fi
@@ -1012,16 +1015,16 @@ echo ""
 echo "=== Checking tcpdump ==="
 if command -v tcpdump &>/dev/null; then
   echo "  tcpdump already installed: $(tcpdump --version 2>&1 | head -1)"
-elif [[ -d "${SCRIPT_DIR}/debs/tcpdump" ]] && ls "${SCRIPT_DIR}/debs/tcpdump"/*.deb &>/dev/null 2>&1; then
-  echo "  Installing tcpdump from bundled packages..."
-  _install_debs_safe "${SCRIPT_DIR}/debs/tcpdump" "tcpdump"
+elif [[ -d "${SCRIPT_DIR}/debs/network" ]] && ls "${SCRIPT_DIR}/debs/network"/*.deb &>/dev/null 2>&1; then
+  echo "  Installing network tools (tcpdump, dnsutils, …) from bundled packages..."
+  _install_debs_safe "${SCRIPT_DIR}/debs/network" "network tools"
   if command -v tcpdump &>/dev/null; then
     echo "  tcpdump installed: $(tcpdump --version 2>&1 | head -1)"
   else
     echo "  WARNING: tcpdump not available after install — container tracing will not work." >&2
   fi
 else
-  echo "  WARNING: tcpdump not installed and no offline packages found in ./debs/tcpdump/" >&2
+  echo "  WARNING: tcpdump not installed and no offline packages found in ./debs/network/" >&2
   echo "  Container network tracing will not work. Install tcpdump to enable it." >&2
 fi
 
