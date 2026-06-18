@@ -3,9 +3,20 @@
 *.service   text eol=lf
 install.sh  text eol=lf
 
-# OpenTelemetry tracers are mounted into Linux containers — keep them LF.
-otel/**     text eol=lf
-otel/opentelemetry-javaagent.jar binary
+# OpenTelemetry script tracers are mounted into Linux containers — keep them LF.
+otel/**/*.js   text eol=lf
+otel/**/*.py   text eol=lf
+otel/**/*.php  text eol=lf
+otel/**/*.rb   text eol=lf
+otel/**/*.ini  text eol=lf
+otel/**/*.go   text eol=lf
+otel/**/*.md   text eol=lf
 
-# The bundled Java agent is a binary blob.
+# Bundled native agents (Java jar, .NET native libs/assemblies) are binary blobs.
 *.jar       binary
+*.dll       binary
+*.so        binary
+*.so.*      binary
+*.pdb       binary
+*.a         binary
+*.dylib     binary
