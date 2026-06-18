@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -239,6 +240,58 @@ func (h *H) RestoreEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	h.logAudit(r, "restore_env", "project", projectID, "", "v"+strconv.Itoa(req.Version)+"→v"+strconv.Itoa(nextVersion))
 	writeJSON(w, http.StatusCreated, h.marshalEnvSet(set))
+}
+
+// DeleteEnvVersion deletes a single historical env version. Guards: refuses the
+// latest version (deploys use it), the only version, and any version referenced
+// by a deploy tag (the tag must be deleted first).
+func (h *H) DeleteEnvVersion(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	ver, err := strconv.Atoi(chi.URLParam(r, "version"))
+	if err != nil || ver <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid version")
+		return
+	}
+	all, _ := h.db.EnvVars.FindWhere(func(s store.EnvVarSet) bool { return s.ProjectID == projectID })
+	if len(all) <= 1 {
+		writeError(w, http.StatusConflict, "cannot delete the only env version")
+		return
+	}
+	var target *store.EnvVarSet
+	latest := 0
+	for i := range all {
+		if all[i].Version > latest {
+			latest = all[i].Version
+		}
+		if all[i].Version == ver {
+			target = &all[i]
+		}
+	}
+	if target == nil {
+		writeError(w, http.StatusNotFound, "env version not found")
+		return
+	}
+	if ver == latest {
+		writeError(w, http.StatusConflict, "cannot delete the latest env version (it is what deploys use)")
+		return
+	}
+	tags, _ := h.db.DeployTags.FindWhere(func(t store.DeployTag) bool {
+		return t.ProjectID == projectID && t.EnvVersion == ver
+	})
+	if len(tags) > 0 {
+		names := make([]string, 0, len(tags))
+		for _, t := range tags {
+			names = append(names, t.Name)
+		}
+		writeError(w, http.StatusConflict, "env v"+strconv.Itoa(ver)+" is referenced by tag(s): "+strings.Join(names, ", ")+" — delete those tags first")
+		return
+	}
+	if err := h.db.EnvVars.Delete(target.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not delete env version")
+		return
+	}
+	h.logAudit(r, "delete_env_version", "project", projectID, "v"+strconv.Itoa(ver), "")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // envSetContentHash computes the canonical content hash of a stored env set by

@@ -118,6 +118,7 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/projects/{id}/compose", h.GetCompose)
 		r.With(authmw.RequirePermission(deps.DB, store.PermEditCompose)).Post("/api/v1/projects/{id}/compose", h.SaveCompose)
 		r.Get("/api/v1/projects/{id}/compose/history", h.ComposeHistory)
+		r.With(authmw.RequirePermission(deps.DB, store.PermEditCompose)).Delete("/api/v1/projects/{id}/compose/{version}", h.DeleteComposeVersion)
 		r.Get("/api/v1/projects/{id}/compose/services", h.GetComposeServices)
 
 		// Env vars
@@ -125,6 +126,7 @@ func NewRouter(deps Deps) http.Handler {
 		r.With(authmw.RequirePermission(deps.DB, store.PermEditEnv)).Post("/api/v1/projects/{id}/env", h.SaveEnv)
 		r.Get("/api/v1/projects/{id}/env/history", h.EnvHistory)
 		r.With(authmw.RequirePermission(deps.DB, store.PermEditEnv)).Post("/api/v1/projects/{id}/env/restore", h.RestoreEnv)
+		r.With(authmw.RequirePermission(deps.DB, store.PermEditEnv)).Delete("/api/v1/projects/{id}/env/{version}", h.DeleteEnvVersion)
 
 		// OffDock managed networks (offdock-external / offdock-internal)
 		r.Get("/api/v1/networks", h.ListNetworks)

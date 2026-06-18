@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api, ComposeConfig, ComposeServiceInfo, DeploymentRecord, DeploySettings, EnvVarSet, DeployTag, ImageUsage } from '../api/client'
 import clsx from 'clsx'
 import {
   Search, FileText, Container as ContainerIcon, HeartPulse, Server, CheckCircle2,
-  Loader2, AlertCircle, RotateCcw, Rocket, Eye, EyeOff, Tag as TagIcon,
+  Loader2, AlertCircle, RotateCcw, Rocket, Eye, EyeOff, Tag as TagIcon, Trash2,
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import { usePermissions, PERMS } from '../hooks/usePermissions'
@@ -202,6 +202,15 @@ export default function DeployPage() {
     api.listDeployments(id).then(d => setDeployments(d ?? [])).catch(() => {})
   }
 
+  // Single source of truth for env history; reveal is passed explicitly so there
+  // is no effect-race between an initial (masked) load and a reveal refetch.
+  const loadEnvHistory = (reveal: boolean) => {
+    if (!id) return
+    api.envHistory(id, reveal && isSuper).then(h => {
+      setEnvHistory((h ?? []).slice().sort((a, b) => b.version - a.version))
+    }).catch(() => {})
+  }
+
   useEffect(() => {
     if (!id) return
     reload()
@@ -209,10 +218,8 @@ export default function DeployPage() {
       const sorted = (h ?? []).slice().sort((a, b) => b.version - a.version)
       setComposeHistory(sorted)
     }).catch(() => {})
-    api.envHistory(id).then(h => {
-      const sorted = (h ?? []).slice().sort((a, b) => b.version - a.version)
-      setEnvHistory(sorted)
-    }).catch(() => {})
+    loadEnvHistory(false)
+    setRevealSecrets(false)
     api.getDeploySettings(id).then(s => {
       setSettings(s)
       setSettingsDraft({
@@ -227,14 +234,6 @@ export default function DeployPage() {
     api.listDeployTags(id).then(t => setTags(t ?? [])).catch(() => {})
     api.imageUsage().then(r => setLoadedImages(r.images ?? [])).catch(() => {})
   }, [id])
-
-  // Refetch env history when reveal toggles (superadmin only — server decrypts).
-  useEffect(() => {
-    if (!id) return
-    api.envHistory(id, revealSecrets && isSuper).then(h => {
-      setEnvHistory((h ?? []).slice().sort((a, b) => b.version - a.version))
-    }).catch(() => {})
-  }, [revealSecrets, id, isSuper])
 
   useEffect(() => {
     if (!logRef.current) return
@@ -287,6 +286,23 @@ export default function DeployPage() {
       setLog(['Error: ' + (e instanceof Error ? e.message : 'unknown')])
       setDeploying(false)
     }
+  }
+
+  const deleteComposeVer = async (version: number) => {
+    if (!id) return
+    try {
+      await api.deleteComposeVersion(id, version)
+      toast.success(`Deleted compose v${version}`)
+      setComposeHistory(prev => prev.filter(c => c.version !== version))
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Delete failed') }
+  }
+  const deleteEnvVer = async (version: number) => {
+    if (!id) return
+    try {
+      await api.deleteEnvVersion(id, version)
+      toast.success(`Deleted env v${version}`)
+      setEnvHistory(prev => prev.filter(s => s.version !== version))
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Delete failed') }
   }
 
   // requestDeploy opens the "what will deploy" confirmation; the modal calls
@@ -486,7 +502,7 @@ export default function DeployPage() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 6h.008v.008H6V6z" />
             </svg>
             <p className="text-sm">No release tags yet</p>
-            <p className="text-xs">Click "Tag current version" to mark a stable release for quick rollback.</p>
+            <p className="text-xs">Click "Create tag" (or "Tag last deploy") to mark a stable release for quick rollback.</p>
           </div>
         ) : (
           <div className="space-y-2">
@@ -670,7 +686,7 @@ export default function DeployPage() {
                 <div className="mt-2">
                   {isSuper && (
                     <button
-                      onClick={() => setRevealSecrets(r => !r)}
+                      onClick={() => { const next = !revealSecrets; setRevealSecrets(next); loadEnvHistory(next) }}
                       className="mb-1 inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200"
                       title="Superadmin only — reveal is audited"
                     >
@@ -705,6 +721,77 @@ export default function DeployPage() {
           </button>
         </div>
       </div>
+
+      {/* ── Manage versions (delete old compose/env versions) ───────────────── */}
+      {can(PERMS.editCompose) && (composeHistory.length > 0 || envHistory.length > 0) && (
+        <div className="card space-y-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">Manage Versions</h2>
+            <p className="text-xs text-slate-500 mt-0.5">
+              Delete old compose / env versions. The latest version and any version referenced by a tag are protected.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Compose versions */}
+            <div>
+              <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Compose versions</p>
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {composeHistory.map((c, idx) => {
+                  const isLatest = idx === 0
+                  const tagged = tags.some(t => t.compose_version === c.version)
+                  return (
+                    <div key={c.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <div className="min-w-0">
+                        <span className="font-mono text-xs text-slate-200">v{c.version}</span>
+                        {isLatest && <span className="ml-2 text-[10px] text-emerald-400">latest</span>}
+                        {tagged && <span className="ml-2 text-[10px] text-blue-400">tagged</span>}
+                        <span className="ml-2 text-[10px] text-slate-600">{new Date(c.created_at).toLocaleDateString()} · {c.created_by}</span>
+                      </div>
+                      <button
+                        disabled={isLatest || tagged}
+                        title={isLatest ? 'Latest version cannot be deleted' : tagged ? 'Referenced by a tag — delete the tag first' : 'Delete this compose version'}
+                        onClick={() => deleteComposeVer(c.version)}
+                        className={clsx('p-1.5 rounded-lg transition-all shrink-0', (isLatest || tagged) ? 'text-slate-700 cursor-not-allowed' : 'text-slate-500 hover:text-red-400 hover:bg-red-500/10')}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+            {/* Env versions */}
+            <div>
+              <p className="text-[10px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Env versions</p>
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {envHistory.length === 0 && <p className="text-[11px] text-slate-600 italic">No env versions.</p>}
+                {envHistory.map((s, idx) => {
+                  const isLatest = idx === 0
+                  const tagged = tags.some(t => t.env_version === s.version)
+                  return (
+                    <div key={s.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-slate-900/60 border border-slate-800">
+                      <div className="min-w-0">
+                        <span className="font-mono text-xs text-slate-200">v{s.version}</span>
+                        <span className="ml-2 text-[10px] text-slate-500">{s.vars.length} vars</span>
+                        {isLatest && <span className="ml-2 text-[10px] text-emerald-400">latest</span>}
+                        {tagged && <span className="ml-2 text-[10px] text-blue-400">tagged</span>}
+                      </div>
+                      <button
+                        disabled={isLatest || tagged}
+                        title={isLatest ? 'Latest version cannot be deleted' : tagged ? 'Referenced by a tag — delete the tag first' : 'Delete this env version'}
+                        onClick={() => deleteEnvVer(s.version)}
+                        className={clsx('p-1.5 rounded-lg transition-all shrink-0', (isLatest || tagged) ? 'text-slate-700 cursor-not-allowed' : 'text-slate-500 hover:text-red-400 hover:bg-red-500/10')}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Deploy settings ────────────────────────────────────────────────── */}
       <div className="card">
@@ -1050,8 +1137,8 @@ export default function DeployPage() {
               </thead>
               <tbody>
                 {deployments.map(d => (
-                  <>
-                    <tr key={d.id} className="border-b border-slate-800/50 hover:bg-slate-800/20 group">
+                  <Fragment key={d.id}>
+                    <tr className="border-b border-slate-800/50 hover:bg-slate-800/20 group">
                       <td className="px-4 py-2.5"><span className={statusBadge(d.status)}>{d.status}</span></td>
                       <td className="px-4 py-2.5 text-slate-300 text-xs font-mono">v{d.new_compose_version}</td>
                       <td className="px-4 py-2.5 text-slate-300 text-xs font-mono">{d.env_version > 0 ? `v${d.env_version}` : <span className="text-slate-600">—</span>}</td>
@@ -1101,7 +1188,7 @@ export default function DeployPage() {
                       </td>
                     </tr>
                     {expandLog === d.id && (
-                      <tr key={`${d.id}-log`} className="border-b border-slate-800/50">
+                      <tr className="border-b border-slate-800/50">
                         <td colSpan={8} className="px-4 pb-3">
                           <pre className="font-mono text-xs text-green-400 bg-slate-950 rounded p-3 max-h-64 overflow-y-auto whitespace-pre-wrap">
                             {d.log_text}
@@ -1109,7 +1196,7 @@ export default function DeployPage() {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>

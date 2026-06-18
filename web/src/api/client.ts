@@ -614,6 +614,8 @@ export const api = {
   },
   composeHistory: (projectId: string) =>
     request<ComposeConfig[]>(`/api/v1/projects/${projectId}/compose/history`),
+  deleteComposeVersion: (projectId: string, version: number) =>
+    request<void>(`/api/v1/projects/${projectId}/compose/${version}`, { method: 'DELETE' }),
 
   // Env vars
   getEnv: (projectId: string) =>
@@ -635,6 +637,8 @@ export const api = {
     request<EnvVarSet>(`/api/v1/projects/${projectId}/env/restore`, {
       method: 'POST', body: JSON.stringify({ version }),
     }),
+  deleteEnvVersion: (projectId: string, version: number) =>
+    request<void>(`/api/v1/projects/${projectId}/env/${version}`, { method: 'DELETE' }),
 
   // Docker networks
   listNetworks: () => request<Networks>('/api/v1/networks'),

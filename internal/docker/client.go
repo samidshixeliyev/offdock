@@ -584,7 +584,9 @@ func (c *Client) ExportVolume(ctx context.Context, volume, destTarGz string) err
 		if err := cmd.Run(); err == nil {
 			return nil
 		}
-		// fall through to the helper container on any host-tar failure
+		// Remove the partially-written archive so the helper fallback (or caller)
+		// never archives a truncated file.
+		_ = os.Remove(destTarGz)
 	}
 
 	// Fallback: helper container (requires VolumeBackupImage to be loaded).
@@ -612,19 +614,26 @@ func (c *Client) ImportVolume(ctx context.Context, volume, srcTarGz string) erro
 
 	// Preferred path: extract straight into the mountpoint with host tar.
 	if mp := c.volumeMountpoint(ctx, volume); mp != "" {
-		// Clear existing content first (best-effort), then extract.
+		// Validate the archive is readable BEFORE clearing the volume — otherwise a
+		// corrupt/truncated archive would leave the volume emptied (data loss).
+		if listErr := exec.CommandContext(ctx, "tar", "tzf", srcTarGz).Run(); listErr != nil {
+			return fmt.Errorf("import volume %s: backup archive is unreadable, volume left untouched: %w", volume, listErr)
+		}
+		// Clear existing content (best-effort), then extract. Since the archive
+		// validated above, we do NOT fall back to a second destructive helper run.
 		clear := exec.CommandContext(ctx, "sh", "-c",
 			"rm -rf -- "+shellQuote(mp)+"/* "+shellQuote(mp)+"/.[!.]* "+shellQuote(mp)+"/..?* 2>/dev/null; true")
 		_ = clear.Run()
 		cmd := exec.CommandContext(ctx, "tar", "xzf", srcTarGz, "-C", mp)
 		var buf bytes.Buffer
 		cmd.Stderr = &buf
-		if err := cmd.Run(); err == nil {
-			return nil
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("import volume %s: extract failed: %w\n%s", volume, err, buf.String())
 		}
-		// fall through to the helper container on failure
+		return nil
 	}
 
+	// Fallback only when the mountpoint isn't directly accessible (rootless/remote).
 	srcDir := filepath.Dir(srcTarGz)
 	base := filepath.Base(srcTarGz)
 	out, err := run(ctx, "run", "--rm",

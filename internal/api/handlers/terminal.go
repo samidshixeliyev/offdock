@@ -282,6 +282,12 @@ func (h *H) HostShellWS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"not authenticated"}`, http.StatusUnauthorized)
 		return
 	}
+	// Defense-in-depth: the route middleware already blocks inactive users, but
+	// re-check here so this handler is safe even if ever wired without it.
+	if !user.Active {
+		http.Error(w, `{"error":"account is deactivated"}`, http.StatusForbidden)
+		return
+	}
 	switch user.EffectiveHostTerminalMode() {
 	case store.HostTermDisabled:
 		http.Error(w, `{"error":"host terminal access is disabled for your account"}`, http.StatusForbidden)
@@ -290,7 +296,7 @@ func (h *H) HostShellWS(w http.ResponseWriter, r *http.Request) {
 		// No OTP required — but still audited below.
 	default: // HostTermOTP
 		token := r.URL.Query().Get("otp_token")
-		if !h.ValidateTerminalToken(token) {
+		if !h.ValidateTerminalToken(token, user.ID) {
 			http.Error(w, `{"error":"valid OTP token required for root terminal"}`, http.StatusForbidden)
 			return
 		}

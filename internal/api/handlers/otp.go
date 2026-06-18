@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	authmw "offdock/internal/middleware"
@@ -190,12 +191,22 @@ func (h *H) OTPVerify(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ValidateTerminalToken checks a terminal token from the WS query param.
-// Returns the user ID if valid, empty string otherwise.
-func (h *H) ValidateTerminalToken(token string) bool {
-	if token == "" {
+// terminalTokenMu serializes validate-and-consume so two concurrent WebSocket
+// upgrades presenting the same token cannot both succeed (the append-log store
+// has no compare-and-swap of its own).
+var terminalTokenMu sync.Mutex
+
+// ValidateTerminalToken checks a single-use terminal token from the WS query
+// param and, when valid, atomically consumes it. The token MUST belong to userID
+// (the authenticated caller) so a leaked/observed token can't be replayed by a
+// different account.
+func (h *H) ValidateTerminalToken(token, userID string) bool {
+	if token == "" || userID == "" {
 		return false
 	}
+	terminalTokenMu.Lock()
+	defer terminalTokenMu.Unlock()
+
 	hash := hashOTP(token)
 	challenges, _ := h.db.OTPChallenges.FindWhere(func(o store.OTPChallenge) bool {
 		return o.CodeHash == hash && o.Purpose == "terminal_token" && !o.Used
@@ -204,6 +215,9 @@ func (h *H) ValidateTerminalToken(token string) bool {
 		return false
 	}
 	c := challenges[0]
+	if c.UserID != userID {
+		return false // token belongs to a different account
+	}
 	if time.Now().UTC().After(c.ExpiresAt) {
 		return false
 	}

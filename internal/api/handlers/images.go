@@ -7,8 +7,53 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"offdock/internal/docker"
 	"offdock/internal/store"
 )
+
+// resolveImageID maps a container's .Image reference (repo:tag, repo@sha256:…,
+// or a bare image ID / short-ID prefix) to a concrete docker image ID using the
+// daemon's image list. Returns "" when it can't be resolved. This is the correct
+// way to decide image usage — comparing a container's ref string against image
+// IDs directly does not work (refs are repo:tag, IDs are hashes).
+func resolveImageID(ref string, images []docker.ImageSummary, byTag map[string]string) string {
+	if ref == "" {
+		return ""
+	}
+	if id, ok := byTag[ref]; ok {
+		return id
+	}
+	bare := strings.TrimPrefix(ref, "sha256:")
+	for _, img := range images {
+		idBare := strings.TrimPrefix(img.ID, "sha256:")
+		if img.ID == ref || idBare == bare {
+			return img.ID
+		}
+		// Container started by short ID prefix (docker run a1b2c3d4e5f6).
+		if len(bare) >= 8 && (strings.HasPrefix(idBare, bare) || strings.HasPrefix(bare, idBare)) {
+			return img.ID
+		}
+	}
+	return ""
+}
+
+// imageUsageMap returns imageID → container names that run that image, resolving
+// each container's image reference to a real image ID.
+func imageUsageMap(containers []docker.ContainerInfo, images []docker.ImageSummary) map[string][]string {
+	byTag := map[string]string{}
+	for _, img := range images {
+		if img.Repository != "" && img.Repository != "<none>" && img.Tag != "" && img.Tag != "<none>" {
+			byTag[img.Repository+":"+img.Tag] = img.ID
+		}
+	}
+	usage := map[string][]string{}
+	for _, c := range containers {
+		if id := resolveImageID(c.Image, images, byTag); id != "" {
+			usage[id] = append(usage[id], c.Names)
+		}
+	}
+	return usage
+}
 
 // ListImages returns all tracked Docker images.
 func (h *H) ListImages(w http.ResponseWriter, r *http.Request) {
@@ -181,26 +226,15 @@ func (h *H) ImageUsage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "docker images: "+err.Error())
 		return
 	}
-	containers, _ := h.docker.PS(r.Context(), "") // all containers (-a)
+	// If we cannot enumerate containers we MUST NOT report images as unused —
+	// that would invite a mass-delete of in-use images. Fail loudly instead.
+	containers, err := h.docker.PS(r.Context(), "") // all containers (-a)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not determine image usage (docker ps failed): "+err.Error())
+		return
+	}
 
-	// Map a container's referenced image string and resolve image IDs.
-	type used struct{ names []string }
-	byRef := map[string]*used{}   // key: repo:tag
-	byID := map[string]*used{}    // key: image short/long ID
-	addUse := func(m map[string]*used, key, container string) {
-		if key == "" {
-			return
-		}
-		if m[key] == nil {
-			m[key] = &used{}
-		}
-		m[key].names = append(m[key].names, container)
-	}
-	for _, c := range containers {
-		name := c.Names
-		addUse(byRef, c.Image, name)
-		addUse(byID, c.Image, name)
-	}
+	usage := imageUsageMap(containers, images)
 
 	// Build a DB lookup: docker image ID → OffDock record id.
 	dbImages, _ := h.db.Images.FindAll()
@@ -226,22 +260,7 @@ func (h *H) ImageUsage(w http.ResponseWriter, r *http.Request) {
 	out := make([]imageUsage, 0, len(images))
 	inUseCount := 0
 	for _, img := range images {
-		ref := img.Repository + ":" + img.Tag
-		names := []string{}
-		if u := byRef[ref]; u != nil {
-			names = append(names, u.names...)
-		}
-		// Match by ID too (untagged or digest-referenced containers).
-		shortID := img.ID
-		if len(shortID) > 12 {
-			shortID = shortID[:12]
-		}
-		for key, u := range byID {
-			if key == img.ID || key == shortID || (len(key) >= 12 && strings.HasPrefix(img.ID, key)) {
-				names = append(names, u.names...)
-			}
-		}
-		names = dedupStrings(names)
+		names := dedupStrings(usage[img.ID])
 		iu := imageUsage{
 			ImageID:    img.ID,
 			Repository: img.Repository,
@@ -326,16 +345,45 @@ func (h *H) RemoveImageByRef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard: refuse to remove an image still referenced by a container.
+	// Resolve the target to a concrete image ID so the in-use guard and DB
+	// reconcile compare image identity, not raw ref strings.
+	images, _ := h.docker.ImageList()
+	byTag := map[string]string{}
+	for _, img := range images {
+		if img.Repository != "" && img.Repository != "<none>" && img.Tag != "" && img.Tag != "<none>" {
+			byTag[img.Repository+":"+img.Tag] = img.ID
+		}
+	}
+	targetID := req.ImageID
+	if targetID == "" {
+		targetID = resolveImageID(req.Ref, images, byTag)
+	}
+
+	// Guard: refuse to remove an image still referenced by a container (running
+	// OR stopped) unless force=true. We must be able to enumerate containers to
+	// make this guarantee — if docker ps fails, refuse rather than risk it.
 	if !req.Force {
-		containers, _ := h.docker.PS(r.Context(), "")
+		containers, psErr := h.docker.PS(r.Context(), "")
+		if psErr != nil {
+			writeError(w, http.StatusInternalServerError,
+				"could not verify image is unused (docker ps failed) — retry, or force delete: "+psErr.Error())
+			return
+		}
+		usage := imageUsageMap(containers, images)
+		var users []string
+		if targetID != "" {
+			users = usage[targetID]
+		}
+		// Also match a container whose ref equals the requested ref directly.
 		for _, c := range containers {
-			if c.Image == req.Ref || c.Image == req.ImageID ||
-				(req.ImageID != "" && strings.HasPrefix(req.ImageID, c.Image)) {
-				writeError(w, http.StatusConflict,
-					"image is in use by container "+c.Names+" — stop/remove it first, or force delete")
-				return
+			if req.Ref != "" && c.Image == req.Ref {
+				users = append(users, c.Names)
 			}
+		}
+		if len(dedupStrings(users)) > 0 {
+			writeError(w, http.StatusConflict,
+				"image is in use by: "+strings.Join(dedupStrings(users), ", ")+" — stop/remove them first, or force delete")
+			return
 		}
 	}
 
@@ -344,15 +392,18 @@ func (h *H) RemoveImageByRef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reconcile DB: drop any record pointing at this image.
+	// Reconcile DB: drop any record pointing at this image (by resolved ID or ref).
 	if dbImages, err := h.db.Images.FindAll(); err == nil {
 		for _, img := range dbImages {
-			if img.DockerImageID == req.ImageID || img.ImageName+":"+img.ImageTag == req.Ref {
+			if (targetID != "" && img.DockerImageID == targetID) ||
+				img.DockerImageID == req.ImageID ||
+				img.ImageName+":"+img.ImageTag == req.Ref ||
+				img.ImageName+":"+img.ImageTag == target {
 				h.db.Images.Delete(img.ID) //nolint:errcheck
 			}
 		}
 	}
-	h.logAudit(r, "delete_image", "image", req.ImageID, req.Ref, "")
+	h.logAudit(r, "delete_image", "image", targetID, req.Ref, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

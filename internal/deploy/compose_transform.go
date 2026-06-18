@@ -45,7 +45,15 @@ func applyComposeOverrides(raw string, dns, dnsSearch, extraHosts []string, imag
 	for name, svcRaw := range services {
 		svc, ok := svcRaw.(map[string]any)
 		if !ok {
-			continue
+			// A service written with an empty/nil body (e.g. `web:` with no
+			// fields) unmarshals to nil. If we have something to inject for it
+			// (notably an image override), start a fresh map rather than silently
+			// dropping the override.
+			if svcRaw == nil && (len(dns) > 0 || len(dnsSearch) > 0 || len(extraHosts) > 0 || imageOverrides[name] != "") {
+				svc = map[string]any{}
+			} else {
+				continue
+			}
 		}
 		if len(dns) > 0 {
 			svc["dns"] = toAnySlice(dns)
