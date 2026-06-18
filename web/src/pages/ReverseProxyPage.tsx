@@ -303,6 +303,18 @@ export default function ReverseProxyPage() {
   const [busy, setBusy] = useState('')
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({})
   const [testBusy, setTestBusy] = useState('')
+  const [nginxBusy, setNginxBusy] = useState<'' | 'start' | 'restart' | 'reload' | 'stop'>('')
+
+  const nginxControl = async (action: 'start' | 'restart' | 'reload' | 'stop') => {
+    setNginxBusy(action)
+    try {
+      const r = await api.nginxSystemControl(action)
+      toast.success(`nginx ${action} → ${r.status || 'done'}`)
+      reloadNginx()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : `nginx ${action} failed`)
+    } finally { setNginxBusy('') }
+  }
   const [diagHost, setDiagHost] = useState<{ host: ProxyHost; result: TestResult } | null>(null)
   const [serverIP, setServerIP] = useState('')
   const [showModal, setShowModal] = useState(false)
@@ -352,12 +364,33 @@ export default function ReverseProxyPage() {
           message="The nginx config file will be removed and nginx reloaded." onConfirm={() => remove(deleteId)} onCancel={() => setDeleteId(null)} />
       )}
 
-      {/* nginx status */}
-      <div className={clsx('flex items-center gap-3 px-4 py-2.5 rounded-xl border mb-4', nginxOk ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-red-500/5 border-red-500/20')}>
+      {/* nginx status + service control */}
+      <div className={clsx('flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-xl border mb-4', nginxOk ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-red-500/5 border-red-500/20')}>
         <span className={clsx('w-2 h-2 rounded-full', nginxOk ? 'bg-emerald-400 animate-pulse' : 'bg-red-500')} />
         <span className="text-sm font-medium text-slate-200">nginx</span>
         <span className="text-xs text-slate-500">system · native</span>
         <StatusBadge meta={{ tone: nginxOk ? 'running' : 'error', label: available ? (status || 'unknown') : 'not installed' }} />
+        {available && (
+          <div className="ml-auto flex items-center gap-1.5">
+            {nginxOk ? (
+              <>
+                <button onClick={() => nginxControl('reload')} disabled={nginxBusy !== ''} title="Test config and reload (no downtime)"
+                  className="px-2.5 py-1 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-40">
+                  {nginxBusy === 'reload' ? 'Reloading…' : 'Reload'}
+                </button>
+                <button onClick={() => nginxControl('restart')} disabled={nginxBusy !== ''} title="Full restart"
+                  className="px-2.5 py-1 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 disabled:opacity-40">
+                  {nginxBusy === 'restart' ? 'Restarting…' : 'Restart'}
+                </button>
+              </>
+            ) : (
+              <button onClick={() => nginxControl('start')} disabled={nginxBusy !== ''} title="Start nginx"
+                className="px-2.5 py-1 rounded-lg text-xs bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-40">
+                {nginxBusy === 'start' ? 'Starting…' : 'Start nginx'}
+              </button>
+            )}
+          </div>
+        )}
         {!available && <span className="text-xs text-slate-500 ml-auto">Install: <code>sudo apt-get install -y nginx</code></span>}
       </div>
 

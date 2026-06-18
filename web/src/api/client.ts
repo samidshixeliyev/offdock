@@ -652,6 +652,10 @@ export const api = {
   // Nginx — system (native nginx on host)
   getNginxSystemStatus: () =>
     request<{ available: boolean; status: string }>('/api/v1/nginx/system/status'),
+  nginxSystemControl: (action: 'start' | 'restart' | 'reload' | 'stop') =>
+    request<{ status: string; action: string; output: string }>('/api/v1/nginx/system/control', {
+      method: 'POST', body: JSON.stringify({ action }),
+    }),
   getSelfNginxConfig: (domain: string, port?: number) => {
     const params = new URLSearchParams({ domain })
     if (port) params.set('port', String(port))

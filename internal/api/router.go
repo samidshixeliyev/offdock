@@ -163,6 +163,7 @@ func NewRouter(deps Deps) http.Handler {
 
 		// Nginx — system nginx status + self-config
 		r.Get("/api/v1/nginx/system/status", h.NginxSystemStatus)
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageProxy)).Post("/api/v1/nginx/system/control", h.NginxSystemControl)
 		r.Get("/api/v1/nginx/system/self-config", h.SelfNginxConfig)
 		r.With(authmw.RequirePermission(deps.DB, store.PermManageProxy)).Post("/api/v1/nginx/system/self-config", h.ApplySelfNginxConfig)
 

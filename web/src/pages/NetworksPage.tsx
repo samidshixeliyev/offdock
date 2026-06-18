@@ -47,6 +47,46 @@ function NetworkingGuide() {
               <p>Connect backend services (databases, caches) that must NOT be reachable from nginx. Apps can join both networks.</p>
             </div>
           </div>
+
+          {/* System network modes: bridge / host / none */}
+          <div>
+            <p className="text-slate-300 font-semibold mb-2">The three built-in networks (<span className="font-mono">bridge</span>, <span className="font-mono">host</span>, <span className="font-mono">none</span>)</p>
+            <p className="mb-2 text-slate-500">Docker always has these three. They are container <em>network modes</em> — you can’t delete them, and you rarely attach to them directly in OffDock (use <span className="font-mono">offdock-external/internal</span> instead). When to use each:</p>
+            <div className="grid md:grid-cols-3 gap-3">
+              <div className="bg-slate-800/30 border border-slate-700/40 rounded-lg p-3 space-y-1">
+                <p className="font-semibold text-emerald-300 font-mono">bridge</p>
+                <p><strong>Default & recommended.</strong> Each container gets its own private IP on a virtual switch; ports you publish (<span className="font-mono">ports:</span>) are NAT’d to the host. Use for almost everything. <span className="text-slate-500">Net Traces works in this mode.</span></p>
+              </div>
+              <div className="bg-slate-800/30 border border-slate-700/40 rounded-lg p-3 space-y-1">
+                <p className="font-semibold text-amber-300 font-mono">host</p>
+                <p>Container shares the host’s network directly (no isolation, no port mapping — it binds host ports as-is). Use only for max-throughput / low-latency or tools that need raw host networking. <span className="text-amber-400/80">Net Traces can’t isolate a host-mode container; avoid unless required.</span></p>
+              </div>
+              <div className="bg-slate-800/30 border border-slate-700/40 rounded-lg p-3 space-y-1">
+                <p className="font-semibold text-slate-300 font-mono">none</p>
+                <p>No networking at all (only loopback). Use for fully isolated batch/CPU jobs that must not reach or be reached by anything.</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Network drivers — when creating a custom network */}
+          <div>
+            <p className="text-slate-300 font-semibold mb-2">Network <em>drivers</em> (the “Driver” field when you create a network)</p>
+            <div className="grid md:grid-cols-3 gap-3">
+              <div className="bg-slate-800/30 border border-slate-700/40 rounded-lg p-3 space-y-1">
+                <p className="font-semibold text-emerald-300 font-mono">bridge</p>
+                <p><strong>Use this 99% of the time.</strong> A private virtual switch on this single host with built-in DNS (containers reach each other by name). This is what <span className="font-mono">offdock-external/internal</span> are.</p>
+              </div>
+              <div className="bg-slate-800/30 border border-slate-700/40 rounded-lg p-3 space-y-1">
+                <p className="font-semibold text-slate-300 font-mono">overlay</p>
+                <p>Spans <strong>multiple hosts</strong> in a Docker Swarm cluster. OffDock manages a single host, so only pick this if you’ve joined a Swarm — otherwise it won’t work.</p>
+              </div>
+              <div className="bg-slate-800/30 border border-slate-700/40 rounded-lg p-3 space-y-1">
+                <p className="font-semibold text-slate-300 font-mono">macvlan</p>
+                <p>Gives a container a <strong>real IP on your physical LAN</strong> (its own MAC). Use only when something must appear as a first-class device on the network (legacy apps, DHCP). Requires NIC/router setup; advanced.</p>
+              </div>
+            </div>
+            <p className="mt-2 text-slate-500">Rule of thumb: for OffDock, create <span className="font-mono">bridge</span> networks (optionally with a custom subnet). Reach for overlay/macvlan only for the specific multi-host or physical-LAN cases above.</p>
+          </div>
         </div>
       )}
     </Panel>
@@ -167,10 +207,15 @@ function CreateNetworkModal({ onCreated, onClose }: { onCreated: () => void; onC
         <div>
           <label className="block text-xs text-slate-500 mb-1.5">Driver</label>
           <select value={driver} onChange={e => setDriver(e.target.value)} className="select">
-            <option value="bridge">bridge (default)</option>
-            <option value="overlay">overlay</option>
-            <option value="macvlan">macvlan</option>
+            <option value="bridge">bridge — single host (recommended)</option>
+            <option value="overlay">overlay — multi-host Swarm only</option>
+            <option value="macvlan">macvlan — real IP on physical LAN (advanced)</option>
           </select>
+          <p className="text-[11px] text-slate-600 mt-1">
+            {driver === 'bridge' && 'Private virtual switch on this host with name-based DNS. Use this for almost everything.'}
+            {driver === 'overlay' && 'Only works inside a Docker Swarm cluster spanning multiple hosts.'}
+            {driver === 'macvlan' && 'Gives the container its own IP/MAC on your physical LAN. Needs NIC/router setup.'}
+          </p>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
