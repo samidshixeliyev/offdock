@@ -55,6 +55,7 @@ func (h *H) Rollback(w http.ResponseWriter, r *http.Request) {
 	composeVersion := req.ComposeVersion
 	envVersion := req.EnvVersion
 	rollbackOf := ""
+	var imagePins map[string]string
 
 	switch {
 	case req.TagID != "":
@@ -65,6 +66,7 @@ func (h *H) Rollback(w http.ResponseWriter, r *http.Request) {
 		}
 		composeVersion = tag.ComposeVersion
 		envVersion = tag.EnvVersion
+		imagePins = tag.ImagePins
 		rollbackOf = "tag:" + tag.Name
 	case req.DeploymentID != "":
 		dep, err := h.db.Deployments.FindByID(req.DeploymentID)
@@ -93,7 +95,7 @@ func (h *H) Rollback(w http.ResponseWriter, r *http.Request) {
 			msg, _ := json.Marshal(map[string]string{"log": line})
 			h.hub.Publish(streamKey, string(msg))
 		}
-		rec, err := h.deployer.DeployVersion(ctx, projectID, claims.UserID, composeVersion, envVersion, logFn)
+		rec, err := h.deployer.DeployVersion(ctx, projectID, claims.UserID, composeVersion, envVersion, imagePins, logFn)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			h.hub.Publish(streamKey, string(msg))

@@ -67,8 +67,9 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ComposeVersion int `json:"compose_version"`
-		EnvVersion     int `json:"env_version"`
+		ComposeVersion int    `json:"compose_version"`
+		EnvVersion     int    `json:"env_version"`
+		TagID          string `json:"tag_id"`
 	}
 	// Ignore decode errors — body is optional.
 	decodeJSON(r, &req) //nolint:errcheck
@@ -77,6 +78,20 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 	streamKey := "deploy:" + depID
 	composeVersion := req.ComposeVersion // 0 = latest
 	envVersion := req.EnvVersion         // 0 = latest
+
+	// Deploying a tag: use the tag's recorded compose/env versions and pin the
+	// exact images it captured (true image rollback).
+	var imagePins map[string]string
+	if req.TagID != "" {
+		tag, terr := h.db.DeployTags.FindByID(req.TagID)
+		if terr != nil || tag.ProjectID != projectID {
+			writeError(w, http.StatusNotFound, "tag not found")
+			return
+		}
+		composeVersion = tag.ComposeVersion
+		envVersion = tag.EnvVersion
+		imagePins = tag.ImagePins
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h.deployCancels.Store(streamKey, cancel)
@@ -89,7 +104,7 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 			msg, _ := json.Marshal(map[string]string{"log": line})
 			h.hub.Publish(streamKey, string(msg))
 		}
-		rec, err := h.deployer.DeployVersion(ctx, projectID, claims.UserID, composeVersion, envVersion, logFn)
+		rec, err := h.deployer.DeployVersion(ctx, projectID, claims.UserID, composeVersion, envVersion, imagePins, logFn)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			h.hub.Publish(streamKey, string(msg))

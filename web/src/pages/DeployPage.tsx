@@ -150,7 +150,7 @@ export default function DeployPage() {
   const [envHistory, setEnvHistory] = useState<EnvVarSet[]>([])
   const [settings, setSettings] = useState<DeploySettings | null>(null)
   const [settingsDraft, setSettingsDraft] = useState<Omit<DeploySettings, 'id' | 'project_id'>>({
-    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5, webhook_url: '', otel_enabled: false,
+    health_timeout_secs: 120, deploy_timeout_secs: 300, health_stable_secs: 5, webhook_url: '', otel_enabled: false, tag_retention: 0,
   })
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsSaved, setSettingsSaved] = useState(false)
@@ -181,7 +181,7 @@ export default function DeployPage() {
   const [revealSecrets, setRevealSecrets] = useState(false)
 
   // "What will deploy" confirmation modal — target compose/env versions.
-  const [confirmTarget, setConfirmTarget] = useState<{ compose: number; env: number; label: string } | null>(null)
+  const [confirmTarget, setConfirmTarget] = useState<{ compose: number; env: number; label: string; tagId?: string } | null>(null)
 
   // Image overrides (deploy a previously-loaded image per service).
   const [imageOverrides, setImageOverrides] = useState<Record<string, string>>({})
@@ -225,7 +225,7 @@ export default function DeployPage() {
       setSettingsDraft({
         health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs,
         health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '', otel_enabled: s.otel_enabled ?? false,
-        otel_language_overrides: s.otel_language_overrides,
+        otel_language_overrides: s.otel_language_overrides, tag_retention: s.tag_retention ?? 0,
       })
       setLangOverrides(s.otel_language_overrides ?? {})
       setImageOverrides(s.image_overrides ?? {})
@@ -271,16 +271,18 @@ export default function DeployPage() {
     return () => es.close()
   }, [streamKey, id])
 
-  const startDeploy = async (composeVer = 0, envVer = 0) => {
+  const startDeploy = async (composeVer = 0, envVer = 0, tagId = '') => {
     if (!id) return
     setDeploying(true)
     isAtBottomRef.current = true
-    const label = composeVer || envVer
-      ? `Rolling back to compose v${composeVer || 'latest'} · env v${envVer || 'latest'}…`
-      : 'Deploying latest…'
+    const label = tagId
+      ? 'Deploying tag (with pinned images)…'
+      : composeVer || envVer
+        ? `Deploying compose v${composeVer || 'latest'} · env v${envVer || 'latest'}…`
+        : 'Deploying latest…'
     setLog([label])
     try {
-      const { deployment_id } = await api.triggerDeploy(id, composeVer || undefined, envVer || undefined)
+      const { deployment_id } = await api.triggerDeploy(id, composeVer || undefined, envVer || undefined, tagId || undefined)
       setStreamKey(deployment_id)
     } catch (e: unknown) {
       setLog(['Error: ' + (e instanceof Error ? e.message : 'unknown')])
@@ -308,9 +310,9 @@ export default function DeployPage() {
   // requestDeploy opens the "what will deploy" confirmation; the modal calls
   // startDeploy on confirm. Every deploy/rollback action funnels through this so
   // the operator always sees exactly which compose+env version will go live.
-  const requestDeploy = (composeVer = 0, envVer = 0) => {
-    const label = composeVer || envVer ? 'Roll back / deploy specific version' : 'Deploy latest'
-    setConfirmTarget({ compose: composeVer, env: envVer, label })
+  const requestDeploy = (composeVer = 0, envVer = 0, tagId = '') => {
+    const label = tagId ? 'Deploy tag' : composeVer || envVer ? 'Roll back / deploy specific version' : 'Deploy latest'
+    setConfirmTarget({ compose: composeVer, env: envVer, label, tagId })
   }
 
   const saveSettings = async () => {
@@ -442,7 +444,19 @@ export default function DeployPage() {
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-base font-semibold text-slate-100">Release Tags &amp; Rollback</h2>
-            <p className="text-xs text-slate-500 mt-0.5">Tags are created manually (GitLab-style). Tag a version, then deploy it any time.</p>
+            <p className="text-xs text-slate-500 mt-0.5">Tags are created manually (GitLab-style). Each tag pins the exact images so deploying it is a true rollback.</p>
+            <div className="flex items-center gap-1.5 mt-1.5">
+              <label className="text-[11px] text-slate-500">Keep last</label>
+              <input
+                type="number" min={0} max={100}
+                value={settingsDraft.tag_retention ?? 0}
+                onChange={e => setSettingsDraft(d => ({ ...d, tag_retention: Number(e.target.value) }))}
+                onBlur={saveSettings}
+                title="Auto-delete older non-protected tags beyond this count (0 = keep all). Saved on blur."
+                className="w-16 bg-slate-900 border border-slate-700 rounded px-2 py-0.5 text-xs text-white focus:outline-none focus:border-blue-500"
+              />
+              <label className="text-[11px] text-slate-500">tags (0 = unlimited; protected tags always kept)</label>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             {lastSuccessful && can(PERMS.deploy) && (
@@ -530,6 +544,11 @@ export default function DeployPage() {
                       <span className="text-sm font-semibold text-slate-100">{t.name}</span>
                       {isSelected && <span className="px-1.5 py-0.5 rounded bg-blue-600/20 text-blue-300 text-[10px] font-medium">selected</span>}
                       {t.protected && <span className="px-1.5 py-0.5 rounded bg-emerald-600/20 text-emerald-300 text-[10px]">protected</span>}
+                      {t.image_pins && Object.keys(t.image_pins).length > 0 && (
+                        <span className="px-1.5 py-0.5 rounded bg-violet-600/20 text-violet-300 text-[10px]" title={Object.entries(t.image_pins).map(([s, i]) => `${s}: ${i.replace('sha256:', '').slice(0, 12)}`).join('\n')}>
+                          📌 {Object.keys(t.image_pins).length} image{Object.keys(t.image_pins).length !== 1 ? 's' : ''} pinned
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 mt-0.5 text-[11px] text-slate-500 font-mono">
                       <span>compose v{t.compose_version || 'latest'}</span>
@@ -543,9 +562,9 @@ export default function DeployPage() {
                   {/* Actions */}
                   <div className="flex items-center gap-1.5 shrink-0">
                     <button
-                      onClick={e => { e.stopPropagation(); requestDeploy(t.compose_version, t.env_version) }}
+                      onClick={e => { e.stopPropagation(); requestDeploy(t.compose_version, t.env_version, t.id) }}
                       disabled={deploying}
-                      title={`Deploy this tag (compose v${t.compose_version || 'latest'} · env v${t.env_version || 'latest'})`}
+                      title={`Deploy this tag (compose v${t.compose_version || 'latest'} · env v${t.env_version || 'latest'}${t.image_pins && Object.keys(t.image_pins).length ? ` · ${Object.keys(t.image_pins).length} pinned image(s)` : ''})`}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20 text-xs font-medium transition-all disabled:opacity-40"
                     >
                       <Rocket className="w-3.5 h-3.5" />
@@ -1218,7 +1237,7 @@ export default function DeployPage() {
           footer={<>
             <button onClick={() => setConfirmTarget(null)} className="btn-secondary">Cancel</button>
             <button
-              onClick={() => { const t = confirmTarget; setConfirmTarget(null); if (t) startDeploy(t.compose, t.env) }}
+              onClick={() => { const t = confirmTarget; setConfirmTarget(null); if (t) startDeploy(t.compose, t.env, t.tagId) }}
               className="btn-primary"
             >
               <Rocket className="w-4 h-4" /> {isRollback ? 'Deploy this version' : 'Deploy latest'}

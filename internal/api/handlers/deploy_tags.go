@@ -1,11 +1,15 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"offdock/internal/deploy"
 	authmw "offdock/internal/middleware"
 	"offdock/internal/store"
 )
@@ -74,6 +78,16 @@ func (h *H) CreateDeployTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture the exact image each running service uses (sha256:…) so the tag can
+	// be re-deployed with those exact images (true image rollback). Best-effort —
+	// a tag is still useful (compose+env) even if images can't be read.
+	var pins map[string]string
+	if proj, err := h.db.Projects.FindByID(projectID); err == nil {
+		pctx, pcancel := context.WithTimeout(r.Context(), 15*time.Second)
+		pins, _ = h.docker.ProjectServiceImages(pctx, deploy.ComposeProjectName(proj.Name))
+		pcancel()
+	}
+
 	tag := store.DeployTag{
 		ID:             store.NewULID(),
 		ProjectID:      projectID,
@@ -82,6 +96,7 @@ func (h *H) CreateDeployTag(w http.ResponseWriter, r *http.Request) {
 		ComposeVersion: req.ComposeVersion,
 		EnvVersion:     req.EnvVersion,
 		Protected:      req.Protected,
+		ImagePins:      pins,
 		CreatedBy:      claims.Username,
 		CreatedAt:      timeNow(),
 	}
@@ -89,9 +104,32 @@ func (h *H) CreateDeployTag(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not save tag")
 		return
 	}
+
+	// Apply the per-project tag-retention policy (keep last N non-protected tags).
+	if sets, _ := h.db.DeploySettings.FindWhere(func(s store.DeploySettings) bool {
+		return s.ProjectID == projectID
+	}); len(sets) > 0 && sets[0].TagRetention > 0 {
+		h.trimTagsByRetention(projectID, sets[0].TagRetention)
+	}
+
 	h.logAudit(r, "create_deploy_tag", "project", projectID, req.Name,
-		"compose_v"+itoa(req.ComposeVersion)+" env_v"+itoa(req.EnvVersion))
+		"compose_v"+itoa(req.ComposeVersion)+" env_v"+itoa(req.EnvVersion)+" pins="+itoa(len(pins)))
 	writeJSON(w, http.StatusCreated, tag)
+}
+
+// trimTagsByRetention deletes the oldest non-protected tags beyond `keep` for a
+// project. Protected tags are never counted toward the limit or deleted.
+func (h *H) trimTagsByRetention(projectID string, keep int) {
+	tags, err := h.db.DeployTags.FindWhere(func(t store.DeployTag) bool {
+		return t.ProjectID == projectID && !t.Protected
+	})
+	if err != nil || len(tags) <= keep {
+		return
+	}
+	sort.Slice(tags, func(i, j int) bool { return tags[i].CreatedAt.After(tags[j].CreatedAt) })
+	for _, t := range tags[keep:] {
+		h.db.DeployTags.Delete(t.ID) //nolint:errcheck
+	}
 }
 
 // ToggleTagProtected flips the Protected flag on a tag so it is (or is not)

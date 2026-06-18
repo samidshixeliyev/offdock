@@ -106,6 +106,33 @@ func (ci ContainerInfo) ComposeProject() string {
 	return ""
 }
 
+// ProjectServiceImages returns the exact image ID (sha256:…) each compose
+// service of a project is currently running, keyed by service name. Used to pin
+// images into a deploy tag so the tag can be re-deployed with the exact images.
+func (c *Client) ProjectServiceImages(ctx context.Context, project string) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+
+	ids, err := run(ctx, "ps", "-aq", "--filter", "label=com.docker.compose.project="+project)
+	if err != nil {
+		return nil, err
+	}
+	pins := map[string]string{}
+	for _, id := range strings.Fields(strings.TrimSpace(ids)) {
+		// "<service> <imageID>" per container.
+		out, err := run(ctx, "inspect", "--format",
+			`{{index .Config.Labels "com.docker.compose.service"}} {{.Image}}`, id)
+		if err != nil {
+			continue
+		}
+		parts := strings.Fields(strings.TrimSpace(out))
+		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+			pins[parts[0]] = parts[1] // service → sha256:…
+		}
+	}
+	return pins, nil
+}
+
 // PS returns containers for the given compose project (empty = all).
 func (c *Client) PS(ctx context.Context, project string) ([]ContainerInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)

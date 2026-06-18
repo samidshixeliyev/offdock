@@ -635,6 +635,13 @@ if [[ "$UPDATE" == "true" ]]; then
   echo "║             OffDock Update                       ║"
   echo "╚══════════════════════════════════════════════════╝"
 
+  # IMPORTANT ordering: do every file operation FIRST, then restart the service
+  # LAST in a DETACHED process. When --update is run from OffDock's own web
+  # terminal, that terminal is a child of the offdock process — restarting offdock
+  # would kill the terminal and abort this script mid-way. By finishing all work
+  # before the restart and detaching the restart (systemd-run / setsid), the
+  # update always completes even if the parent terminal is torn down.
+
   # Atomic binary replacement: copy to temp, rename (avoids "Text file busy").
   # The running service keeps using the old executable until it restarts.
   echo "  Replacing binary..."
@@ -642,53 +649,21 @@ if [[ "$UPDATE" == "true" ]]; then
   chmod 755 "${INSTALL_BIN}.new"
   mv -f "${INSTALL_BIN}.new" "${INSTALL_BIN}"
 
-  # Update service file if changed.
-  if ! diff -q "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}" &>/dev/null; then
-    echo "  Updating service file..."
-    cp "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}"
-    chmod 644 "${SERVICE_FILE}"
-    systemctl daemon-reload 2>/dev/null || true
-  fi
-
-  # Graceful restart: systemd sends SIGTERM, waits for clean shutdown, then starts fresh.
-  # If the service doesn't exist yet (first binary drop), install the service file and enable it.
-  echo "  Restarting service (brief downtime expected — a few seconds)..."
+  # Update service file if changed (or install it if missing).
+  _need_reload=false
   if ! systemctl is-enabled --quiet "${BINARY_NAME}" 2>/dev/null; then
     echo "  Service not found — installing service file..."
-    if [[ -f "${SCRIPT_DIR}/offdock.service" ]]; then
-      cp "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}"
-      chmod 644 "${SERVICE_FILE}"
-    fi
-    systemctl daemon-reload 2>/dev/null || true
+    [[ -f "${SCRIPT_DIR}/offdock.service" ]] && { cp "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}"; chmod 644 "${SERVICE_FILE}"; }
     systemctl enable "${BINARY_NAME}" 2>/dev/null || true
+    _need_reload=true
+  elif ! diff -q "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}" &>/dev/null; then
+    echo "  Updating service file..."
+    cp "${SCRIPT_DIR}/offdock.service" "${SERVICE_FILE}"; chmod 644 "${SERVICE_FILE}"
+    _need_reload=true
   fi
-  systemctl restart "${BINARY_NAME}" 2>/dev/null || {
-    echo "ERROR: restart failed — check: journalctl -u offdock -n 30" >&2; exit 1
-  }
+  [[ "$_need_reload" == "true" ]] && systemctl daemon-reload 2>/dev/null || true
 
-  # Verify service came back up.
-  _up=false
-  for _i in $(seq 1 15); do
-    sleep 1
-    if systemctl is-active --quiet "${BINARY_NAME}" 2>/dev/null; then
-      _up=true; break
-    fi
-  done
-
-  if [[ "$_up" == "true" ]]; then
-    echo ""
-    echo "  OffDock updated and running."
-    echo "  Logs: journalctl -u offdock -f"
-  else
-    echo "ERROR: OffDock did not start after update." >&2
-    echo "       Check: journalctl -u offdock -n 50" >&2
-    exit 1
-  fi
-
-  # Install any bundled deb packages that are not yet present on the system.
-  # Categories match the bundle layout: debs/{docker,nginx,network}. The network
-  # set carries tcpdump (tracing), dnsutils, iproute2, iptables, etc.
-  # _install_debs_safe skips packages already at the same or newer version.
+  # Install any bundled deb packages not yet present (docker/nginx/network).
   echo ""
   echo "=== Installing bundled packages (if missing) ==="
   for _component in docker nginx network; do
@@ -696,7 +671,6 @@ if [[ "$UPDATE" == "true" ]]; then
       _install_debs_safe "${SCRIPT_DIR}/debs/${_component}" "${_component}"
     fi
   done
-  # Ensure docker and nginx services are running if they were just installed.
   command -v docker &>/dev/null && { systemctl enable docker 2>/dev/null || true; systemctl start docker 2>/dev/null || true; }
   command -v nginx  &>/dev/null && { systemctl enable nginx  2>/dev/null || true; systemctl start nginx  2>/dev/null || true; }
 
@@ -704,6 +678,27 @@ if [[ "$UPDATE" == "true" ]]; then
   echo ""
   echo "=== Refreshing OpenTelemetry agents ==="
   _deploy_otel_agents
+
+  # ── Detached restart (survives the calling terminal being killed) ──────────
+  echo ""
+  echo "  All files updated. Scheduling a detached service restart…"
+  _restart_cmd="sleep 2; systemctl daemon-reload 2>/dev/null; systemctl restart ${BINARY_NAME}"
+  if command -v systemd-run &>/dev/null; then
+    # New transient unit in its own cgroup — not killed when offdock's cgroup is torn down.
+    systemd-run --no-block --collect --unit="offdock-update-$$" sh -c "$_restart_cmd" 2>/dev/null \
+      && _scheduled=true || _scheduled=false
+  else
+    _scheduled=false
+  fi
+  if [[ "$_scheduled" != "true" ]]; then
+    # Fallback: detach with setsid so it outlives this script + parent terminal.
+    setsid sh -c "$_restart_cmd" >/dev/null 2>&1 < /dev/null &
+  fi
+
+  echo ""
+  echo "  OffDock will restart in ~2 seconds (detached — safe to run from the web terminal)."
+  echo "  If you ran this from OffDock's terminal, your session will drop for a few seconds; reconnect after."
+  echo "  Logs: journalctl -u offdock -f"
   exit 0
 fi
 
