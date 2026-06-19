@@ -316,6 +316,57 @@ func (h *H) NginxSystemStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// NginxSystemControl starts / restarts / reloads / stops the system nginx service.
+// POST /api/v1/nginx/system/control  {action: "start"|"restart"|"reload"|"stop"}
+// For reload/restart it first runs `nginx -t` so a bad config doesn't take nginx
+// down. Returns the resulting active status + any command output.
+func (h *H) NginxSystemControl(w http.ResponseWriter, r *http.Request) {
+	if !nginxpkg.SystemAvailable() {
+		writeError(w, http.StatusUnprocessableEntity, "nginx is not installed on this host")
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	switch action {
+	case "start", "restart", "reload", "stop":
+	default:
+		writeError(w, http.StatusBadRequest, "action must be start | restart | reload | stop")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	// Validate config before reload/restart so a broken vhost can't down nginx.
+	if action == "reload" || action == "restart" {
+		if out, err := exec.CommandContext(ctx, "nginx", "-t").CombinedOutput(); err != nil {
+			writeError(w, http.StatusUnprocessableEntity, "nginx config test failed — fix it before "+action+":\n"+strings.TrimSpace(string(out)))
+			return
+		}
+	}
+
+	out, err := exec.CommandContext(ctx, "systemctl", action, "nginx").CombinedOutput()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "systemctl "+action+" nginx failed: "+err.Error()+"\n"+strings.TrimSpace(string(out)))
+		return
+	}
+
+	// Report the resulting status.
+	statusOut, _ := exec.CommandContext(ctx, "systemctl", "is-active", "nginx").Output()
+	h.logAudit(r, "nginx_"+action, "system", "", "nginx", "")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":  strings.TrimSpace(string(statusOut)),
+		"action":  action,
+		"output":  strings.TrimSpace(string(out)),
+	})
+}
+
 // PreviewNginx returns the generated nginx config text without writing it to disk.
 func (h *H) PreviewNginx(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "id")

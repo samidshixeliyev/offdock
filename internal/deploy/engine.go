@@ -101,18 +101,20 @@ func (e *Engine) resolveSettings(projectID string) store.DeploySettings {
 
 // Deploy runs a deployment using the latest compose + env version.
 func (e *Engine) Deploy(ctx context.Context, projectID, triggeredBy string, logFn LogFunc) (*store.DeploymentRecord, error) {
-	return e.DeployVersion(ctx, projectID, triggeredBy, 0, 0, logFn)
+	return e.DeployVersion(ctx, projectID, triggeredBy, 0, 0, nil, logFn)
 }
 
 // DeployVersion deploys a specific compose+env version combination.
-// Pass 0 for either to use the latest. Used for rollbacks.
+// Pass 0 for either to use the latest. Used for rollbacks. imageOverrides, when
+// non-nil, pins service images for this deploy (e.g. a tag's recorded image
+// digests) on top of the project's saved image overrides.
 //
 // Strategy: direct in-place replacement.
 //  1. Write compose + env to disk.
 //  2. docker compose up -d --force-recreate --remove-orphans
 //  3. Poll health until stable or timeout (per-project settings).
 //  4. Reload nginx if a config is active.
-func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy string, composeVersion, envVersion int, logFn LogFunc) (*store.DeploymentRecord, error) {
+func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy string, composeVersion, envVersion int, imageOverrides map[string]string, logFn LogFunc) (*store.DeploymentRecord, error) {
 	// Serialise deploys per project so two concurrent triggers cannot race on
 	// `compose up` and the project directory.
 	lock := e.projectLock(projectID)
@@ -122,6 +124,18 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	defer lock.Unlock()
 
 	settings := e.resolveSettings(projectID)
+	// Merge per-deploy image overrides (e.g. a tag's pinned image digests) on top
+	// of the project's persistent ImageOverrides — the per-deploy ones win.
+	if len(imageOverrides) > 0 {
+		merged := map[string]string{}
+		for k, v := range settings.ImageOverrides {
+			merged[k] = v
+		}
+		for k, v := range imageOverrides {
+			merged[k] = v
+		}
+		settings.ImageOverrides = merged
+	}
 	deployTimeoutDur := time.Duration(settings.DeployTimeoutSecs) * time.Second
 
 	ctx, cancel := context.WithTimeout(ctx, deployTimeoutDur)

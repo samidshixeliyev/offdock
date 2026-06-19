@@ -314,13 +314,14 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 			infoMsg = fmt.Sprintf("Tracing %s on %s via netns — bridge + loopback (SQL, Redis, HTTP)", name, containerIP)
 		}
 		send(TraceSpan{Type: TraceInfo, Message: infoMsg})
+		// Capture ALL TCP in the container's netns (not just canonical ports) so
+		// apps/DBs on custom ports (e.g. HTTP on :3000, Postgres on :5433) are
+		// traced too. Protocol is detected from the payload, not the port.
+		// Exclude OffDock's own OTLP/SSE port to cut self-noise.
 		cmd = exec.CommandContext(traceCtx,
 			"nsenter", "-t", strconv.Itoa(pid), "-n", "--",
 			"tcpdump", "-i", "any", "-l", "-s", "0", "-A", "-nn",
-			"tcp", "and", "(", "port", "80", "or", "port", "8080", "or",
-			"port", "8443", "or", "port", "443", "or", "port", "5432", "or",
-			"port", "3306", "or", "port", "6379", "or", "port", "27017", "or",
-			"port", "1433", ")",
+			"tcp", "and", "not", "port", "7070",
 		)
 	} else {
 		// Bridge-mode: captures only traffic that crosses the container's bridge veth.
@@ -484,7 +485,11 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		case line, ok := <-lines:
 			if !ok {
-				// stdout closed — tcpdump exited. Wait briefly for stderr to drain.
+				// stdout closed — tcpdump exited. Flush the last in-flight packet
+				// (otherwise the final request/query captured is silently dropped),
+				// then wait briefly for stderr to drain.
+				flush(cur)
+				cur = nil
 				select {
 				case <-stderrDone:
 				case <-time.After(500 * time.Millisecond):
@@ -553,11 +558,17 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 		return &TraceSpan{Type: TraceHTTPResp, Status: status, Src: src, Dst: dst}
 	}
 
-	// ── PostgreSQL (port 5432) ─────────────────────────────────────────────────
-	// Only parse client→server direction (dstPort==5432). Server→client packets
-	// contain CommandComplete/DataRow responses — not SQL — and previously caused
-	// spurious "SELECT 2", "COMMIT" entries to appear in the waterfall.
-	if dstPort == 5432 {
+	// For DB protocols we now also try NON-standard ports (a DB on a custom port,
+	// e.g. Postgres on 5433): the per-protocol extractors all require a strong
+	// signature (SQL keywords, COM_QUERY byte, RESP/OP_MSG framing), so trying
+	// them on an unknown port rarely yields a false positive. `nonStd` is a port
+	// that is neither a known HTTP port nor another DB's canonical port.
+	nonStd := !isHTTPPort(dstPort) && !isHTTPPort(srcPort) &&
+		dstPort != 5432 && dstPort != 3306 && dstPort != 1433 && dstPort != 6379 && dstPort != 27017 &&
+		srcPort != 6379 && srcPort != 27017
+
+	// ── PostgreSQL (port 5432, or a custom port) — client→server only ──────────
+	if dstPort == 5432 || nonStd {
 		pgKeywords := []string{
 			"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER",
 			"BEGIN", "COMMIT", "ROLLBACK", "WITH", "CALL", "EXECUTE", "MERGE",
@@ -571,35 +582,59 @@ func analyze(payload, srcIP string, srcPort int, dstIP string, dstPort int) *Tra
 		}
 	}
 
-	// ── MySQL (port 3306) — client→server only ─────────────────────────────────
-	if dstPort == 3306 {
+	// ── MySQL (port 3306, or custom) — client→server only ──────────────────────
+	if dstPort == 3306 || nonStd {
 		if q := extractMySQL(payload); q != "" {
 			return &TraceSpan{Type: TraceSQL, DBType: "mysql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
 
-	// ── MSSQL / SQL Server (port 1433) — client→server only ────────────────────
-	if dstPort == 1433 {
+	// ── MSSQL / SQL Server (port 1433, or custom) — client→server only ─────────
+	if dstPort == 1433 || nonStd {
 		if q := extractMSSQL(payload); q != "" {
 			return &TraceSpan{Type: TraceSQL, DBType: "mssql", Query: cleanSQL(q), Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
 
-	// ── Redis (port 6379) ──────────────────────────────────────────────────────
-	if dstPort == 6379 || srcPort == 6379 {
+	// ── Redis (port 6379, or custom) ───────────────────────────────────────────
+	if dstPort == 6379 || srcPort == 6379 || nonStd {
 		if cmd := extractRedis(payload); cmd != "" {
 			return &TraceSpan{Type: TraceRedis, DBType: "redis", Query: cmd, Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
 
-	// ── MongoDB (port 27017) — detect OP_MSG queries ─────────────────────────
-	if dstPort == 27017 || srcPort == 27017 {
+	// ── MongoDB (port 27017, or custom) — detect OP_MSG queries ────────────────
+	if dstPort == 27017 || srcPort == 27017 || nonStd {
 		if q := extractMongoDB(payload); q != "" {
 			return &TraceSpan{Type: TraceSQL, DBType: "mongodb", Query: q, Src: src, Dst: dst, DstPort: dstPort}
 		}
 	}
 
 	return nil
+}
+
+// isHTTPPort reports whether a port is a common plaintext-HTTP port (handled by
+// the payload-based HTTP detector above, so DB extractors should skip it).
+func isHTTPPort(p int) bool {
+	switch p {
+	case 80, 443, 8080, 8443, 8000, 3000, 5000, 8888:
+		return true
+	}
+	return false
+}
+
+// asciiUpper uppercases only ASCII a–z, preserving the byte length so an index
+// found in the uppercased string aligns exactly with the original bytes. (Plain
+// strings.ToUpper can change byte length for non-ASCII input, which made
+// payload[idx-1] go out of range on binary tcpdump payloads — a panic risk.)
+func asciiUpper(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'a' && b[i] <= 'z' {
+			b[i] -= 32
+		}
+	}
+	return string(b)
 }
 
 // cleanSQL normalizes whitespace. Does NOT truncate — full queries are always shown.
@@ -650,7 +685,7 @@ func extractMySQL(payload string) string {
 		"BEGIN", "COMMIT", "ROLLBACK", "SHOW", "USE", "DESCRIBE", "EXPLAIN",
 		"SET", "CALL", "START TRANSACTION", "TRUNCATE",
 	}
-	upper := strings.ToUpper(payload)
+	upper := asciiUpper(payload)
 	for _, kw := range mysqlKeywords {
 		idx := strings.Index(upper, kw)
 		if idx < 0 {
@@ -693,7 +728,7 @@ func extractMSSQL(payload string) string {
 		"EXEC", "EXECUTE", "MERGE", "WITH", "BEGIN TRAN", "COMMIT TRAN",
 		"ROLLBACK", "TRUNCATE", "DECLARE", "SET", "IF ", "WHILE",
 	}
-	upper := strings.ToUpper(payload)
+	upper := asciiUpper(payload)
 
 	// TDS packets often contain UTF-16LE encoded SQL — detect by looking for
 	// interleaved null bytes: "S\x00E\x00L\x00E\x00C\x00T\x00"
@@ -711,7 +746,7 @@ func extractMSSQL(payload string) string {
 			}
 		}
 		decoded16 := decoded.String()
-		upper16 := strings.ToUpper(decoded16)
+		upper16 := asciiUpper(decoded16)
 		for _, kw := range mssqlKeywords {
 			idx := strings.Index(upper16, kw)
 			if idx < 0 {
@@ -792,7 +827,7 @@ func extractMongoDB(payload string) string {
 //  3. Extracts parameter values from the Bind section
 //  4. Substitutes $1,$2,... with the actual extracted values
 func extractPostgresExtended(payload string, keywords []string) string {
-	upper := strings.ToUpper(payload)
+	upper := asciiUpper(payload)
 	for _, kw := range keywords {
 		idx := strings.Index(upper, kw)
 		if idx < 0 {
@@ -940,7 +975,7 @@ func pgSubstituteParams(sql string, values []string) string {
 }
 
 func extractSQL(payload string, keywords []string) string {
-	upper := strings.ToUpper(payload)
+	upper := asciiUpper(payload)
 	for _, kw := range keywords {
 		idx := strings.Index(upper, kw)
 		if idx < 0 {

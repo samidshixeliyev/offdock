@@ -122,42 +122,67 @@ function DeleteProjectModal({ project, onDeleted, onClose }: {
 }
 
 // ─── Project card ─────────────────────────────────────────────────────────────
-function ProjectCard({ project, onDeploy, onDeleted }: {
-  project: Project; onDeploy: (id: string) => void; onDeleted: () => void
+function projectRelTime(iso?: string | null): string {
+  if (!iso) return ''
+  const ms = Date.now() - new Date(iso).getTime()
+  if (ms < 60000) return 'just now'
+  if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`
+  if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`
+  return `${Math.floor(ms / 86400000)}d ago`
+}
+
+function ProjectCard({ project, lastDeploy, onDeploy, onDeleted }: {
+  project: Project; lastDeploy?: RecentDeployment
+  onDeploy: (id: string) => void; onDeleted: () => void
 }) {
   const { user } = useAuth()
   const canManage = user?.role === 'superadmin' || user?.role === 'admin' ||
     user?.permissions?.includes('manage_projects')
   const [showDelete, setShowDelete] = useState(false)
 
+  const accent = ({
+    running: 'bg-emerald-500', degraded: 'bg-amber-500', error: 'bg-red-500', stopped: 'bg-slate-600',
+  } as Record<string, string>)[project.status] ?? 'bg-slate-600'
+
   return (
     <>
       {showDelete && (
-        <DeleteProjectModal
-          project={project}
-          onDeleted={onDeleted}
-          onClose={() => setShowDelete(false)}
-        />
+        <DeleteProjectModal project={project} onDeleted={onDeleted} onClose={() => setShowDelete(false)} />
       )}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 hover:border-slate-700 transition-all flex flex-col gap-3 group/card">
+      <div className="relative bg-slate-900 border border-slate-800 rounded-xl p-4 pl-5 hover:border-slate-700 hover:bg-slate-900/80 transition-all flex flex-col gap-3 group/card overflow-hidden">
+        {/* status accent bar */}
+        <span className={clsx('absolute left-0 top-0 bottom-0 w-1', accent)} />
         <div className="flex items-start justify-between gap-2">
           <Link to={`/projects/${project.id}`} className="min-w-0 group">
             <p className="font-semibold text-slate-100 group-hover:text-white text-sm truncate transition-colors">{project.name}</p>
-            {project.description && <p className="text-xs text-slate-500 truncate mt-0.5">{project.description}</p>}
+            {project.description
+              ? <p className="text-xs text-slate-500 truncate mt-0.5">{project.description}</p>
+              : <p className="text-xs text-slate-700 italic mt-0.5">no description</p>}
           </Link>
           <div className="flex items-center gap-1.5 shrink-0">
             <ProjectBadge status={project.status} />
             {canManage && (
-              <button
-                onClick={() => setShowDelete(true)}
-                title="Delete project"
-                className="opacity-0 group-hover/card:opacity-100 p-1 rounded hover:bg-red-500/10 text-slate-600 hover:text-red-400 transition-all"
-              >
+              <button onClick={() => setShowDelete(true)} title="Delete project"
+                className="opacity-0 group-hover/card:opacity-100 p-1 rounded hover:bg-red-500/10 text-slate-600 hover:text-red-400 transition-all">
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
         </div>
+
+        {/* last deploy summary */}
+        <div className="text-[11px] text-slate-500 flex items-center gap-1.5 min-h-[16px]">
+          {lastDeploy ? (
+            <>
+              <span className={clsx('w-1.5 h-1.5 rounded-full',
+                lastDeploy.status === 'success' ? 'bg-emerald-400' : lastDeploy.status === 'failed' ? 'bg-red-400' : 'bg-amber-400')} />
+              <span>Last deploy {lastDeploy.status === 'success' ? 'succeeded' : lastDeploy.status} · {projectRelTime(lastDeploy.started_at)}</span>
+            </>
+          ) : (
+            <span className="text-slate-600">Never deployed</span>
+          )}
+        </div>
+
         <div className="flex items-center gap-1.5 pt-2 border-t border-slate-800">
           <button onClick={() => onDeploy(project.id)}
             className="flex-1 inline-flex items-center justify-center gap-1.5 py-1.5 text-xs font-medium text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded-lg transition-colors">
@@ -353,6 +378,13 @@ export default function DashboardPage() {
   const safePage = Math.min(page, totalPages - 1)
   const pageProjects = filtered.slice(safePage * PROJECTS_PER_PAGE, safePage * PROJECTS_PER_PAGE + PROJECTS_PER_PAGE)
 
+  // Latest deployment per project (recent is newest-first from the API).
+  const lastDeployByProject = useMemo(() => {
+    const m: Record<string, RecentDeployment> = {}
+    for (const d of recent) { if (!m[d.project_id]) m[d.project_id] = d }
+    return m
+  }, [recent])
+
   const subtitle = [
     `${projects.length} project${projects.length !== 1 ? 's' : ''}`,
     running > 0 ? `${running} running` : null,
@@ -429,6 +461,7 @@ export default function DashboardPage() {
                     <ProjectCard
                       key={p.id}
                       project={p}
+                      lastDeploy={lastDeployByProject[p.id]}
                       onDeploy={setDeployingProject}
                       onDeleted={() => setProjects(prev => prev.filter(x => x.id !== p.id))}
                     />

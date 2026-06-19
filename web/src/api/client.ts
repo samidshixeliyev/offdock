@@ -117,6 +117,8 @@ export interface DeploySettings {
   // Per-service image override (service name → repo:tag) to deploy a specific
   // previously-loaded image version without editing the compose YAML.
   image_overrides?: Record<string, string>
+  // Keep only the most recent N non-protected release tags (0 = unlimited).
+  tag_retention?: number
   webhook_url?: string
   // OpenTelemetry — one toggle, everything auto-configured (native OTLP receiver)
   otel_enabled?: boolean
@@ -333,6 +335,24 @@ export interface ProxyHost {
 
 export type ProxyHostInput = Omit<ProxyHost, 'id' | 'enabled' | 'created_at' | 'updated_at'>
 
+export interface NginxCustomConfig {
+  id: string
+  name: string
+  kind: 'http' | 'stream'
+  content: string
+  enabled: boolean
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ManagedNginxConfig {
+  file: string
+  dir: string
+  kind: 'http' | 'stream'
+  content: string
+}
+
 export interface DockerNetworkContainer {
   Name: string
   IPv4: string
@@ -484,6 +504,8 @@ export interface DeployTag {
   created_by: string
   created_at: string
   protected?: boolean
+  // service name → image ID (sha256:…) captured at tag time for image rollback
+  image_pins?: Record<string, string>
 }
 
 export type DNSTicketStatus = 'pending' | 'sent' | 'approved' | 'rejected'
@@ -652,6 +674,16 @@ export const api = {
   // Nginx — system (native nginx on host)
   getNginxSystemStatus: () =>
     request<{ available: boolean; status: string }>('/api/v1/nginx/system/status'),
+  nginxSystemControl: (action: 'start' | 'restart' | 'reload' | 'stop') =>
+    request<{ status: string; action: string; output: string }>('/api/v1/nginx/system/control', {
+      method: 'POST', body: JSON.stringify({ action }),
+    }),
+  // Advanced: raw custom nginx configs (http server blocks + TCP/UDP stream)
+  listNginxCustom: () => request<NginxCustomConfig[]>('/api/v1/nginx/custom'),
+  listAllNginxConfigs: () => request<{ configs: ManagedNginxConfig[] }>('/api/v1/nginx/configs'),
+  saveNginxCustom: (cfg: { id?: string; name: string; kind: 'http' | 'stream'; content: string; enabled: boolean }) =>
+    request<NginxCustomConfig>('/api/v1/nginx/custom', { method: 'POST', body: JSON.stringify(cfg) }),
+  deleteNginxCustom: (id: string) => request<void>(`/api/v1/nginx/custom/${id}`, { method: 'DELETE' }),
   getSelfNginxConfig: (domain: string, port?: number) => {
     const params = new URLSearchParams({ domain })
     if (port) params.set('port', String(port))
@@ -755,10 +787,10 @@ export const api = {
   // Deploy — global recent list
   listAllDeployments: () => request<RecentDeployment[]>('/api/v1/deployments'),
   // Deploy — per project
-  triggerDeploy: (projectId: string, composeVersion?: number, envVersion?: number) =>
+  triggerDeploy: (projectId: string, composeVersion?: number, envVersion?: number, tagId?: string) =>
     request<{ deployment_id: string; stream: string }>(
       `/api/v1/projects/${projectId}/deploy`,
-      { method: 'POST', body: JSON.stringify({ compose_version: composeVersion ?? 0, env_version: envVersion ?? 0 }) }
+      { method: 'POST', body: JSON.stringify({ compose_version: composeVersion ?? 0, env_version: envVersion ?? 0, tag_id: tagId ?? '' }) }
     ),
   listDeployments: (projectId: string) =>
     request<DeploymentRecord[]>(`/api/v1/projects/${projectId}/deployments`),
@@ -999,7 +1031,8 @@ export const api = {
 
   // Self-update, rollback, and DB compaction
   getUpdateStatus: () => request<{ can_update: boolean; can_rollback: boolean; install_path: string; backup_path: string }>('/api/v1/system/update/status'),
-  systemUpdateUrl: () => '/api/v1/system/update',
+  systemUpdateUrl: (serverPath?: string) =>
+    serverPath ? `/api/v1/system/update?path=${encodeURIComponent(serverPath)}` : '/api/v1/system/update',
   systemRollbackUrl: () => '/api/v1/system/rollback',
 
   // Scheduled self-update — upload now, install automatically at a chosen time.

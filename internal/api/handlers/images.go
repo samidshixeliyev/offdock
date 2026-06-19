@@ -23,14 +23,38 @@ func resolveImageID(ref string, images []docker.ImageSummary, byTag map[string]s
 	if id, ok := byTag[ref]; ok {
 		return id
 	}
+	// `docker ps` often shows an image with no tag (e.g. "nginx") while `docker
+	// images` lists it as "nginx:latest". If the ref has no tag (no ':' after the
+	// last '/'), retry with ":latest" so the container isn't missed.
+	lastSlash := strings.LastIndex(ref, "/")
+	if !strings.Contains(ref[lastSlash+1:], ":") {
+		if id, ok := byTag[ref+":latest"]; ok {
+			return id
+		}
+	}
+	// Also try a registry-stripped form (registry.local/nginx → nginx[:tag]).
+	if lastSlash >= 0 {
+		short := ref[lastSlash+1:]
+		if id, ok := byTag[short]; ok {
+			return id
+		}
+		if !strings.Contains(short, ":") {
+			if id, ok := byTag[short+":latest"]; ok {
+				return id
+			}
+		}
+	}
 	bare := strings.TrimPrefix(ref, "sha256:")
 	for _, img := range images {
 		idBare := strings.TrimPrefix(img.ID, "sha256:")
 		if img.ID == ref || idBare == bare {
 			return img.ID
 		}
-		// Container started by short ID prefix (docker run a1b2c3d4e5f6).
-		if len(bare) >= 8 && (strings.HasPrefix(idBare, bare) || strings.HasPrefix(bare, idBare)) {
+		// Container started by a short ID prefix (docker run a1b2c3d4e5f6): the
+		// container ref is a prefix of the full image ID. Require ≥12 hex chars and
+		// only the one direction, so unrelated images sharing a short prefix don't
+		// mis-match.
+		if len(bare) >= 12 && strings.HasPrefix(idBare, bare) {
 			return img.ID
 		}
 	}
@@ -49,7 +73,13 @@ func imageUsageMap(containers []docker.ContainerInfo, images []docker.ImageSumma
 	usage := map[string][]string{}
 	for _, c := range containers {
 		if id := resolveImageID(c.Image, images, byTag); id != "" {
-			usage[id] = append(usage[id], c.Names)
+			name := c.Names
+			// Annotate non-running containers so the UI shows that a *stopped*
+			// container still pins the image (it is not safe to delete).
+			if st := strings.ToLower(c.State); st != "" && st != "running" {
+				name += " (" + st + ")"
+			}
+			usage[id] = append(usage[id], name)
 		}
 	}
 	return usage

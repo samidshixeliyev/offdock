@@ -80,28 +80,6 @@ func (h *H) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	send("info", "Receiving update archive…")
-
-	// Parse multipart form (32 MB in-memory; larger files spill to disk temp files).
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		send("error", "Failed to parse upload: "+err.Error())
-		return
-	}
-	file, header, err := r.FormFile("file")
-	if err != nil {
-		send("error", "No file in request: "+err.Error())
-		return
-	}
-	defer file.Close()
-
-	if !strings.HasSuffix(strings.ToLower(header.Filename), ".tar.gz") &&
-		!strings.HasSuffix(strings.ToLower(header.Filename), ".tgz") {
-		send("error", "File must be a .tar.gz archive")
-		return
-	}
-
-	send("info", fmt.Sprintf("Received %s (%.1f MB) — extracting…", header.Filename, float64(header.Size)/1e6))
-
 	// Extract to temp directory.
 	tmpDir, err := os.MkdirTemp("", "offdock-update-*")
 	if err != nil {
@@ -110,9 +88,56 @@ func (h *H) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := extractTarGz(file, tmpDir); err != nil {
-		send("error", "Extract failed: "+err.Error())
-		return
+	// Source the archive either from a server-side path (?path=… — preferred for
+	// large offline bundles already transferred via USB/scp; no browser upload)
+	// or from a multipart file upload.
+	srcLabel := ""
+	if srcPath := strings.TrimSpace(r.URL.Query().Get("path")); srcPath != "" {
+		srcLabel = srcPath
+		send("info", "Reading archive from server path: "+srcPath)
+		if !strings.HasSuffix(strings.ToLower(srcPath), ".tar.gz") && !strings.HasSuffix(strings.ToLower(srcPath), ".tgz") {
+			send("error", "path must point to a .tar.gz / .tgz archive")
+			return
+		}
+		f, err := os.Open(srcPath)
+		if err != nil {
+			send("error", "cannot open archive: "+err.Error())
+			return
+		}
+		defer f.Close()
+		if fi, err := f.Stat(); err == nil {
+			send("info", fmt.Sprintf("Archive %.1f MB — extracting…", float64(fi.Size())/1e6))
+		}
+		if err := extractTarGz(f, tmpDir); err != nil {
+			send("error", "Extract failed: "+err.Error())
+			return
+		}
+	} else {
+		send("info", "Receiving update archive…")
+		// Parse multipart form (32 MB in-memory; larger files spill to disk temp files).
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			send("error", "Failed to parse upload: "+err.Error())
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			send("error", "No file in request: "+err.Error())
+			return
+		}
+		defer file.Close()
+
+		if !strings.HasSuffix(strings.ToLower(header.Filename), ".tar.gz") &&
+			!strings.HasSuffix(strings.ToLower(header.Filename), ".tgz") {
+			send("error", "File must be a .tar.gz archive")
+			return
+		}
+
+		srcLabel = header.Filename
+		send("info", fmt.Sprintf("Received %s (%.1f MB) — extracting…", header.Filename, float64(header.Size)/1e6))
+		if err := extractTarGz(file, tmpDir); err != nil {
+			send("error", "Extract failed: "+err.Error())
+			return
+		}
 	}
 
 	// Find the offdock binary in the extracted tree.
@@ -194,8 +219,8 @@ func (h *H) SystemUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	send("info", "Binary replaced — scheduling restart…")
-	slog.Info("system_update", "install_path", installPath, "file", header.Filename, "user", claims.Username)
-	h.logAudit(r, "system_update", "system", "", header.Filename, claims.Username)
+	slog.Info("system_update", "install_path", installPath, "file", srcLabel, "user", claims.Username)
+	h.logAudit(r, "system_update", "system", "", srcLabel, claims.Username)
 
 	// Schedule the restart in a detached process that survives after systemd
 	// kills this offdock process. systemd-run creates a new transient unit in

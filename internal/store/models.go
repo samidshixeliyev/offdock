@@ -288,6 +288,11 @@ type DeploySettings struct {
 	// without editing the canonical compose YAML. Empty = use the compose image.
 	ImageOverrides map[string]string `json:"image_overrides,omitempty"`
 
+	// TagRetention keeps only the most recent N non-protected release tags for
+	// this project; older ones are auto-deleted when a new tag is created.
+	// 0 = unlimited (keep all). Protected tags are never trimmed.
+	TagRetention int `json:"tag_retention,omitempty"`
+
 	// OpenTelemetry auto-instrumentation — one toggle, everything auto-configured.
 	// When enabled, OffDock injects OTEL_* env vars and generates a compose override
 	// that mounts the language tracer and joins the offdock-otel Docker network so
@@ -337,6 +342,26 @@ type ProxyHost struct {
 	CreatedAt         time.Time       `json:"created_at" msgpack:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at" msgpack:"updated_at"`
 }
+
+// NginxCustomConfig is a raw, operator-authored nginx config block managed by
+// OffDock — for things the structured ProxyHost form can't express: TCP/UDP
+// stream proxying (open a raw port over the host), custom server blocks, maps,
+// rate limits, etc. Kind decides where it's written and how it's wrapped:
+//   - "http"   → /etc/nginx/sites-available/ (a full `server {}` block you write)
+//   - "stream" → /etc/nginx/streams-enabled/ (a `server {}` inside nginx's
+//                top-level stream{} context — for TCP/UDP load-balancing/proxy)
+type NginxCustomConfig struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`    // slug, used for the filename
+	Kind      string    `json:"kind"`    // "http" | "stream"
+	Content   string    `json:"content"` // raw nginx config text
+	Enabled   bool      `json:"enabled"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (c NginxCustomConfig) GetID() string { return c.ID }
 
 func (p ProxyHost) GetID() string { return p.ID }
 
@@ -527,9 +552,13 @@ type DeployTag struct {
 	EnvVersion     int       `json:"env_version" msgpack:"env_version"`
 	CreatedBy      string    `json:"created_by" msgpack:"created_by"`
 	CreatedAt      time.Time `json:"created_at" msgpack:"created_at"`
-	// Protected tags are pinned "known-good" releases that auto-tag trimming
+	// Protected tags are pinned "known-good" releases that retention trimming
 	// must never delete.
 	Protected bool `json:"protected" msgpack:"protected"`
+	// ImagePins records the exact image each service ran at tag time, keyed by
+	// compose service name → image ID (sha256:…). Deploying the tag re-pulls/uses
+	// these exact images (true image rollback), not whatever the tag points at now.
+	ImagePins map[string]string `json:"image_pins,omitempty" msgpack:"image_pins,omitempty"`
 }
 
 func (d DeployTag) GetID() string { return d.ID }
