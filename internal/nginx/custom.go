@@ -39,26 +39,52 @@ func EnsureStreamInclude() error {
 	if strings.Contains(conf, "streams-enabled") {
 		return nil // already wired
 	}
+	// nginx allows only ONE top-level stream{} block. If one already exists we must
+	// NOT append a second (nginx would refuse to start) — ask the operator to add
+	// the include line themselves.
 	if hasTopLevelStreamBlock(conf) {
 		return fmt.Errorf("nginx.conf already has a stream {} block — add this line inside it manually:\n    include %s/*.conf;", StreamsEnabledDir)
 	}
 	block := fmt.Sprintf("\n# OffDock TCP/UDP stream configs\nstream {\n    include %s/*.conf;\n}\n", StreamsEnabledDir)
-	if err := os.WriteFile(nginxMainConf, []byte(conf+block), 0o644); err != nil {
-		return fmt.Errorf("update nginx.conf: %w", err)
+
+	// Write atomically (temp + rename), then validate. If nginx -t fails, restore
+	// the original nginx.conf so a bad edit can never take nginx down host-wide.
+	tmp := nginxMainConf + ".offdock.tmp"
+	if err := os.WriteFile(tmp, []byte(conf+block), 0o644); err != nil {
+		return fmt.Errorf("write nginx.conf: %w", err)
+	}
+	if err := os.Rename(tmp, nginxMainConf); err != nil {
+		os.Remove(tmp) //nolint:errcheck
+		return fmt.Errorf("install nginx.conf: %w", err)
+	}
+	if _, testErr := TestSystem(); testErr != nil {
+		// Roll back to the original content.
+		os.WriteFile(nginxMainConf, data, 0o644) //nolint:errcheck
+		return fmt.Errorf("adding the stream{} block broke nginx -t; reverted nginx.conf: %w", testErr)
 	}
 	return nil
 }
 
-// hasTopLevelStreamBlock reports whether the conf already opens a stream {} block
-// at the top level (ignoring commented lines).
+// hasTopLevelStreamBlock reports whether the conf already opens a stream{} block
+// at the top level (ignoring commented lines). Matches `stream` followed by `{`
+// with any whitespace between, on the same line, including `stream{}`/`stream {`.
 func hasTopLevelStreamBlock(conf string) bool {
 	for _, line := range strings.Split(conf, "\n") {
 		t := strings.TrimSpace(line)
 		if strings.HasPrefix(t, "#") {
 			continue
 		}
-		if t == "stream {" || strings.HasPrefix(t, "stream{") || t == "stream" {
-			return true
+		// strip a trailing line comment
+		if i := strings.Index(t, "#"); i >= 0 {
+			t = strings.TrimSpace(t[:i])
+		}
+		if t == "stream" {
+			return true // block opens on the next line
+		}
+		if rest, ok := strings.CutPrefix(t, "stream"); ok {
+			if strings.HasPrefix(strings.TrimSpace(rest), "{") {
+				return true
+			}
 		}
 	}
 	return false

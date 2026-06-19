@@ -113,7 +113,9 @@ func (c *Client) ProjectServiceImages(ctx context.Context, project string) (map[
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 
-	ids, err := run(ctx, "ps", "-aq", "--filter", "label=com.docker.compose.project="+project)
+	// Running containers only — pin the image that is actually live, not a stale
+	// stopped/old container that may share the same compose-service label.
+	ids, err := run(ctx, "ps", "-q", "--filter", "label=com.docker.compose.project="+project)
 	if err != nil {
 		return nil, err
 	}

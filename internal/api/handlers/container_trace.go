@@ -623,6 +623,20 @@ func isHTTPPort(p int) bool {
 	return false
 }
 
+// asciiUpper uppercases only ASCII a–z, preserving the byte length so an index
+// found in the uppercased string aligns exactly with the original bytes. (Plain
+// strings.ToUpper can change byte length for non-ASCII input, which made
+// payload[idx-1] go out of range on binary tcpdump payloads — a panic risk.)
+func asciiUpper(s string) string {
+	b := []byte(s)
+	for i := range b {
+		if b[i] >= 'a' && b[i] <= 'z' {
+			b[i] -= 32
+		}
+	}
+	return string(b)
+}
+
 // cleanSQL normalizes whitespace. Does NOT truncate — full queries are always shown.
 // String literals and numbers are NOT masked here so the user can see exact queries
 // and procedure calls. The frontend handles display length.
@@ -671,7 +685,7 @@ func extractMySQL(payload string) string {
 		"BEGIN", "COMMIT", "ROLLBACK", "SHOW", "USE", "DESCRIBE", "EXPLAIN",
 		"SET", "CALL", "START TRANSACTION", "TRUNCATE",
 	}
-	upper := strings.ToUpper(payload)
+	upper := asciiUpper(payload)
 	for _, kw := range mysqlKeywords {
 		idx := strings.Index(upper, kw)
 		if idx < 0 {
@@ -714,7 +728,7 @@ func extractMSSQL(payload string) string {
 		"EXEC", "EXECUTE", "MERGE", "WITH", "BEGIN TRAN", "COMMIT TRAN",
 		"ROLLBACK", "TRUNCATE", "DECLARE", "SET", "IF ", "WHILE",
 	}
-	upper := strings.ToUpper(payload)
+	upper := asciiUpper(payload)
 
 	// TDS packets often contain UTF-16LE encoded SQL — detect by looking for
 	// interleaved null bytes: "S\x00E\x00L\x00E\x00C\x00T\x00"
@@ -732,7 +746,7 @@ func extractMSSQL(payload string) string {
 			}
 		}
 		decoded16 := decoded.String()
-		upper16 := strings.ToUpper(decoded16)
+		upper16 := asciiUpper(decoded16)
 		for _, kw := range mssqlKeywords {
 			idx := strings.Index(upper16, kw)
 			if idx < 0 {
@@ -813,7 +827,7 @@ func extractMongoDB(payload string) string {
 //  3. Extracts parameter values from the Bind section
 //  4. Substitutes $1,$2,... with the actual extracted values
 func extractPostgresExtended(payload string, keywords []string) string {
-	upper := strings.ToUpper(payload)
+	upper := asciiUpper(payload)
 	for _, kw := range keywords {
 		idx := strings.Index(upper, kw)
 		if idx < 0 {
@@ -961,7 +975,7 @@ func pgSubstituteParams(sql string, values []string) string {
 }
 
 func extractSQL(payload string, keywords []string) string {
-	upper := strings.ToUpper(payload)
+	upper := asciiUpper(payload)
 	for _, kw := range keywords {
 		idx := strings.Index(upper, kw)
 		if idx < 0 {

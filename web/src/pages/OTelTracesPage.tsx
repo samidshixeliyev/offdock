@@ -596,7 +596,7 @@ function TraceRow({ trace, idx }: TraceRowProps) {
   const [loadedTrace, setLoadedTrace] = useState<OTelTrace | null>(null)
   const [loading, setLoading] = useState(false)
 
-  if (trace.spans.length === 0) return null
+  if (!trace.spans || trace.spans.length === 0) return null
   const root = getRootSpan(trace)
   if (!root) return null
   const service = getServiceForSpan(root, trace)

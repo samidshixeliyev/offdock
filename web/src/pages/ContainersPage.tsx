@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { Fragment, useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { api, ContainerInfo, ContainerStats } from '../api/client'
 import XTerminal from '../components/XTerminal'
 import ConfirmModal from '../components/ConfirmModal'
@@ -8,7 +8,7 @@ import { parsePercent } from '../lib/format'
 import clsx from 'clsx'
 import {
   Container as ContainerIcon, RefreshCw, Search, ScrollText, TerminalSquare,
-  RotateCw, Square, Play, Trash2, Download, Maximize2, Minimize2, X,
+  RotateCw, Square, Play, Trash2, Download, Maximize2, Minimize2, X, ChevronRight, Layers,
 } from 'lucide-react'
 import { usePermissions, PERMS } from '../hooks/usePermissions'
 import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
@@ -190,6 +190,19 @@ function MetricsBar({ stat }: { stat: ContainerStats }) {
 type StateFilter = 'all' | 'running' | 'restarting' | 'exited'
 
 // ─── Main page ────────────────────────────────────────────────────────────────
+// stackOf returns the compose project ("stack") a container belongs to, parsed
+// from its docker labels, or a custom group set by the operator, else '(ungrouped)'.
+function stackOf(c: ContainerInfo, manual: Record<string, string>): string {
+  if (manual[c.Names]) return manual[c.Names]
+  const labels = c.Labels ?? ''
+  for (const kv of labels.split(',')) {
+    if (kv.startsWith('com.docker.compose.project=')) return kv.slice('com.docker.compose.project='.length)
+  }
+  return '(ungrouped)'
+}
+
+const MANUAL_GROUPS_KEY = 'offdock.container.groups'
+
 export default function ContainersPage() {
   const toast = useToast()
   const { can } = usePermissions()
@@ -198,6 +211,18 @@ export default function ContainersPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [stateFilter, setStateFilter] = useState<StateFilter>('all')
+  const [groupByStack, setGroupByStack] = useState(true)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // Manual group assignments (container name → group), persisted in the browser.
+  const [manualGroups, setManualGroups] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem(MANUAL_GROUPS_KEY) || '{}') } catch { return {} }
+  })
+  const setManualGroup = (name: string, group: string) => setManualGroups(prev => {
+    const next = { ...prev }
+    if (group.trim()) next[name] = group.trim(); else delete next[name]
+    localStorage.setItem(MANUAL_GROUPS_KEY, JSON.stringify(next))
+    return next
+  })
   const [actionBusy, setActionBusy] = useState('')
   const [logsFor, setLogsFor] = useState<string | null>(null)
   const [execFor, setExecFor] = useState<string | null>(null)
@@ -260,8 +285,65 @@ export default function ContainersPage() {
     exited: containers.filter(c => c.State?.toLowerCase() === 'exited').length,
   }), [containers])
 
+  // Group filtered containers into stacks (compose project or manual group).
+  const groups = useMemo(() => {
+    const m = new Map<string, ContainerInfo[]>()
+    for (const c of filtered) {
+      const g = stackOf(c, manualGroups)
+      if (!m.has(g)) m.set(g, [])
+      m.get(g)!.push(c)
+    }
+    // Sort: named stacks first (alpha), '(ungrouped)' last.
+    return Array.from(m.entries()).sort((a, b) => {
+      if (a[0] === '(ungrouped)') return 1
+      if (b[0] === '(ungrouped)') return -1
+      return a[0].localeCompare(b[0])
+    })
+  }, [filtered, manualGroups])
+
   const allSelected = selected.size === filtered.length && filtered.length > 0
   const toggleAll = () => setSelected(allSelected ? new Set() : new Set(filtered.map(c => c.Names)))
+  const toggleCollapse = (g: string) => setCollapsed(s => { const n = new Set(s); n.has(g) ? n.delete(g) : n.add(g); return n })
+  const stackAction = async (members: ContainerInfo[], action: 'start' | 'stop' | 'restart') => {
+    for (const c of members) { await doAction(c.Names, action) }
+  }
+
+  const renderRow = (c: ContainerInfo) => {
+    const isRunning = c.State?.toLowerCase() === 'running'
+    const isBusy = actionBusy.startsWith(c.Names + ':')
+    const isSelected = selected.has(c.Names)
+    const stat = stats[c.Names]
+    return (
+      <tr key={c.ID} className={clsx('border-b border-slate-800/50 last:border-0 transition-colors', isSelected ? 'bg-blue-500/5' : 'hover:bg-slate-800/30')}>
+        <td className="px-4 py-3"><input type="checkbox" className="rounded border-slate-600 bg-slate-800 cursor-pointer" checked={isSelected} onChange={() => toggleSelect(c.Names)} /></td>
+        <td className="px-4 py-3">
+          <span className="font-mono text-sm text-slate-200 font-medium">{c.Names}</span>
+          <button
+            title="Assign this container to a custom group (stored in your browser)"
+            onClick={() => { const g = window.prompt('Custom group for ' + c.Names + ' (blank to clear):', manualGroups[c.Names] ?? ''); if (g !== null) setManualGroup(c.Names, g) }}
+            className="ml-2 text-[10px] text-slate-600 hover:text-blue-400">⊕ group</button>
+        </td>
+        <td className="px-4 py-3 text-xs text-slate-500 font-mono max-w-[200px]"><span className="truncate block" title={c.Image}>{c.Image}</span></td>
+        <td className="px-4 py-3">
+          <ContainerBadge state={c.State} status={c.Status} />
+          <HealthBadge status={c.Status} />
+        </td>
+        <td className="px-4 py-3 text-xs text-slate-500 font-mono max-w-[160px] hidden lg:table-cell"><span className="truncate block" title={c.Ports}>{c.Ports || '—'}</span></td>
+        <td className="px-4 py-3 hidden xl:table-cell">{stat ? <MetricsBar stat={stat} /> : <span className="text-xs text-slate-600">{isRunning ? 'collecting…' : '—'}</span>}</td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-0.5 justify-end">
+            <IconButton icon={ScrollText} title="Logs" onClick={() => setLogsFor(c.Names)} />
+            {isRunning && can(PERMS.terminal) && <IconButton icon={TerminalSquare} title="Exec shell" onClick={() => setExecFor(c.Names)} />}
+            <IconButton icon={RotateCw} title={can(PERMS.containerOps) ? 'Restart' : 'Restart (no permission)'} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && doAction(c.Names, 'restart')} />
+            {isRunning
+              ? <IconButton icon={Square} title={can(PERMS.containerOps) ? 'Stop' : 'Stop (no permission)'} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && doAction(c.Names, 'stop')} />
+              : <IconButton icon={Play} tone="success" title={can(PERMS.containerOps) ? 'Start' : 'Start (no permission)'} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && doAction(c.Names, 'start')} />}
+            <IconButton icon={Trash2} tone="danger" title={can(PERMS.containerOps) ? 'Delete' : 'Delete (no permission)'} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && setDeleteFor(c.Names)} />
+          </div>
+        </td>
+      </tr>
+    )
+  }
 
   const filterTabs: { id: StateFilter; label: string }[] = [
     { id: 'all', label: 'All' }, { id: 'running', label: 'Running' },
@@ -303,6 +385,12 @@ export default function ContainersPage() {
                 </button>
               ))}
             </div>
+            <button onClick={() => setGroupByStack(g => !g)}
+              title="Group containers by their compose project (stack)"
+              className={clsx('inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border',
+                groupByStack ? 'bg-blue-500/10 border-blue-500/30 text-blue-300' : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200')}>
+              <Layers className="w-3.5 h-3.5" /> Stacks
+            </button>
           </div>
           {selected.size > 0 && can(PERMS.containerOps) && (
             <div className="flex items-center gap-2">
@@ -336,36 +424,35 @@ export default function ContainersPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map(c => {
-                  const isRunning = c.State?.toLowerCase() === 'running'
-                  const isBusy = actionBusy.startsWith(c.Names + ':')
-                  const isSelected = selected.has(c.Names)
-                  const stat = stats[c.Names]
-                  return (
-                    <tr key={c.ID} className={clsx('border-b border-slate-800/50 last:border-0 transition-colors', isSelected ? 'bg-blue-500/5' : 'hover:bg-slate-800/30')}>
-                      <td className="px-4 py-3"><input type="checkbox" className="rounded border-slate-600 bg-slate-800 cursor-pointer" checked={isSelected} onChange={() => toggleSelect(c.Names)} /></td>
-                      <td className="px-4 py-3"><span className="font-mono text-sm text-slate-200 font-medium">{c.Names}</span></td>
-                      <td className="px-4 py-3 text-xs text-slate-500 font-mono max-w-[200px]"><span className="truncate block" title={c.Image}>{c.Image}</span></td>
-                      <td className="px-4 py-3">
-                        <ContainerBadge state={c.State} status={c.Status} />
-                        <HealthBadge status={c.Status} />
-                      </td>
-                      <td className="px-4 py-3 text-xs text-slate-500 font-mono max-w-[160px] hidden lg:table-cell"><span className="truncate block" title={c.Ports}>{c.Ports || '—'}</span></td>
-                      <td className="px-4 py-3 hidden xl:table-cell">{stat ? <MetricsBar stat={stat} /> : <span className="text-xs text-slate-600">{isRunning ? 'collecting…' : '—'}</span>}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-0.5 justify-end">
-                          <IconButton icon={ScrollText} title="Logs" onClick={() => setLogsFor(c.Names)} />
-                          {isRunning && can(PERMS.terminal) && <IconButton icon={TerminalSquare} title="Exec shell" onClick={() => setExecFor(c.Names)} />}
-                          <IconButton icon={RotateCw} title={can(PERMS.containerOps) ? "Restart" : "Restart (no permission)"} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && doAction(c.Names, 'restart')} />
-                          {isRunning
-                            ? <IconButton icon={Square} title={can(PERMS.containerOps) ? "Stop" : "Stop (no permission)"} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && doAction(c.Names, 'stop')} />
-                            : <IconButton icon={Play} tone="success" title={can(PERMS.containerOps) ? "Start" : "Start (no permission)"} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && doAction(c.Names, 'start')} />}
-                          <IconButton icon={Trash2} tone="danger" title={can(PERMS.containerOps) ? "Delete" : "Delete (no permission)"} disabled={isBusy || !can(PERMS.containerOps)} onClick={() => can(PERMS.containerOps) && setDeleteFor(c.Names)} />
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
+                {groupByStack
+                  ? groups.map(([g, members]) => {
+                    const isCollapsed = collapsed.has(g)
+                    const runningInStack = members.filter(c => c.State?.toLowerCase() === 'running').length
+                    return (
+                      <Fragment key={g}>
+                        <tr className="bg-slate-900/70 border-b border-slate-800">
+                          <td colSpan={7} className="px-4 py-2">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <button onClick={() => toggleCollapse(g)} className="flex items-center gap-1.5 text-slate-200 hover:text-white">
+                                <ChevronRight className={clsx('w-3.5 h-3.5 transition-transform', !isCollapsed && 'rotate-90')} />
+                                <span className={clsx('text-xs font-semibold', g === '(ungrouped)' ? 'text-slate-500' : 'text-slate-200')}>{g}</span>
+                              </button>
+                              <span className="text-[10px] text-slate-500">{runningInStack}/{members.length} running</span>
+                              {can(PERMS.containerOps) && g !== '(ungrouped)' && (
+                                <div className="flex items-center gap-1 ml-2">
+                                  <button onClick={() => stackAction(members, 'start')} className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20">Start all</button>
+                                  <button onClick={() => stackAction(members, 'restart')} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 hover:bg-slate-700">Restart all</button>
+                                  <button onClick={() => stackAction(members, 'stop')} className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 hover:bg-amber-500/20">Stop all</button>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                        {!isCollapsed && members.map(c => renderRow(c))}
+                      </Fragment>
+                    )
+                  })
+                  : filtered.map(c => renderRow(c))}
               </tbody>
             </table>
           </div>

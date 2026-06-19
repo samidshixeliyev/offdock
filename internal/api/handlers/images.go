@@ -50,8 +50,11 @@ func resolveImageID(ref string, images []docker.ImageSummary, byTag map[string]s
 		if img.ID == ref || idBare == bare {
 			return img.ID
 		}
-		// Container started by short ID prefix (docker run a1b2c3d4e5f6).
-		if len(bare) >= 8 && (strings.HasPrefix(idBare, bare) || strings.HasPrefix(bare, idBare)) {
+		// Container started by a short ID prefix (docker run a1b2c3d4e5f6): the
+		// container ref is a prefix of the full image ID. Require ≥12 hex chars and
+		// only the one direction, so unrelated images sharing a short prefix don't
+		// mis-match.
+		if len(bare) >= 12 && strings.HasPrefix(idBare, bare) {
 			return img.ID
 		}
 	}
