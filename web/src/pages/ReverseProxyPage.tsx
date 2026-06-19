@@ -468,6 +468,245 @@ export default function ReverseProxyPage() {
           </div>
         )}
       </Panel>
+
+      <AdvancedConfigsPanel onReload={reloadNginx} />
     </Page>
+  )
+}
+
+// ─── Advanced: raw custom nginx configs (http + TCP/UDP stream) ────────────────
+const NGINX_TEMPLATES: Record<string, { label: string; kind: 'http' | 'stream'; body: string }> = {
+  tcp: {
+    label: 'TCP passthrough (e.g. Postgres 5432 → container)',
+    kind: 'stream',
+    body: `# Expose a raw TCP port on the host, forwarded to an upstream.
+server {
+    listen 5432;                 # public TCP port on the host
+    proxy_pass 127.0.0.1:15432;   # upstream host:port (e.g. a container's published port)
+    proxy_timeout 1h;
+    proxy_connect_timeout 5s;
+}`,
+  },
+  udp: {
+    label: 'UDP proxy (e.g. DNS/game/syslog on 53)',
+    kind: 'stream',
+    body: `# Forward a UDP port (add "udp" to listen).
+server {
+    listen 53 udp;
+    proxy_pass 127.0.0.1:1053;
+    proxy_timeout 30s;
+    proxy_responses 1;
+}`,
+  },
+  tcpssl: {
+    label: 'TCP with TLS termination',
+    kind: 'stream',
+    body: `server {
+    listen 6443 ssl;
+    ssl_certificate     /var/offdock/certs/offdock.pem;
+    ssl_certificate_key /var/offdock/certs/offdock.pem;
+    proxy_pass 127.0.0.1:6379;     # plaintext upstream behind TLS
+}`,
+  },
+  httpserver: {
+    label: 'Custom HTTP server block (full control)',
+    kind: 'http',
+    body: `server {
+    listen 80;
+    server_name example.local;
+
+    # static files
+    root /var/www/example;
+    index index.html;
+
+    location / { try_files $uri $uri/ =404; }
+
+    # api proxy
+    location /api/ {
+        proxy_pass http://127.0.0.1:9000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}`,
+  },
+  redirect: {
+    label: 'Domain redirect',
+    kind: 'http',
+    body: `server {
+    listen 80;
+    server_name old.example.com;
+    return 301 https://new.example.com$request_uri;
+}`,
+  },
+  ratelimit: {
+    label: 'Rate-limited HTTP proxy',
+    kind: 'http',
+    body: `# Note: limit_req_zone must live in the http{} context. Put it in a separate
+# "http" custom config (it is included before server blocks).
+limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+server {
+    listen 80;
+    server_name api.example.local;
+    location / {
+        limit_req zone=api burst=20 nodelay;
+        proxy_pass http://127.0.0.1:8080;
+    }
+}`,
+  },
+}
+
+function AdvancedConfigsPanel({ onReload }: { onReload: () => void }) {
+  const toast = useToast()
+  const [configs, setConfigs] = useState<import('../api/client').NginxCustomConfig[]>([])
+  const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState<import('../api/client').NginxCustomConfig | null>(null)
+  const [showEditor, setShowEditor] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+  const [allConfigs, setAllConfigs] = useState<import('../api/client').ManagedNginxConfig[]>([])
+
+  const load = () => api.listNginxCustom().then(c => setConfigs(c ?? [])).catch(() => {})
+  useEffect(() => { if (open) load() }, [open])
+
+  const del = async (id: string) => {
+    try { await api.deleteNginxCustom(id); toast.success('Config removed'); load(); onReload() }
+    catch (e) { toast.error(e instanceof Error ? e.message : 'Delete failed') }
+  }
+  const viewAll = async () => {
+    try { const r = await api.listAllNginxConfigs(); setAllConfigs(r.configs ?? []); setShowAll(true) }
+    catch (e) { toast.error(e instanceof Error ? e.message : 'Could not load configs') }
+  }
+
+  return (
+    <Panel className="mt-5">
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-800/30 transition-colors rounded-t-xl">
+        <div className="flex items-center gap-2">
+          <Server className="w-4 h-4 text-violet-400" />
+          <span className="text-sm font-medium text-slate-200">Advanced — custom nginx configs (HTTP &amp; TCP/UDP streams)</span>
+        </div>
+        <ChevronDown className={clsx('w-4 h-4 text-slate-500 transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="px-4 pb-4 border-t border-slate-800 pt-4 space-y-3">
+          <p className="text-xs text-slate-500">
+            Write raw nginx config OffDock can't express in the form above — full <code className="font-mono">server</code> blocks,
+            redirects, rate limits, and <strong>TCP/UDP stream proxying</strong> (open a raw port over the host, e.g. expose a
+            database or game server). Each config is validated with <code className="font-mono">nginx -t</code> before it's applied —
+            a broken config is rolled back automatically.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => { setEditing(null); setShowEditor(true) }} className="btn-primary text-xs"><Plus className="w-3.5 h-3.5" /> New custom config</button>
+            <button onClick={viewAll} className="btn-secondary text-xs">View all nginx configs</button>
+          </div>
+
+          {configs.length === 0 ? (
+            <p className="text-xs text-slate-600 italic">No custom configs yet.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {configs.map(c => (
+                <div key={c.id} className="flex items-center gap-3 px-3 py-2 rounded-lg bg-slate-900/60 border border-slate-800">
+                  <span className={clsx('text-[10px] px-1.5 py-0.5 rounded font-mono', c.kind === 'stream' ? 'bg-violet-500/15 text-violet-300' : 'bg-blue-500/15 text-blue-300')}>{c.kind}</span>
+                  <span className="font-mono text-xs text-slate-200 flex-1 min-w-0 truncate">{c.name}</span>
+                  {!c.enabled && <span className="text-[10px] text-slate-500">disabled</span>}
+                  <button onClick={() => { setEditing(c); setShowEditor(true) }} className="text-slate-500 hover:text-slate-200" title="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => del(c.id)} className="text-slate-500 hover:text-red-400" title="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {showEditor && <CustomConfigEditor config={editing} onSaved={() => { setShowEditor(false); load(); onReload() }} onClose={() => setShowEditor(false)} />}
+      {showAll && (
+        <Modal open onClose={() => setShowAll(false)} size="lg" icon={Server} title="All OffDock-managed nginx configs"
+          subtitle="Every vhost and stream config OffDock writes on this host">
+          <div className="space-y-3 max-h-[60vh] overflow-y-auto">
+            {allConfigs.length === 0 ? <p className="text-xs text-slate-500">No managed configs found.</p> : allConfigs.map(c => (
+              <details key={c.dir + c.file} className="rounded-lg border border-slate-800 bg-slate-950">
+                <summary className="cursor-pointer px-3 py-2 text-xs text-slate-300 flex items-center gap-2">
+                  <span className={clsx('text-[10px] px-1.5 py-0.5 rounded font-mono', c.kind === 'stream' ? 'bg-violet-500/15 text-violet-300' : 'bg-blue-500/15 text-blue-300')}>{c.kind}</span>
+                  <span className="font-mono">{c.file}</span>
+                  <span className="text-slate-600 ml-auto">{c.dir}</span>
+                </summary>
+                <pre className="px-3 pb-3 text-[11px] text-slate-400 overflow-x-auto whitespace-pre">{c.content}</pre>
+              </details>
+            ))}
+          </div>
+        </Modal>
+      )}
+    </Panel>
+  )
+}
+
+function CustomConfigEditor({ config, onSaved, onClose }: {
+  config: import('../api/client').NginxCustomConfig | null
+  onSaved: () => void; onClose: () => void
+}) {
+  const toast = useToast()
+  const [name, setName] = useState(config?.name ?? '')
+  const [kind, setKind] = useState<'http' | 'stream'>(config?.kind ?? 'http')
+  const [content, setContent] = useState(config?.content ?? '')
+  const [enabled, setEnabled] = useState(config?.enabled ?? true)
+  const [busy, setBusy] = useState(false)
+
+  const applyTemplate = (key: string) => {
+    const t = NGINX_TEMPLATES[key]
+    if (!t) return
+    setKind(t.kind); setContent(t.body)
+  }
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      await api.saveNginxCustom({ id: config?.id, name: name.trim(), kind, content, enabled })
+      toast.success('Config applied (nginx validated & reloaded)')
+      onSaved()
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Apply failed'); setBusy(false) }
+  }
+
+  return (
+    <Modal open onClose={busy ? () => {} : onClose} size="lg" icon={Server}
+      title={config ? 'Edit custom nginx config' : 'New custom nginx config'}
+      subtitle="Validated with nginx -t before applying — a bad config is rolled back"
+      footer={<>
+        <button onClick={onClose} disabled={busy} className="btn-secondary">Cancel</button>
+        <button onClick={save} disabled={busy || !name.trim() || !content.trim()} className="btn-primary">{busy ? 'Applying…' : 'Apply config'}</button>
+      </>}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="sm:col-span-1">
+            <label className="block text-xs text-slate-500 mb-1">Name</label>
+            <input className="input font-mono" placeholder="my-tcp-proxy" value={name} onChange={e => setName(e.target.value)} disabled={!!config} />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Type</label>
+            <select className="select" value={kind} onChange={e => setKind(e.target.value as 'http' | 'stream')}>
+              <option value="http">http — server block (web)</option>
+              <option value="stream">stream — TCP / UDP port</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Start from template</label>
+            <select className="select" defaultValue="" onChange={e => applyTemplate(e.target.value)}>
+              <option value="">— pick a template —</option>
+              {Object.entries(NGINX_TEMPLATES).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs text-slate-500 mb-1">nginx config {kind === 'stream' ? '(written into the stream {} context)' : '(a full server {} block)'}</label>
+          <textarea className="input font-mono text-xs h-72 leading-relaxed" spellCheck={false} value={content} onChange={e => setContent(e.target.value)}
+            placeholder={kind === 'stream' ? 'server {\n    listen 5432;\n    proxy_pass 127.0.0.1:15432;\n}' : 'server {\n    listen 80;\n    server_name example.local;\n    location / { proxy_pass http://127.0.0.1:9000; }\n}'} />
+        </div>
+        <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+          <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} /> Enabled (write &amp; load this config)
+        </label>
+        {kind === 'stream' && (
+          <p className="text-[11px] text-amber-400/80">
+            Stream configs open a raw port on the host — make sure that port is allowed in your firewall (ufw) and not already in use.
+          </p>
+        )}
+      </div>
+    </Modal>
   )
 }

@@ -335,6 +335,24 @@ export interface ProxyHost {
 
 export type ProxyHostInput = Omit<ProxyHost, 'id' | 'enabled' | 'created_at' | 'updated_at'>
 
+export interface NginxCustomConfig {
+  id: string
+  name: string
+  kind: 'http' | 'stream'
+  content: string
+  enabled: boolean
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ManagedNginxConfig {
+  file: string
+  dir: string
+  kind: 'http' | 'stream'
+  content: string
+}
+
 export interface DockerNetworkContainer {
   Name: string
   IPv4: string
@@ -660,6 +678,12 @@ export const api = {
     request<{ status: string; action: string; output: string }>('/api/v1/nginx/system/control', {
       method: 'POST', body: JSON.stringify({ action }),
     }),
+  // Advanced: raw custom nginx configs (http server blocks + TCP/UDP stream)
+  listNginxCustom: () => request<NginxCustomConfig[]>('/api/v1/nginx/custom'),
+  listAllNginxConfigs: () => request<{ configs: ManagedNginxConfig[] }>('/api/v1/nginx/configs'),
+  saveNginxCustom: (cfg: { id?: string; name: string; kind: 'http' | 'stream'; content: string; enabled: boolean }) =>
+    request<NginxCustomConfig>('/api/v1/nginx/custom', { method: 'POST', body: JSON.stringify(cfg) }),
+  deleteNginxCustom: (id: string) => request<void>(`/api/v1/nginx/custom/${id}`, { method: 'DELETE' }),
   getSelfNginxConfig: (domain: string, port?: number) => {
     const params = new URLSearchParams({ domain })
     if (port) params.set('port', String(port))

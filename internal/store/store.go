@@ -32,6 +32,7 @@ type DB struct {
 	TermPolicy     *Collection[TerminalPolicy]
 	Backups        *Collection[BackupRecord]
 	BackupSchedule *Collection[BackupSchedule]
+	NginxCustom    *Collection[NginxCustomConfig]
 }
 
 // Open initialises all collections, creating data files if they do not exist.
@@ -107,6 +108,9 @@ func Open(dataDir string) (*DB, error) {
 	if db.BackupSchedule, err = NewCollection[BackupSchedule](open("backup_schedule")); err != nil {
 		return nil, err
 	}
+	if db.NginxCustom, err = NewCollection[NginxCustomConfig](open("nginx_custom")); err != nil {
+		return nil, err
+	}
 
 	return db, nil
 }
@@ -147,6 +151,7 @@ func (db *DB) CompactAll() ([]CompactResult, int64) {
 		{"term_policy", db.TermPolicy.Compact},
 		{"backups", db.Backups.Compact},
 		{"backup_schedule", db.BackupSchedule.Compact},
+		{"nginx_custom", db.NginxCustom.Compact},
 	}
 	results := make([]CompactResult, 0, len(cs))
 	var total int64
@@ -171,7 +176,7 @@ func (db *DB) Compact() error {
 		db.EnvVars, db.Nginx, db.Deployments, db.ProxyHosts, db.DeploySettings,
 		db.AuditEvents, db.CustomRoles, db.Sessions,
 		db.OTPChallenges, db.DNSTickets, db.DeployTags, db.TraceSessions, db.OTelSpans,
-		db.TermPolicy, db.Backups, db.BackupSchedule,
+		db.TermPolicy, db.Backups, db.BackupSchedule, db.NginxCustom,
 	}
 	for _, c := range collections {
 		if _, err := c.Compact(); err != nil {
@@ -368,7 +373,7 @@ func (db *DB) Close() error {
 		db.EnvVars, db.Nginx, db.Deployments, db.ProxyHosts, db.DeploySettings,
 		db.AuditEvents, db.CustomRoles, db.Sessions,
 		db.OTPChallenges, db.DNSTickets, db.DeployTags, db.TraceSessions, db.OTelSpans,
-		db.TermPolicy, db.Backups, db.BackupSchedule,
+		db.TermPolicy, db.Backups, db.BackupSchedule, db.NginxCustom,
 	}
 	for _, c := range closers {
 		if err := c.Close(); err != nil {

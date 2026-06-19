@@ -343,6 +343,26 @@ type ProxyHost struct {
 	UpdatedAt         time.Time       `json:"updated_at" msgpack:"updated_at"`
 }
 
+// NginxCustomConfig is a raw, operator-authored nginx config block managed by
+// OffDock — for things the structured ProxyHost form can't express: TCP/UDP
+// stream proxying (open a raw port over the host), custom server blocks, maps,
+// rate limits, etc. Kind decides where it's written and how it's wrapped:
+//   - "http"   → /etc/nginx/sites-available/ (a full `server {}` block you write)
+//   - "stream" → /etc/nginx/streams-enabled/ (a `server {}` inside nginx's
+//                top-level stream{} context — for TCP/UDP load-balancing/proxy)
+type NginxCustomConfig struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`    // slug, used for the filename
+	Kind      string    `json:"kind"`    // "http" | "stream"
+	Content   string    `json:"content"` // raw nginx config text
+	Enabled   bool      `json:"enabled"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (c NginxCustomConfig) GetID() string { return c.ID }
+
 func (p ProxyHost) GetID() string { return p.ID }
 
 // --- AuditEvent -------------------------------------------------------------
