@@ -236,6 +236,15 @@ type otlpValue struct {
 	IntValue    *json.RawMessage `json:"intValue"` // can be number or string
 	DoubleValue *float64         `json:"doubleValue"`
 	BoolValue   *bool            `json:"boolValue"`
+	ArrayValue  *otlpArray       `json:"arrayValue"`
+	KvlistValue *otlpKvlist      `json:"kvlistValue"`
+	BytesValue  *string          `json:"bytesValue"` // base64 in OTLP/JSON
+}
+type otlpArray struct {
+	Values []otlpValue `json:"values"`
+}
+type otlpKvlist struct {
+	Values []otlpKV `json:"values"`
 }
 type otlpStatus struct {
 	Code    int    `json:"code"`
@@ -258,6 +267,23 @@ func kvToString(v otlpValue) string {
 			return "true"
 		}
 		return "false"
+	}
+	if v.ArrayValue != nil {
+		parts := make([]string, 0, len(v.ArrayValue.Values))
+		for _, e := range v.ArrayValue.Values {
+			parts = append(parts, kvToString(e))
+		}
+		return strings.Join(parts, ", ")
+	}
+	if v.KvlistValue != nil {
+		parts := make([]string, 0, len(v.KvlistValue.Values))
+		for _, kv := range v.KvlistValue.Values {
+			parts = append(parts, kv.Key+"="+kvToString(kv.Value))
+		}
+		return strings.Join(parts, ", ")
+	}
+	if v.BytesValue != nil {
+		return *v.BytesValue
 	}
 	return ""
 }
@@ -537,6 +563,9 @@ func protoAttrStr(attrs []*commonv1.KeyValue, key, def string) string {
 }
 
 func protoAnyValueStr(v *commonv1.AnyValue) string {
+	if v == nil {
+		return ""
+	}
 	switch x := v.Value.(type) {
 	case *commonv1.AnyValue_StringValue:
 		return x.StringValue
@@ -549,6 +578,26 @@ func protoAnyValueStr(v *commonv1.AnyValue) string {
 			return "true"
 		}
 		return "false"
+	case *commonv1.AnyValue_ArrayValue:
+		if x.ArrayValue == nil {
+			return ""
+		}
+		parts := make([]string, 0, len(x.ArrayValue.Values))
+		for _, e := range x.ArrayValue.Values {
+			parts = append(parts, protoAnyValueStr(e))
+		}
+		return strings.Join(parts, ", ")
+	case *commonv1.AnyValue_KvlistValue:
+		if x.KvlistValue == nil {
+			return ""
+		}
+		parts := make([]string, 0, len(x.KvlistValue.Values))
+		for _, kv := range x.KvlistValue.Values {
+			parts = append(parts, kv.Key+"="+protoAnyValueStr(kv.Value))
+		}
+		return strings.Join(parts, ", ")
+	case *commonv1.AnyValue_BytesValue:
+		return fmt.Sprintf("%x", x.BytesValue)
 	}
 	return ""
 }

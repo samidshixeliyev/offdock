@@ -133,15 +133,6 @@ function ServiceBadge({ name, small }: { name: string; small?: boolean }) {
   )
 }
 
-function spanKind(span: OTelSpan): 'server' | 'client' | 'internal' | 'producer' | 'consumer' {
-  const kind = span.tags.find(t => t.key === 'span.kind')?.value
-  if (kind === 'server') return 'server'
-  if (kind === 'client') return 'client'
-  if (kind === 'producer') return 'producer'
-  if (kind === 'consumer') return 'consumer'
-  return 'internal'
-}
-
 // ─── Span detail helpers ──────────────────────────────────────────────────────
 
 function tagVal(span: OTelSpan, key: string): string {
@@ -184,14 +175,16 @@ function SpanDetailPanel({ span, trace }: { span: OTelSpan; trace: OTelTrace }) 
   const grpcStatus  = tagVal(span, 'rpc.grpc.status_code')
   const errMsg      = tagVal(span, 'error.message') || tagVal(span, 'exception.message')
   const errType     = tagVal(span, 'error.type') || tagVal(span, 'exception.type')
+  const errStack    = tagVal(span, 'exception.stacktrace')
+  const errCode     = tagVal(span, 'otel.status_description') || tagVal(span, 'status.message')
   const msgSystem   = tagVal(span, 'messaging.system')
-  const msgDest     = tagVal(span, 'messaging.destination')
+  const msgDest     = tagVal(span, 'messaging.destination') || tagVal(span, 'messaging.destination.name')
 
   const hasHttp = httpMethod || httpUrl || httpStatus || httpHost
   const hasDb   = dbSystem || dbStatement || dbOp
   const hasGrpc = grpcMethod || grpcService
   const hasMq   = msgSystem || msgDest
-  const hasErr  = errMsg || errType
+  const hasErr  = errMsg || errType || errStack || errCode
 
   // Remaining "other" tags after extracting structured ones above
   const usedKeys = new Set([
@@ -200,9 +193,22 @@ function SpanDetailPanel({ span, trace }: { span: OTelSpan; trace: OTelTrace }) 
     'db.system','db.statement','db.name','db.sql.table','db.operation',
     'rpc.method','rpc.service','rpc.grpc.status_code',
     'error.message','exception.message','error.type','exception.type',
-    'messaging.system','messaging.destination','span.kind','otel.status_code',
+    'exception.stacktrace','otel.status_description','status.message',
+    'messaging.system','messaging.destination','messaging.destination.name',
+    'span.kind','otel.status_code',
   ])
   const otherTags = span.tags.filter(t => !usedKeys.has(t.key))
+  // Group remaining attributes by namespace (prefix before first dot) so every
+  // captured attribute is shown, organized — like Dynatrace's attribute groups.
+  const tagGroups = (() => {
+    const m = new Map<string, { key: string; value: string }[]>()
+    for (const t of otherTags) {
+      const ns = t.key.includes('.') ? t.key.slice(0, t.key.indexOf('.')) : 'other'
+      if (!m.has(ns)) m.set(ns, [])
+      m.get(ns)!.push({ key: t.key, value: String(t.value) })
+    }
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  })()
 
   const statusNum = httpStatus ? Number(httpStatus) : 0
   const statusColor = statusNum >= 500 ? 'text-red-400' : statusNum >= 400 ? 'text-amber-400' : statusNum >= 300 ? 'text-blue-400' : 'text-emerald-400'
@@ -335,20 +341,45 @@ function SpanDetailPanel({ span, trace }: { span: OTelSpan; trace: OTelTrace }) 
               <span className="text-red-200/90 break-all flex-1">{errMsg}</span>
             </div>
           )}
+          {errCode && !errMsg && (
+            <div className="flex items-start gap-2">
+              <span className="text-slate-600 w-16 shrink-0">status</span>
+              <span className="text-red-200/90 break-all flex-1">{errCode}</span>
+            </div>
+          )}
+          {errStack && (
+            <div className="pt-1">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-slate-600">stacktrace</span>
+                <CopyBtn2 text={errStack} />
+              </div>
+              <pre className="text-[10px] text-red-200/80 font-mono whitespace-pre-wrap break-all leading-relaxed rounded px-2.5 py-2 bg-red-950/30 max-h-[32rem] overflow-y-auto">
+                {errStack}
+              </pre>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Other tags */}
-      {otherTags.length > 0 && (
-        <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-3 py-2 space-y-0.5">
-          <div className="flex items-center gap-1.5 mb-1">
+      {/* All captured attributes — grouped by namespace (http.*, net.*, db.*, code.*…) */}
+      {tagGroups.length > 0 && (
+        <div className="rounded-lg border border-slate-700/50 bg-slate-900/40 px-3 py-2 space-y-2">
+          <div className="flex items-center gap-1.5">
             <Tag className="w-3 h-3 text-slate-500" />
-            <span className="text-[9px] uppercase tracking-wider text-slate-600 font-semibold">Attributes</span>
+            <span className="text-[9px] uppercase tracking-wider text-slate-600 font-semibold">
+              All attributes ({otherTags.length})
+            </span>
           </div>
-          {otherTags.map((t, i) => (
-            <div key={i} className="flex gap-2">
-              <span className="text-slate-600 shrink-0 min-w-[6rem] max-w-[10rem] truncate">{t.key}</span>
-              <span className="text-slate-300 break-all flex-1">{String(t.value)}</span>
+          {tagGroups.map(([ns, items]) => (
+            <div key={ns} className="space-y-0.5">
+              <div className="text-[9px] uppercase tracking-wider text-slate-500/80 font-semibold border-b border-slate-800/60 pb-0.5">{ns}</div>
+              {items.map((t, i) => (
+                <div key={i} className="flex gap-2">
+                  <span className="text-slate-600 shrink-0 min-w-[7rem] max-w-[12rem] truncate" title={t.key}>{t.key}</span>
+                  <span className="text-slate-300 break-all flex-1">{t.value}</span>
+                  <CopyBtn2 text={t.value} />
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -395,7 +426,7 @@ function SpanDetailPanel({ span, trace }: { span: OTelSpan; trace: OTelTrace }) 
                       <span className="text-slate-600">stacktrace</span>
                       <CopyBtn2 text={String(exStack)} />
                     </div>
-                    <pre className="text-[10px] text-rose-200/80 font-mono whitespace-pre-wrap break-all leading-relaxed rounded px-2 py-1.5 bg-rose-950/30 max-h-48 overflow-y-auto">
+                    <pre className="text-[10px] text-rose-200/80 font-mono whitespace-pre-wrap break-all leading-relaxed rounded px-2 py-1.5 bg-rose-950/30 max-h-[32rem] overflow-y-auto">
                       {String(exStack)}
                     </pre>
                   </div>
@@ -467,33 +498,57 @@ function SpanDetailPanel({ span, trace }: { span: OTelSpan; trace: OTelTrace }) 
   )
 }
 
+// ─── Waterfall time ruler ─────────────────────────────────────────────────────
+
+function WaterfallRuler({ traceDuration }: { traceDuration: number }) {
+  const ticks = [0, 0.25, 0.5, 0.75, 1]
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900/70 border-b border-slate-800/60 sticky top-0 z-10">
+      <span className="w-3 shrink-0" />
+      <div className="flex-1 text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Span · service</div>
+      <div className="shrink-0 w-[320px] relative h-3.5">
+        {ticks.map((f, i) => (
+          <div key={i} className="absolute top-0 bottom-0 border-l border-slate-700/30 flex items-start"
+            style={{ left: `${f * 100}%` }}>
+            <span className={clsx('text-[8px] text-slate-500 tabular-nums px-1', i === ticks.length - 1 && '-translate-x-full')}>
+              {fmtDuration(traceDuration * f)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="shrink-0 w-16 text-[9px] text-slate-600 uppercase tracking-wider font-semibold text-right">Offset</div>
+    </div>
+  )
+}
+
 // ─── Span detail row ─────────────────────────────────────────────────────────
 
 interface SpanRowProps {
   node: SpanNode
   traceStart: number
   traceDuration: number
-  colorIdx: number
   trace: OTelTrace
 }
 
-function SpanRow({ node, traceStart, traceDuration, colorIdx, trace }: SpanRowProps) {
+function SpanRow({ node, traceStart, traceDuration, trace }: SpanRowProps) {
   const [open, setOpen] = useState(false)
   const { span, depth, service } = node
   const isErr = hasError(span)
-  const kind = spanKind(span)
 
-  const barLeft = traceDuration > 0 ? ((span.startTime - traceStart) / traceDuration) * 100 : 0
+  const offsetUs = span.startTime - traceStart
+  const barLeft = traceDuration > 0 ? (offsetUs / traceDuration) * 100 : 0
   const barWidth = Math.max(
     traceDuration > 0 ? (span.duration / traceDuration) * 100 : 0,
-    0.5,
+    0.6,
   )
+  const clampedLeft = Math.min(barLeft, 99)
+  const clampedWidth = Math.max(Math.min(barWidth, 100 - clampedLeft), 0.6)
 
+  // Colour the bar by service so each service reads as a consistent lane;
+  // errors always go red regardless of service.
   const barGradient = isErr
-    ? 'from-red-500/70 to-red-400/50'
-    : kind === 'server' ? SPAN_BAR_COLORS[colorIdx % SPAN_BAR_COLORS.length]
-    : kind === 'client' ? 'from-slate-400/50 to-slate-300/30'
-    : 'from-slate-600/50 to-slate-500/30'
+    ? 'from-red-500/80 to-red-400/60'
+    : SPAN_BAR_COLORS[serviceColorIdx(service) % SPAN_BAR_COLORS.length]
 
   // Show a sub-label for common span types
   const httpMethod = tagVal(span, 'http.method') || tagVal(span, 'http.request.method')
@@ -555,27 +610,38 @@ function SpanRow({ node, traceStart, traceDuration, colorIdx, trace }: SpanRowPr
         </div>
 
         {/* Waterfall bar column */}
-        <div className="shrink-0 w-[200px] relative h-5 flex items-center">
+        <div className="shrink-0 w-[320px] relative h-5 flex items-center"
+          title={`${span.operationName}\nstart +${fmtDuration(offsetUs)} · ${fmtDuration(span.duration)}`}>
           <div className="absolute inset-0 flex items-center">
-            {/* Grid lines */}
-            {[25, 50, 75].map(pct => (
-              <div key={pct} className="absolute top-0 bottom-0 w-px bg-slate-700/30" style={{ left: `${pct}%` }} />
+            {/* Grid lines aligned to the ruler ticks */}
+            {[0, 25, 50, 75, 100].map(pct => (
+              <div key={pct} className="absolute top-0 bottom-0 w-px bg-slate-700/25" style={{ left: `${pct}%` }} />
             ))}
+            {/* Baseline */}
+            <div className="absolute left-0 right-0 h-px bg-slate-800/60" />
             {/* Bar */}
             <div
-              className={clsx(
-                'absolute h-[10px] rounded-full bg-gradient-to-r',
-                barGradient,
-                'shadow-sm',
-              )}
-              style={{ left: `${Math.min(barLeft, 97)}%`, width: `${Math.max(Math.min(barWidth, 100 - barLeft), 0.5)}%` }}
+              className={clsx('absolute h-[11px] rounded-[3px] bg-gradient-to-r shadow-sm', barGradient,
+                isErr && 'ring-1 ring-red-400/40')}
+              style={{ left: `${clampedLeft}%`, width: `${clampedWidth}%` }}
             />
+            {/* Inline duration label, placed just after the bar */}
+            <span
+              className="absolute text-[9px] font-mono text-slate-400 tabular-nums whitespace-nowrap pointer-events-none"
+              style={
+                clampedLeft + clampedWidth > 82
+                  ? { right: `${100 - clampedLeft}%`, paddingRight: 4 }
+                  : { left: `${clampedLeft + clampedWidth}%`, paddingLeft: 4 }
+              }
+            >
+              {fmtDuration(span.duration)}
+            </span>
           </div>
         </div>
 
-        {/* Duration */}
-        <span className="shrink-0 text-[10px] font-mono text-slate-500 w-16 text-right">
-          {fmtDuration(span.duration)}
+        {/* Offset from trace start */}
+        <span className="shrink-0 text-[10px] font-mono text-slate-600 w-16 text-right tabular-nums">
+          +{fmtDuration(offsetUs)}
         </span>
       </div>
 
@@ -604,7 +670,6 @@ function TraceRow({ trace, idx }: TraceRowProps) {
   if (!root) return null
   const service = getServiceForSpan(root, trace)
   const isErr = traceHasError(trace)
-  const colorIdx = serviceColorIdx(service)
   // Use earliest span start (not root.startTime) to avoid negative durations
   // when root span is not the earliest in the trace.
   const traceStartTime = Math.min(...trace.spans.map(s => s.startTime))
@@ -689,12 +754,8 @@ function TraceRow({ trace, idx }: TraceRowProps) {
       {/* Waterfall */}
       {open && (
         <div className="border-t border-slate-800/50 bg-slate-950/40">
-          {/* Column header */}
-          <div className="flex items-center gap-2 px-3 py-1 bg-slate-900/60 border-b border-slate-800/50">
-            <div className="flex-1 text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Operation · Service · HTTP/DB hints</div>
-            <div className="shrink-0 w-[200px] text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Timeline</div>
-            <div className="shrink-0 w-16 text-[9px] text-slate-600 uppercase tracking-wider font-semibold text-right">Duration</div>
-          </div>
+          {/* Time ruler */}
+          <WaterfallRuler traceDuration={traceDuration} />
           {loading ? (
             <div className="p-4 text-center text-slate-600 text-xs flex items-center justify-center gap-2">
               <RefreshCw className="w-3 h-3 animate-spin" /> Loading spans…
@@ -707,7 +768,6 @@ function TraceRow({ trace, idx }: TraceRowProps) {
                   node={node}
                   traceStart={traceStart}
                   traceDuration={traceDuration}
-                  colorIdx={colorIdx}
                   trace={displayTrace}
                 />
               ))}
