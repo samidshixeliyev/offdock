@@ -279,6 +279,7 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/otel/operations", h.OTelOperations)
 		r.Get("/api/v1/otel/traces", h.OTelTraces)
 		r.Get("/api/v1/otel/traces/{id}", h.OTelTrace)
+		r.Get("/api/v1/otel/database", h.OTelDatabase) // Dynatrace-style DB query aggregation
 		r.With(authmw.RequireRoleLive(deps.DB, store.RoleAdmin)).Delete("/api/v1/otel/traces", h.OTelDeleteTraces)
 
 		// OffDock application logs (recent lines + live SSE stream) — admin+ only; clear — superadmin only.

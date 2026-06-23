@@ -6,7 +6,7 @@ import {
   Globe, Database, Zap, Copy, Check, Tag, Server, Boxes, AlertOctagon,
 } from 'lucide-react'
 import {
-  api, OTelSpan, OTelTrace, OTelStatus,
+  api, OTelSpan, OTelTrace, OTelStatus, OTelDatabaseQuery, OTelDatabaseResult,
 } from '../api/client'
 import { Select } from '../components/Select'
 import { Pagination } from '../components/Pagination'
@@ -863,6 +863,243 @@ function IntegrationGuide() {
   )
 }
 
+// ─── Database (full-query) view — Dynatrace-style ─────────────────────────────
+
+function fmtMsNum(ms: number): string {
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + 's'
+  if (ms >= 1) return ms.toFixed(1) + 'ms'
+  return (ms * 1000).toFixed(0) + 'μs'
+}
+
+const OP_COLORS: Record<string, string> = {
+  SELECT: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/25',
+  INSERT: 'text-blue-300 bg-blue-500/10 border-blue-500/25',
+  UPDATE: 'text-amber-300 bg-amber-500/10 border-amber-500/25',
+  DELETE: 'text-red-300 bg-red-500/10 border-red-500/25',
+}
+function opColor(op: string): string {
+  return OP_COLORS[op] ?? 'text-slate-300 bg-slate-700/30 border-slate-600/30'
+}
+
+function DbQueryRow({ q }: { q: OTelDatabaseQuery }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <tr onClick={() => setOpen(o => !o)} className="border-b border-slate-800/40 hover:bg-slate-800/30 cursor-pointer">
+        <td className="px-3 py-2">
+          {open ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-600" />}
+        </td>
+        <td className="px-3 py-2"><span className={clsx('inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border', opColor(q.operation))}>{q.operation}</span></td>
+        <td className="px-3 py-2 font-mono text-[11px] text-slate-300 max-w-[460px] truncate" title={q.normalized}>{q.normalized}</td>
+        <td className="px-3 py-2 text-[11px] text-slate-500 whitespace-nowrap">{q.db_system || '—'}{q.table ? <span className="text-slate-600"> · {q.table}</span> : null}</td>
+        <td className="px-3 py-2 text-right tabular-nums text-xs text-slate-300">{q.count.toLocaleString()}</td>
+        <td className="px-3 py-2 text-right tabular-nums text-xs text-slate-400">{fmtMsNum(q.avg_ms)}</td>
+        <td className={clsx('px-3 py-2 text-right tabular-nums text-xs', q.max_ms > 1000 ? 'text-red-400' : q.max_ms > 200 ? 'text-amber-400' : 'text-slate-400')}>{fmtMsNum(q.max_ms)}</td>
+        <td className="px-3 py-2 text-right tabular-nums text-xs text-slate-200 font-semibold">{fmtMsNum(q.total_ms)}</td>
+        <td className="px-3 py-2 text-right tabular-nums text-xs">{q.errors > 0 ? <span className="text-red-400 font-semibold">{q.errors}</span> : <span className="text-slate-600">0</span>}</td>
+      </tr>
+      {open && (
+        <tr className="bg-slate-950/70">
+          <td colSpan={9} className="px-4 py-3">
+            <div className="space-y-3">
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[9px] uppercase tracking-wider text-slate-500 font-semibold flex items-center gap-1.5"><Database className="w-3 h-3" /> Full statement</span>
+                  <CopyBtn2 text={q.sample || q.normalized} />
+                </div>
+                <pre className="text-[11px] text-amber-200/90 font-mono whitespace-pre-wrap break-all leading-relaxed rounded-lg px-3 py-2.5 bg-amber-950/20 border border-amber-500/15 max-h-72 overflow-y-auto">
+                  {q.sample || q.normalized}
+                </pre>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                {[
+                  ['Executions', q.count.toLocaleString()],
+                  ['Total time', fmtMsNum(q.total_ms)],
+                  ['Avg', fmtMsNum(q.avg_ms)],
+                  ['Min', fmtMsNum(q.min_ms)],
+                  ['Max', fmtMsNum(q.max_ms)],
+                  ['Errors', String(q.errors)],
+                  ['Database', q.db_name || '—'],
+                  ['Table', q.table || '—'],
+                ].map(([k, v]) => (
+                  <div key={k} className="rounded-lg border border-slate-800 bg-slate-900/50 px-2.5 py-1.5">
+                    <div className="text-[9px] uppercase tracking-wider text-slate-600">{k}</div>
+                    <div className="text-slate-200 font-mono truncate" title={v}>{v}</div>
+                  </div>
+                ))}
+              </div>
+              {q.services.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[9px] uppercase tracking-wider text-slate-600 font-semibold mr-1">Services</span>
+                  {q.services.map(s => <ServiceBadge key={s} name={s} small />)}
+                </div>
+              )}
+              <div className="flex items-center gap-2 text-[10px] text-slate-600">
+                <Clock className="w-3 h-3" /> last seen {fmtAgo(q.last_seen_us)}
+                {q.example_trace_id && <span className="font-mono">· slowest trace {q.example_trace_id.slice(0, 16)}…</span>}
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
+function DatabaseView() {
+  const [rows, setRows] = useState<OTelDatabaseQuery[]>([])
+  const [systems, setSystems] = useState<string[]>([])
+  const [services, setServices] = useState<string[]>([])
+  const [totals, setTotals] = useState<OTelDatabaseResult['totals']>({ queries: 0, executions: 0, total_ms: 0, slowest_ms: 0 })
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
+
+  const [service, setService] = useState('')
+  const [dbSystem, setDbSystem] = useState('')
+  const [timeRange, setTimeRange] = useState('')
+  const [sortBy, setSortBy] = useState('total')
+  const [search, setSearch] = useState('')
+  const [minMs, setMinMs] = useState('')
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(25)
+  const loadRef = useRef(0)
+
+  useEffect(() => { api.otelServices().then(r => setServices(r.data ?? [])).catch(() => {}) }, [])
+  useEffect(() => { setPage(0) }, [service, dbSystem, timeRange, sortBy, search, minMs, pageSize])
+
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      const id = ++loadRef.current
+      setLoading(true)
+      try {
+        const res = await api.otelDatabase({
+          service: service || undefined,
+          db_system: dbSystem || undefined,
+          time_range: timeRange || undefined,
+          sort: sortBy,
+          search: search || undefined,
+          min_duration_ms: minMs ? Number(minMs) : undefined,
+          limit: pageSize,
+          offset: page * pageSize,
+        })
+        if (id === loadRef.current) {
+          setRows(res.data ?? [])
+          setTotal(res.total ?? 0)
+          setTotals(res.totals)
+          setSystems(res.systems ?? [])
+        }
+      } catch {
+        if (id === loadRef.current) { setRows([]); setTotal(0) }
+      } finally {
+        if (id === loadRef.current) setLoading(false)
+      }
+    }, 250)
+    return () => clearTimeout(t)
+  }, [service, dbSystem, timeRange, sortBy, search, minMs, page, pageSize])
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+      {/* Filters */}
+      <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-800 bg-slate-900/30">
+        <Select size="sm" icon={Server} className="w-40" value={service} onChange={setService}
+          placeholder="All services"
+          options={[{ value: '', label: 'All services' }, ...services.map(s => ({ value: s, label: s }))]} />
+        <Select size="sm" icon={Database} className="w-36" value={dbSystem} onChange={setDbSystem}
+          placeholder="All databases"
+          options={[{ value: '', label: 'All databases' }, ...systems.map(s => ({ value: s, label: s }))]} />
+        <Select size="sm" icon={Clock} className="w-32" value={timeRange} onChange={setTimeRange}
+          options={[
+            { value: '', label: 'All time' }, { value: '1h', label: 'Last 1h' },
+            { value: '6h', label: 'Last 6h' }, { value: '24h', label: 'Last 24h' }, { value: '7d', label: 'Last 7d' },
+          ]} />
+        <Select size="sm" className="w-40" value={sortBy} onChange={setSortBy}
+          options={[
+            { value: 'total', label: 'Sort: total time' },
+            { value: 'avg', label: 'Sort: avg time' },
+            { value: 'max', label: 'Sort: slowest' },
+            { value: 'count', label: 'Sort: executions' },
+            { value: 'last', label: 'Sort: most recent' },
+          ]} />
+        <div className="relative flex-1 min-w-[160px] max-w-sm">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500 pointer-events-none" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search statement text…"
+            className="w-full pl-8 pr-7 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-slate-500" />
+          {search && <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"><X className="w-3.5 h-3.5" /></button>}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <label className="text-[10px] text-slate-500 whitespace-nowrap">Min</label>
+          <div className="relative">
+            <input type="number" min="0" value={minMs} onChange={e => setMinMs(e.target.value)} placeholder="0"
+              className="w-20 pl-2 pr-7 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-slate-500" />
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-500">ms</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats strip */}
+      <div className="shrink-0 grid grid-cols-2 sm:grid-cols-4 divide-x divide-slate-800/60 border-b border-slate-800 bg-slate-950/40">
+        {[
+          { icon: Database, tone: 'text-blue-400', val: totals.queries.toLocaleString(), label: 'Distinct queries' },
+          { icon: Layers, tone: 'text-violet-400', val: totals.executions.toLocaleString(), label: 'Executions' },
+          { icon: Clock, tone: 'text-emerald-400', val: fmtMsNum(totals.total_ms), label: 'Total DB time' },
+          { icon: AlertOctagon, tone: 'text-amber-400', val: fmtMsNum(totals.slowest_ms), label: 'Slowest query' },
+        ].map(c => (
+          <div key={c.label} className="px-4 py-2 flex items-center gap-2.5">
+            <c.icon className={clsx('w-4 h-4 shrink-0', c.tone)} />
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-slate-200 tabular-nums leading-none">{c.val}</div>
+              <div className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">{c.label}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Table */}
+      <div className="flex-1 overflow-auto min-h-0">
+        {loading ? (
+          <div className="p-4 space-y-2">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="h-9 rounded-lg bg-slate-800/30 animate-pulse" style={{ opacity: 1 - i * 0.1 }} />)}</div>
+        ) : rows.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center px-6">
+            <div className="w-12 h-12 rounded-xl bg-slate-800/60 border border-slate-700 flex items-center justify-center mb-4">
+              <Database className="w-6 h-6 text-slate-600" />
+            </div>
+            <p className="text-sm font-medium text-slate-400 mb-1">No database queries captured</p>
+            <p className="text-xs text-slate-600 max-w-md">
+              Database statements appear when an app is deployed with OpenTelemetry enabled and its instrumentation
+              emits <span className="font-mono">db.statement</span> spans (Java, .NET, Node, Python auto-instrumentation).
+            </p>
+          </div>
+        ) : (
+          <table className="w-full min-w-[860px]">
+            <thead className="sticky top-0 bg-slate-900/80 backdrop-blur z-10">
+              <tr className="border-b border-slate-800 text-[9px] uppercase tracking-wider text-slate-600">
+                <th className="w-6" />
+                <th className="px-3 py-2 text-left font-semibold">Op</th>
+                <th className="px-3 py-2 text-left font-semibold">Statement</th>
+                <th className="px-3 py-2 text-left font-semibold">Database</th>
+                <th className="px-3 py-2 text-right font-semibold">Count</th>
+                <th className="px-3 py-2 text-right font-semibold">Avg</th>
+                <th className="px-3 py-2 text-right font-semibold">Max</th>
+                <th className="px-3 py-2 text-right font-semibold">Total</th>
+                <th className="px-3 py-2 text-right font-semibold">Err</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((q, i) => <DbQueryRow key={q.db_system + q.normalized + i} q={q} />)}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {!loading && total > 0 && (
+        <div className="shrink-0 border-t border-slate-800/50 bg-slate-950/40">
+          <Pagination total={total} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={setPageSize} itemLabel="query" />
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main page ───────────────────────────────────────────────────────────────
 
 export default function OTelTracesPage() {
@@ -875,6 +1112,7 @@ export default function OTelTracesPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
+  const [view, setView] = useState<'traces' | 'database'>('traces')
 
   const [selectedService, setSelectedService] = useState('')
   const [selectedOp, setSelectedOp] = useState('')
@@ -978,14 +1216,29 @@ export default function OTelTracesPage() {
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
-      {/* Toolbar — row 1: title + primary filters */}
-      <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-800 bg-slate-900/30">
-        <div className="flex items-center gap-2 mr-1">
+      {/* Header: title + view tabs */}
+      <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-slate-800 bg-slate-950/40">
+        <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-center">
             <Activity className="w-4 h-4 text-blue-400" />
           </div>
           <span className="text-sm font-semibold text-slate-200">App Traces</span>
         </div>
+        <div className="flex items-center gap-1 p-0.5 bg-slate-900 border border-slate-800 rounded-lg">
+          {([['traces', 'Traces', GitBranch], ['database', 'Database', Database]] as const).map(([id, label, Ico]) => (
+            <button key={id} onClick={() => setView(id)}
+              className={clsx('inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all',
+                view === id ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:text-slate-200')}>
+              <Ico className="w-3.5 h-3.5" /> {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {view === 'database' ? <DatabaseView /> : (
+      <>
+      {/* Toolbar — row 1: primary filters */}
+      <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-800 bg-slate-900/30">
 
         {/* Service filter */}
         <Select
@@ -1249,6 +1502,8 @@ export default function OTelTracesPage() {
             {status?.otlp_http && <span className="font-mono text-blue-500/60">{status.otlp_http}</span>}
           </span>
         </div>
+      )}
+      </>
       )}
 
       {confirmClear && (

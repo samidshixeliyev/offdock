@@ -25,7 +25,6 @@ import AuditPage from './pages/AuditPage'
 import TrafficPage from './pages/TrafficPage'
 import DNSPage from './pages/DNSPage'
 import SettingsPage from './pages/SettingsPage'
-import TracingPage from './pages/TracingPage'
 import DocsPage from './pages/DocsPage'
 import AppLogsPage from './pages/AppLogsPage'
 import OTelTracesPage from './pages/OTelTracesPage'
@@ -67,7 +66,6 @@ export default function App() {
             <Route path="/traffic" element={<TrafficPage />} />
             <Route path="/dns" element={<DNSPage />} />
             <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/tracing" element={<TracingPage />} />
             <Route path="/docs" element={<DocsPage />} />
             <Route path="/app-logs" element={<AppLogsPage />} />
             <Route path="/otel-traces" element={<OTelTracesPage />} />

@@ -6,7 +6,7 @@ import clsx from 'clsx'
 import {
   LayoutDashboard, Boxes, Container, Globe, Network, HardDrive, FolderTree,
   Cpu, TerminalSquare, Activity, ScrollText, Users, LogOut, ChevronRight,
-  MapPin, Settings, Radio, FileText, Menu, Layers, BookOpen,
+  MapPin, Settings, FileText, Menu, Layers, BookOpen,
   PanelLeftClose, PanelLeftOpen, GripVertical, Eye, EyeOff, Pencil, RotateCcw, Check,
   type LucideIcon,
 } from 'lucide-react'
@@ -39,7 +39,6 @@ const navSystem: NavItem[] = [
   { to: '/dns',         label: 'DNS',         icon: MapPin },
   { to: '/audit',       label: 'Audit Log',   icon: ScrollText },
   { to: '/users',       label: 'Users',       icon: Users,          superadminOnly: true },
-  { to: '/tracing',     label: 'Net Traces',  icon: Radio },
   { to: '/otel-traces', label: 'App Traces',  icon: Layers },
   { to: '/app-logs',    label: 'App Logs',    icon: FileText },
   { to: '/settings',    label: 'Settings',    icon: Settings,       adminOnly: true },

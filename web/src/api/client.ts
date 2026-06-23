@@ -195,6 +195,32 @@ export interface OTelStatus {
   span_count?: number
 }
 
+export interface OTelDatabaseQuery {
+  normalized: string
+  sample: string
+  db_system: string
+  db_name: string
+  table: string
+  operation: string
+  count: number
+  total_ms: number
+  avg_ms: number
+  max_ms: number
+  min_ms: number
+  errors: number
+  services: string[]
+  last_seen_us: number
+  example_trace_id: string
+}
+export interface OTelDatabaseResult {
+  data: OTelDatabaseQuery[]
+  total: number
+  limit: number
+  offset: number
+  systems: string[]
+  totals: { queries: number; executions: number; total_ms: number; slowest_ms: number }
+}
+
 export interface DiskUsageRow {
   type: string
   total: string
@@ -1016,6 +1042,21 @@ export const api = {
   },
   otelTrace: (id: string) => request<{ data: OTelTrace[] }>(`/api/v1/otel/traces/${id}`),
   otelDeleteTraces: () => request<{ deleted: number }>('/api/v1/otel/traces', { method: 'DELETE' }),
+  otelDatabase: (params: {
+    service?: string; db_system?: string; search?: string; time_range?: string
+    min_duration_ms?: number; sort?: string; limit?: number; offset?: number
+  } = {}) => {
+    const q = new URLSearchParams()
+    if (params.service) q.set('service', params.service)
+    if (params.db_system) q.set('db_system', params.db_system)
+    if (params.search) q.set('search', params.search)
+    if (params.time_range) q.set('time_range', params.time_range)
+    if (params.min_duration_ms) q.set('min_duration_ms', String(params.min_duration_ms))
+    if (params.sort) q.set('sort', params.sort)
+    if (params.limit) q.set('limit', String(params.limit))
+    if (params.offset) q.set('offset', String(params.offset))
+    return request<OTelDatabaseResult>(`/api/v1/otel/database?${q}`)
+  },
 
   // Retention settings
   getRetentionSettings: () => request<RetentionSettings>('/api/v1/settings/retention'),
