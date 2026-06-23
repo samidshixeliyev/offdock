@@ -115,6 +115,22 @@ function offdock_span(string $name, float $startMs, array $tags = [], string $st
     ]);
 }
 
+// Map a PDO driver name to a canonical OTel db.system value so the same engine
+// groups together in the Database view regardless of the PHP driver used.
+function _offdock_db_system_name(string $driver): string {
+    switch (strtolower($driver)) {
+        case 'sqlsrv': case 'dblib': case 'mssql': case 'sybase': return 'mssql';
+        case 'pgsql':                                             return 'postgresql';
+        case 'oci':                                               return 'oracle';
+        case 'mysql':                                             return 'mysql';
+        case 'sqlite': case 'sqlite2':                            return 'sqlite';
+        case 'firebird':                                          return 'firebird';
+        case 'ibm':                                               return 'db2';
+        case 'odbc':                                              return 'odbc';
+        default:                                                  return $driver ?: 'sql';
+    }
+}
+
 function _offdock_db_span(string $sql, string $system, float $startMs, string $status, ?string $err = null): void {
     $op = strtoupper(strtok(ltrim($sql), " \t\n(") ?: 'QUERY');
     $tags = [
@@ -164,7 +180,7 @@ class OffDockPDO extends PDO {
     public $_offdockSystem = 'sql';
     public function __construct($dsn, $user = null, $pass = null, $options = null) {
         parent::__construct($dsn, $user, $pass, $options ?: []);
-        $this->_offdockSystem = strtolower((string)$this->getAttribute(PDO::ATTR_DRIVER_NAME)) ?: 'sql';
+        $this->_offdockSystem = _offdock_db_system_name((string)$this->getAttribute(PDO::ATTR_DRIVER_NAME));
         $this->setAttribute(PDO::ATTR_STATEMENT_CLASS, [OffDockPDOStatement::class]);
     }
     #[\ReturnTypeWillChange]

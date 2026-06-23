@@ -17,6 +17,7 @@ import (
 // into one row with execution count + timing percentiles + sample full text.
 
 var (
+	reSQLNStr         = regexp.MustCompile(`(?i)N'[^']*'`) // T-SQL unicode literal: N'…'
 	reSQLSingleQuoted = regexp.MustCompile(`'[^']*'`)
 	reSQLInList       = regexp.MustCompile(`(?i)\bIN\s*\(\s*[^)]*\)`)
 	reSQLNumber       = regexp.MustCompile(`\b\d+(\.\d+)?\b`)
@@ -26,6 +27,7 @@ var (
 )
 
 // normalizeSQL strips literals so structurally-identical queries group together.
+// Handles MySQL/Postgres/MSSQL syntax (T-SQL N'…' unicode literals, @params).
 func normalizeSQL(q string) string {
 	s := strings.TrimSpace(q)
 	if s == "" {
@@ -33,11 +35,31 @@ func normalizeSQL(q string) string {
 	}
 	s = reSQLInList.ReplaceAllString(s, "IN (?)")
 	s = reSQLValuesList.ReplaceAllString(s, "VALUES (?)")
+	s = reSQLNStr.ReplaceAllString(s, "?")
 	s = reSQLSingleQuoted.ReplaceAllString(s, "?")
 	s = reSQLParam.ReplaceAllString(s, "?")
 	s = reSQLNumber.ReplaceAllString(s, "?")
 	s = reSQLWhitespace.ReplaceAllString(s, " ")
 	return strings.TrimSpace(s)
+}
+
+// canonicalDBSystem folds the many names different drivers/instrumentations use
+// for the same engine into one (so MSSQL via sqlsrv/dblib/.NET all group together).
+func canonicalDBSystem(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "mssql", "sqlsrv", "dblib", "sybase", "microsoft.sql_server", "sql_server", "sqlserver":
+		return "mssql"
+	case "postgresql", "postgres", "pgsql":
+		return "postgresql"
+	case "mysql", "mariadb":
+		return "mysql"
+	case "oracle", "oci", "oracle.db":
+		return "oracle"
+	case "sqlite", "sqlite3", "sqlite2":
+		return "sqlite"
+	default:
+		return strings.ToLower(strings.TrimSpace(s))
+	}
 }
 
 // firstKeyword returns the leading SQL verb (SELECT/INSERT/…), uppercased.
@@ -59,7 +81,13 @@ func sqlOperation(stmt, attrOp string) string {
 	}
 	verb := strings.ToUpper(fields[0])
 	switch verb {
-	case "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "BEGIN", "COMMIT", "ROLLBACK", "SET", "CALL", "WITH", "EXPLAIN":
+	case "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "BEGIN", "COMMIT",
+		"ROLLBACK", "SET", "CALL", "WITH", "EXPLAIN",
+		// T-SQL / MSSQL verbs
+		"MERGE", "EXEC", "EXECUTE", "TRUNCATE", "USE", "DECLARE", "GRANT", "REVOKE", "BULK":
+		if verb == "EXECUTE" {
+			return "EXEC"
+		}
 		return verb
 	}
 	return "OTHER"
@@ -79,7 +107,7 @@ func dbStatement(s store.OTelSpan) string {
 func dbSystem(s store.OTelSpan) string {
 	for _, k := range []string{"db.system", "db.system.name"} {
 		if v := s.Attributes[k]; v != "" {
-			return v
+			return canonicalDBSystem(v)
 		}
 	}
 	return ""
