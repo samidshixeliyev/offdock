@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import {
   api, OTelSpan, OTelTrace, OTelStatus, OTelDatabaseQuery, OTelDatabaseResult,
+  OTelServiceStat, OTelOperationInfo,
 } from '../api/client'
 import { Select } from '../components/Select'
 import { Pagination } from '../components/Pagination'
@@ -498,6 +499,55 @@ function SpanDetailPanel({ span, trace }: { span: OTelSpan; trace: OTelTrace }) 
   )
 }
 
+// ─── Trace header summary ─────────────────────────────────────────────────────
+
+function TraceHeader({ trace, totalDuration }: { trace: OTelTrace; totalDuration: number }) {
+  // Per-service span counts + error counts.
+  const svc = new Map<string, { spans: number; errors: number }>()
+  let dbCount = 0, httpCount = 0, errorCount = 0
+  for (const s of trace.spans) {
+    const name = getServiceForSpan(s, trace)
+    const e = svc.get(name) ?? { spans: 0, errors: 0 }
+    e.spans++
+    const isE = hasError(s)
+    if (isE) { e.errors++; errorCount++ }
+    svc.set(name, e)
+    if (s.tags.some(t => t.key === 'db.statement' || t.key === 'db.system')) dbCount++
+    if (s.tags.some(t => t.key === 'http.method' || t.key === 'http.request.method')) httpCount++
+  }
+  const services = [...svc.entries()].sort((a, b) => b[1].spans - a[1].spans)
+
+  const chip = (label: string, value: string | number, tone: string) => (
+    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900/60 border border-slate-800">
+      <span className={clsx('text-[10px] uppercase tracking-wider font-semibold', tone)}>{label}</span>
+      <span className="text-xs font-semibold text-slate-200 tabular-nums">{value}</span>
+    </div>
+  )
+
+  return (
+    <div className="px-3 py-2.5 bg-slate-900/40 border-b border-slate-800/60 space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {chip('Duration', fmtDuration(totalDuration), 'text-emerald-400')}
+        {chip('Spans', trace.spans.length, 'text-blue-400')}
+        {chip('Services', services.length, 'text-violet-400')}
+        {httpCount > 0 && chip('HTTP', httpCount, 'text-cyan-400')}
+        {dbCount > 0 && chip('DB calls', dbCount, 'text-amber-400')}
+        {chip('Errors', errorCount, errorCount > 0 ? 'text-red-400' : 'text-slate-500')}
+      </div>
+      {/* Per-service breakdown */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[9px] uppercase tracking-wider text-slate-600 font-semibold mr-0.5">Services</span>
+        {services.map(([name, s]) => (
+          <span key={name} className="inline-flex items-center gap-1">
+            <ServiceBadge name={name} small />
+            <span className="text-[9px] text-slate-500 tabular-nums">{s.spans}{s.errors > 0 && <span className="text-red-400"> · {s.errors}✕</span>}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ─── Waterfall time ruler ─────────────────────────────────────────────────────
 
 function WaterfallRuler({ traceDuration }: { traceDuration: number }) {
@@ -754,6 +804,8 @@ function TraceRow({ trace, idx }: TraceRowProps) {
       {/* Waterfall */}
       {open && (
         <div className="border-t border-slate-800/50 bg-slate-950/40">
+          {/* Trace summary header */}
+          {!loading && <TraceHeader trace={displayTrace} totalDuration={traceDuration} />}
           {/* Time ruler */}
           <WaterfallRuler traceDuration={traceDuration} />
           {loading ? (
@@ -799,9 +851,19 @@ const LANG_EXAMPLES: Array<{ id: string; label: string; code: string }> = [
   {
     id: 'php',
     label: 'PHP (auto)',
-    code: `# Nothing needed — offdock-tracer.php auto_prepend_file is injected.
-# Instruments every incoming HTTP request + outgoing curl calls.
-# PHP_INI_SCAN_DIR=:/otel/php  ← set by OffDock (leading ":" keeps your app's own php inis)`,
+    code: `# Auto-injected via auto_prepend_file — no code change for request traces:
+#  • continues the DISTRIBUTED trace (reads incoming W3C traceparent header)
+#  • rich request span: method, route, status, sizes, client, user-agent
+#  • uncaught exceptions + fatal errors captured (type, message, stacktrace)
+# PHP_INI_SCAN_DIR=:/otel/php  ← set by OffDock (leading ":" keeps your app's inis)
+
+# ── One-line opt-in for full DB query spans (no extension needed) ──
+$pdo = offdock_pdo('mysql:host=db;dbname=app', 'user', 'pass');
+# every $pdo->query()/exec()/prepare()->execute() now emits a child span with
+# the full SQL, nested under the request — end-to-end like Dynatrace.
+
+# Forward context on outgoing HTTP calls so downstream services join the trace:
+curl_setopt($ch, CURLOPT_HTTPHEADER, ['traceparent: '.offdock_traceparent()]);`,
   },
   {
     id: 'python',
@@ -950,7 +1012,10 @@ function DbQueryRow({ q }: { q: OTelDatabaseQuery }) {
           {open ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-600" />}
         </td>
         <td className="px-3 py-2"><span className={clsx('inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border', opColor(q.operation))}>{q.operation}</span></td>
-        <td className="px-3 py-2 font-mono text-[11px] text-slate-300 max-w-[460px] truncate" title={q.normalized}>{q.normalized}</td>
+        <td className="px-3 py-2 font-mono text-[11px] text-slate-300 max-w-[460px] truncate" title={q.normalized}>
+          {q.service && <span className="mr-1.5 align-middle inline-flex"><ServiceBadge name={q.service} small /></span>}
+          {q.normalized}
+        </td>
         <td className="px-3 py-2 text-[11px] text-slate-500 whitespace-nowrap">{q.db_system || '—'}{q.table ? <span className="text-slate-600"> · {q.table}</span> : null}</td>
         <td className="px-3 py-2 text-right tabular-nums text-xs text-slate-300">{q.count.toLocaleString()}</td>
         <td className="px-3 py-2 text-right tabular-nums text-xs text-slate-400">{fmtMsNum(q.avg_ms)}</td>
@@ -1020,12 +1085,13 @@ function DatabaseView() {
   const [sortBy, setSortBy] = useState('total')
   const [search, setSearch] = useState('')
   const [minMs, setMinMs] = useState('')
+  const [byService, setByService] = useState(false)
   const [page, setPage] = useState(0)
   const [pageSize, setPageSize] = useState(25)
   const loadRef = useRef(0)
 
   useEffect(() => { api.otelServices().then(r => setServices(r.data ?? [])).catch(() => {}) }, [])
-  useEffect(() => { setPage(0) }, [service, dbSystem, timeRange, sortBy, search, minMs, pageSize])
+  useEffect(() => { setPage(0) }, [service, dbSystem, timeRange, sortBy, search, minMs, byService, pageSize])
 
   useEffect(() => {
     const t = setTimeout(async () => {
@@ -1039,6 +1105,7 @@ function DatabaseView() {
           sort: sortBy,
           search: search || undefined,
           min_duration_ms: minMs ? Number(minMs) : undefined,
+          by_service: byService || undefined,
           limit: pageSize,
           offset: page * pageSize,
         })
@@ -1055,7 +1122,7 @@ function DatabaseView() {
       }
     }, 250)
     return () => clearTimeout(t)
-  }, [service, dbSystem, timeRange, sortBy, search, minMs, page, pageSize])
+  }, [service, dbSystem, timeRange, sortBy, search, minMs, byService, page, pageSize])
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
@@ -1094,6 +1161,13 @@ function DatabaseView() {
             <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-slate-500">ms</span>
           </div>
         </div>
+        <button
+          onClick={() => setByService(v => !v)}
+          title="Group identical statements separately per service"
+          className={clsx('inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors',
+            byService ? 'border-blue-500/50 bg-blue-500/15 text-blue-300' : 'border-slate-700 bg-slate-900 text-slate-400 hover:text-slate-200')}>
+          <Server className="w-3.5 h-3.5" /> By service
+        </button>
       </div>
 
       {/* Stats strip */}
@@ -1164,8 +1238,8 @@ function DatabaseView() {
 
 export default function OTelTracesPage() {
   const [status, setStatus] = useState<OTelStatus | null>(null)
-  const [services, setServices] = useState<string[]>([])
-  const [operations, setOperations] = useState<Array<{ name: string; spanKind: string }>>([])
+  const [services, setServices] = useState<OTelServiceStat[]>([])
+  const [operations, setOperations] = useState<OTelOperationInfo[]>([])
   const [traces, setTraces] = useState<OTelTrace[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -1226,7 +1300,7 @@ export default function OTelTracesPage() {
   // Initial load
   useEffect(() => {
     api.otelStatus().then(setStatus).catch(() => setStatus({ available: false }))
-    api.otelServices().then(r => setServices(r.data ?? [])).catch(() => {})
+    api.otelServiceStats().then(r => setServices(r.data ?? [])).catch(() => {})
   }, []) // eslint-disable-line
 
   // Service change → load operations
@@ -1306,17 +1380,27 @@ export default function OTelTracesPage() {
           value={selectedService}
           onChange={setSelectedService}
           placeholder="All services"
-          options={[{ value: '', label: 'All services' }, ...services.map(s => ({ value: s, label: s }))]}
+          options={[
+            { value: '', label: 'All services', hint: `${services.reduce((a, s) => a + s.spans, 0)} spans` },
+            ...services.map(s => ({ value: s.name, label: s.name, hint: s.errors > 0 ? `${s.spans} · ${s.errors} err` : `${s.spans} spans` })),
+          ]}
         />
 
         {/* Operation filter */}
         {operations.length > 0 && (
           <Select
-            size="sm" icon={GitBranch} className="w-48"
+            size="sm" icon={GitBranch} className="w-56"
             value={selectedOp}
             onChange={setSelectedOp}
             placeholder="All operations"
-            options={[{ value: '', label: 'All operations' }, ...operations.map(o => ({ value: o.name, label: o.name, hint: o.spanKind }))]}
+            options={[
+              { value: '', label: 'All operations' },
+              ...operations.map(o => ({
+                value: o.name,
+                label: o.name,
+                hint: `${o.count}× · ${o.avg_ms >= 1 ? o.avg_ms.toFixed(0) + 'ms' : '<1ms'}${o.errors > 0 ? ' · ' + o.errors + ' err' : ''}`,
+              })),
+            ]}
           />
         )}
 

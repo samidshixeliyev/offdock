@@ -276,6 +276,7 @@ func NewRouter(deps Deps) http.Handler {
 		// OpenTelemetry — native receiver (spans stored in OffDock DB).
 		r.Get("/api/v1/otel/status", h.OTelStatus)
 		r.Get("/api/v1/otel/services", h.OTelServices)
+		r.Get("/api/v1/otel/service-stats", h.OTelServiceStats)
 		r.Get("/api/v1/otel/operations", h.OTelOperations)
 		r.Get("/api/v1/otel/traces", h.OTelTraces)
 		r.Get("/api/v1/otel/traces/{id}", h.OTelTrace)

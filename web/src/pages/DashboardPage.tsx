@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, Project, SystemStats, RecentDeployment, ContainerStats } from '../api/client'
+import {
+  api, Project, SystemStats, RecentDeployment, ContainerStats,
+  TrafficReport, OTelServiceStat, OTelDatabaseQuery, OTelTrace,
+} from '../api/client'
 import { useAuth } from '../hooks/useAuth'
 import { usePermissions, PERMS } from '../hooks/usePermissions'
 import clsx from 'clsx'
@@ -8,6 +11,7 @@ import {
   LayoutDashboard, Plus, Cpu, MemoryStick, HardDrive, Container as ContainerIcon,
   Play, ExternalLink, Rocket, Search, ChevronLeft, ChevronRight, X, Loader2,
   CheckCircle2, XCircle, Boxes, Globe, TerminalSquare, FolderTree, Trash2,
+  Activity, Database, AlertTriangle, Layers, Clock,
 } from 'lucide-react'
 import { Page, PageHeader, StatCard, Panel, EmptyState, ProjectBadge, DeploymentBadge } from '../components/ui'
 import { formatBytes, formatUptime, timeAgo, parsePercent } from '../lib/format'
@@ -321,6 +325,139 @@ function ContainerHealth({ containers }: { containers: ContainerStats[] }) {
   )
 }
 
+// ─── Observability (ties in traffic + app-trace data) ─────────────────────────
+function fmtMsShort(ms: number): string {
+  if (!ms) return '—'
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + 's'
+  if (ms >= 1) return ms.toFixed(0) + 'ms'
+  return (ms * 1000).toFixed(0) + 'μs'
+}
+
+function rootOpOf(t: OTelTrace): { op: string; service: string; durMs: number; err: boolean } {
+  const spans = t.spans ?? []
+  if (!spans.length) return { op: '—', service: '—', durMs: 0, err: false }
+  const root = spans.find(s => !s.references || s.references.length === 0) ?? spans[0]
+  const service = t.processes[root.processID]?.serviceName ?? 'unknown'
+  const start = Math.min(...spans.map(s => s.startTime))
+  const end = Math.max(...spans.map(s => s.startTime + s.duration))
+  const err = spans.some(s => s.tags.some(tg =>
+    (tg.key === 'error' && tg.value === true) ||
+    (tg.key === 'otel.status_code' && tg.value === 'ERROR') ||
+    (tg.key === 'http.status_code' && Number(tg.value) >= 500)))
+  return { op: root.operationName, service, durMs: (end - start) / 1000, err }
+}
+
+function ObservabilitySection() {
+  const [traffic, setTraffic] = useState<TrafficReport | null>(null)
+  const [svcStats, setSvcStats] = useState<OTelServiceStat[]>([])
+  const [errorTraces, setErrorTraces] = useState<OTelTrace[]>([])
+  const [slowQueries, setSlowQueries] = useState<OTelDatabaseQuery[]>([])
+
+  useEffect(() => {
+    api.traffic(24).then(setTraffic).catch(() => {})
+    api.otelServiceStats().then(r => setSvcStats(r.data ?? [])).catch(() => {})
+    api.otelTraces({ status: 'error', limit: 6 }).then(r => setErrorTraces(r.data ?? [])).catch(() => {})
+    api.otelDatabase({ sort: 'max', limit: 6 }).then(r => setSlowQueries(r.data ?? [])).catch(() => {})
+  }, [])
+
+  const s = traffic?.summary
+  const errRate = s && s.total > 0 ? ((s.status_4xx + s.status_5xx) / s.total) * 100 : 0
+  const hasAny = (s?.total ?? 0) > 0 || svcStats.length > 0 || errorTraces.length > 0 || slowQueries.length > 0
+  if (!hasAny) return null
+
+  return (
+    <div className="mt-6 space-y-4">
+      <div className="flex items-center gap-2">
+        <Activity className="w-4 h-4 text-blue-400" />
+        <h2 className="text-sm font-semibold text-slate-200">Observability</h2>
+        <span className="text-[10px] text-slate-600 uppercase tracking-wider">last 24h</span>
+      </div>
+
+      {/* Traffic stat row */}
+      {s && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <StatCard label="Requests" value={s.total.toLocaleString()} icon={Activity} tone="blue" sublabel={`${s.rps.toFixed(s.rps < 1 ? 2 : 1)} req/s`} />
+          <StatCard label="Error rate" value={`${errRate.toFixed(1)}%`} icon={AlertTriangle}
+            tone={errRate > 5 ? 'red' : errRate > 1 ? 'amber' : 'emerald'} sublabel={`${(s.status_4xx + s.status_5xx).toLocaleString()} errors`} />
+          <StatCard label="Avg response" value={fmtMsShort(s.avg_response_ms)} icon={Clock}
+            tone={s.avg_response_ms > 1000 ? 'red' : 'violet'} sublabel={s.p95_response_ms > 0 ? `p95 ${fmtMsShort(s.p95_response_ms)}` : undefined} />
+          <StatCard label="Traced services" value={svcStats.length} icon={Layers} tone="slate"
+            sublabel={`${svcStats.reduce((a, x) => a + x.spans, 0).toLocaleString()} spans`} />
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Per-service health */}
+        <Panel title="Service health" icon={Layers}
+          actions={<Link to="/otel-traces" className="text-xs text-slate-500 hover:text-slate-300">App Traces →</Link>}>
+          {svcStats.length === 0 ? (
+            <EmptyState icon={Layers} title="No traced services" description="Deploy an app with OpenTelemetry enabled." />
+          ) : (
+            <div className="p-3 space-y-1">
+              {svcStats.slice(0, 6).map(svc => {
+                const rate = svc.spans > 0 ? (svc.errors / svc.spans) * 100 : 0
+                return (
+                  <div key={svc.name} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-800/40">
+                    <span className={clsx('w-1.5 h-1.5 rounded-full shrink-0', rate > 5 ? 'bg-red-400' : rate > 0 ? 'bg-amber-400' : 'bg-emerald-400')} />
+                    <span className="text-xs font-mono text-slate-300 truncate flex-1" title={svc.name}>{svc.name}</span>
+                    <span className="text-[10px] text-slate-500 tabular-nums shrink-0">{svc.traces} traces</span>
+                    <span className="text-[10px] text-slate-500 tabular-nums shrink-0 w-16 text-right">{svc.spans.toLocaleString()} spans</span>
+                    {svc.errors > 0 && <span className="text-[10px] text-red-400 tabular-nums shrink-0 w-12 text-right">{svc.errors} err</span>}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </Panel>
+
+        {/* Recent app-trace errors */}
+        <Panel title="Recent trace errors" icon={AlertTriangle}
+          actions={<Link to="/otel-traces" className="text-xs text-slate-500 hover:text-slate-300">View →</Link>}>
+          {errorTraces.length === 0 ? (
+            <EmptyState icon={CheckCircle2} title="No trace errors" description="No errored traces in recent data." />
+          ) : (
+            <div className="divide-y divide-slate-800 max-h-72 overflow-y-auto">
+              {errorTraces.map(t => {
+                const r = rootOpOf(t)
+                return (
+                  <div key={t.traceID} className="px-3 py-2 hover:bg-slate-800/30">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-mono text-red-300 truncate" title={r.op}>{r.op}</span>
+                      <span className="text-[10px] text-slate-500 tabular-nums shrink-0">{fmtMsShort(r.durMs)}</span>
+                    </div>
+                    <div className="text-[10px] text-slate-500 truncate">{r.service}</div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </Panel>
+
+        {/* Slowest DB queries */}
+        <Panel title="Slowest DB queries" icon={Database}
+          actions={<Link to="/otel-traces" className="text-xs text-slate-500 hover:text-slate-300">Database →</Link>}>
+          {slowQueries.length === 0 ? (
+            <EmptyState icon={Database} title="No DB queries" description="DB spans appear when apps emit db.statement." />
+          ) : (
+            <div className="divide-y divide-slate-800 max-h-72 overflow-y-auto">
+              {slowQueries.map((q, i) => (
+                <div key={i} className="px-3 py-2 hover:bg-slate-800/30">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold text-amber-400 shrink-0">{q.operation}</span>
+                    <span className="text-[10px] text-slate-400 tabular-nums shrink-0">{fmtMsShort(q.max_ms)}</span>
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-400 truncate" title={q.normalized}>{q.normalized}</div>
+                  <div className="text-[9px] text-slate-600">{q.db_system || 'sql'} · {q.count}× · avg {fmtMsShort(q.avg_ms)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 const HISTORY_LEN = 30
 const PROJECTS_PER_PAGE = 6
@@ -546,6 +683,8 @@ export default function DashboardPage() {
           </Panel>
         </section>
       </div>
+
+      <ObservabilitySection />
     </Page>
   )
 }

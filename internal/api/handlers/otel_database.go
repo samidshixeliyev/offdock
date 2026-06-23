@@ -97,6 +97,7 @@ func dbTable(s store.OTelSpan) string {
 type dbQueryAgg struct {
 	Normalized   string   `json:"normalized"`
 	Sample       string   `json:"sample"`         // a full example statement
+	Service      string   `json:"service"`        // set when grouping by service
 	DBSystem     string   `json:"db_system"`
 	DBName       string   `json:"db_name"`
 	Table        string   `json:"table"`
@@ -121,6 +122,7 @@ func (h *H) OTelDatabase(w http.ResponseWriter, r *http.Request) {
 	sys := strings.ToLower(q.Get("db_system"))
 	search := strings.ToLower(strings.TrimSpace(q.Get("search")))
 	sortBy := q.Get("sort")
+	byService := q.Get("by_service") == "true" || q.Get("by_service") == "1"
 	minDurMs := 0
 	if d, err := strconv.Atoi(q.Get("min_duration_ms")); err == nil && d > 0 {
 		minDurMs = d
@@ -181,6 +183,9 @@ func (h *H) OTelDatabase(w http.ResponseWriter, r *http.Request) {
 		}
 
 		key := system + "||" + norm
+		if byService {
+			key = s.Service + "||" + key
+		}
 		g := groups[key]
 		if g == nil {
 			g = &dbQueryAgg{
@@ -193,6 +198,9 @@ func (h *H) OTelDatabase(w http.ResponseWriter, r *http.Request) {
 				MinMs:        durMs,
 				LastSeenUs:   s.StartTimeUs,
 				ExampleTrace: s.TraceID,
+			}
+			if byService {
+				g.Service = s.Service
 			}
 			groups[key] = g
 			svcSets[key] = make(map[string]bool)

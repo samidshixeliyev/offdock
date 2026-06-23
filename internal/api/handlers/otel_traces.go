@@ -44,6 +44,7 @@ type simpleSpan struct {
 	DurationMs float64           `json:"duration_ms"` // alternative to start+end
 	Status     string            `json:"status"`      // "ok" | "error"  (default "ok")
 	Error      string            `json:"error"`       // error message if status=error
+	Kind       string            `json:"kind"`        // server|client|producer|consumer|internal (default server)
 	Tags       map[string]string `json:"tags"`        // any key/value pairs
 }
 
@@ -97,6 +98,11 @@ func (h *H) ingestSimpleSpan(sp simpleSpan) store.OTelSpan {
 		tags["error.message"] = sp.Error
 	}
 
+	kind := sp.Kind
+	if kind == "" {
+		kind = "server"
+	}
+
 	return store.OTelSpan{
 		ID:           store.NewULID(),
 		TraceID:      sp.TraceID,
@@ -104,7 +110,7 @@ func (h *H) ingestSimpleSpan(sp simpleSpan) store.OTelSpan {
 		ParentSpanID: sp.ParentID,
 		Service:      sp.Service,
 		Name:         sp.Name,
-		Kind:         "server",
+		Kind:         kind,
 		StartTimeUs:  startMs * 1000,
 		EndTimeUs:    endMs * 1000,
 		DurationUs:   durUs,
@@ -655,24 +661,76 @@ func (h *H) OTelServices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"data": services})
 }
 
+// OTelServiceStats returns per-service span/error/trace counts for richer pickers.
+func (h *H) OTelServiceStats(w http.ResponseWriter, r *http.Request) {
+	spans, _ := h.db.OTelSpans.FindAll()
+	type svcStat struct {
+		Name   string `json:"name"`
+		Spans  int    `json:"spans"`
+		Errors int    `json:"errors"`
+		Traces int    `json:"traces"`
+	}
+	stats := make(map[string]*svcStat)
+	traceSeen := make(map[string]map[string]bool) // service → set(traceID)
+	for _, s := range spans {
+		st := stats[s.Service]
+		if st == nil {
+			st = &svcStat{Name: s.Service}
+			stats[s.Service] = st
+			traceSeen[s.Service] = make(map[string]bool)
+		}
+		st.Spans++
+		if s.StatusCode == "error" {
+			st.Errors++
+		}
+		if !traceSeen[s.Service][s.TraceID] {
+			traceSeen[s.Service][s.TraceID] = true
+			st.Traces++
+		}
+	}
+	out := make([]svcStat, 0, len(stats))
+	for _, st := range stats {
+		out = append(out, *st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Spans > out[j].Spans })
+	writeJSON(w, http.StatusOK, map[string]any{"data": out})
+}
+
 // OTelOperations returns the distinct operation names for a given service.
 func (h *H) OTelOperations(w http.ResponseWriter, r *http.Request) {
 	svc := r.URL.Query().Get("service")
 	spans, _ := h.db.OTelSpans.FindWhere(func(s store.OTelSpan) bool {
 		return svc == "" || s.Service == svc
 	})
-	seen := make(map[string]bool)
 	type op struct {
-		Name     string `json:"name"`
-		SpanKind string `json:"spanKind"`
+		Name     string  `json:"name"`
+		SpanKind string  `json:"spanKind"`
+		Count    int     `json:"count"`
+		Errors   int     `json:"errors"`
+		AvgMs    float64 `json:"avg_ms"`
 	}
-	var ops []op
+	agg := make(map[string]*op)
+	totMs := make(map[string]float64)
 	for _, s := range spans {
-		if !seen[s.Name] {
-			seen[s.Name] = true
-			ops = append(ops, op{Name: s.Name, SpanKind: s.Kind})
+		o := agg[s.Name]
+		if o == nil {
+			o = &op{Name: s.Name, SpanKind: s.Kind}
+			agg[s.Name] = o
 		}
+		o.Count++
+		if s.StatusCode == "error" {
+			o.Errors++
+		}
+		totMs[s.Name] += float64(s.EndTimeUs-s.StartTimeUs) / 1000.0
 	}
+	ops := make([]op, 0, len(agg))
+	for name, o := range agg {
+		if o.Count > 0 {
+			o.AvgMs = totMs[name] / float64(o.Count)
+		}
+		ops = append(ops, *o)
+	}
+	sort.Slice(ops, func(i, j int) bool { return ops[i].Count > ops[j].Count })
 	writeJSON(w, http.StatusOK, map[string]any{"data": ops})
 }
 

@@ -195,9 +195,24 @@ export interface OTelStatus {
   span_count?: number
 }
 
+export interface OTelServiceStat {
+  name: string
+  spans: number
+  errors: number
+  traces: number
+}
+export interface OTelOperationInfo {
+  name: string
+  spanKind: string
+  count: number
+  errors: number
+  avg_ms: number
+}
+
 export interface OTelDatabaseQuery {
   normalized: string
   sample: string
+  service: string
   db_system: string
   db_name: string
   table: string
@@ -1019,8 +1034,9 @@ export const api = {
   // OpenTelemetry / Jaeger proxy
   otelStatus: () => request<OTelStatus>('/api/v1/otel/status'),
   otelServices: () => request<{ data: string[] }>('/api/v1/otel/services'),
+  otelServiceStats: () => request<{ data: OTelServiceStat[] }>('/api/v1/otel/service-stats'),
   otelOperations: (service: string) =>
-    request<{ data: Array<{ name: string; spanKind: string }> }>(`/api/v1/otel/operations?service=${encodeURIComponent(service)}`),
+    request<{ data: OTelOperationInfo[] }>(`/api/v1/otel/operations?service=${encodeURIComponent(service)}`),
   otelTraces: (params: {
     service?: string; limit?: number; offset?: number; operation?: string
     search?: string; status?: string; min_duration_ms?: number; time_range?: string
@@ -1044,7 +1060,7 @@ export const api = {
   otelDeleteTraces: () => request<{ deleted: number }>('/api/v1/otel/traces', { method: 'DELETE' }),
   otelDatabase: (params: {
     service?: string; db_system?: string; search?: string; time_range?: string
-    min_duration_ms?: number; sort?: string; limit?: number; offset?: number
+    min_duration_ms?: number; sort?: string; limit?: number; offset?: number; by_service?: boolean
   } = {}) => {
     const q = new URLSearchParams()
     if (params.service) q.set('service', params.service)
@@ -1055,6 +1071,7 @@ export const api = {
     if (params.sort) q.set('sort', params.sort)
     if (params.limit) q.set('limit', String(params.limit))
     if (params.offset) q.set('offset', String(params.offset))
+    if (params.by_service) q.set('by_service', 'true')
     return request<OTelDatabaseResult>(`/api/v1/otel/database?${q}`)
   },
 
