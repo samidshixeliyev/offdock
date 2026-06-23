@@ -76,7 +76,10 @@ function _offdock_send_span(array $span): void {
         $port  = $url['port'] ?? (($url['scheme'] ?? 'http') === 'https' ? 443 : 80);
         $path  = ($url['path'] ?? '/v1/span');
         $errno = 0; $errstr = '';
-        $sock  = fsockopen($host, (int)$port, $errno, $errstr, 0.5);
+        // @-suppressed: fsockopen emits an E_WARNING (not a Throwable) when the
+        // collector is unreachable, which try/catch can't catch — never leak it
+        // into the traced app.
+        $sock  = @fsockopen($host, (int)$port, $errno, $errstr, 0.5);
         if (!$sock) return;
         stream_set_timeout($sock, 1);
         $req = "POST {$path} HTTP/1.1\r\n"
@@ -128,17 +131,23 @@ function _offdock_db_span(string $sql, string $system, float $startMs, string $s
 // ─── Opt-in DB instrumentation (no extension) ─────────────────────────────────
 // `offdock_pdo(...)` returns a PDO whose queries each emit a child DB span.
 
+// NOTE on signatures: PHP 8.1+ gives internal methods "tentative return types",
+// so overriding PDO/PDOStatement methods without a matching return type emits an
+// E_DEPRECATED ("return type should be compatible with …"). We add
+// #[\ReturnTypeWillChange] to silence it — and we deliberately DECLARE NO return
+// type (no `int|false` / `PDOStatement|false` unions) so the file also parses on
+// PHP 7.4 (union types are 8.0+). On PHP 7.x the `#[...]` line is just a comment.
 class OffDockPDOStatement extends PDOStatement {
     public $_offdockSystem = 'sql';
     protected function __construct() {}
-    public function execute($params = null): bool {
+    #[\ReturnTypeWillChange]
+    public function execute($params = null) {
         $start = microtime(true) * 1000;
         $status = 'ok'; $err = null;
         try {
             $r = parent::execute($params);
         } catch (Throwable $e) {
-            $status = 'error'; $err = $e->getMessage();
-            _offdock_db_span($this->queryString, $this->_offdockSystem, $start, $status, $err);
+            _offdock_db_span($this->queryString, $this->_offdockSystem, $start, 'error', $e->getMessage());
             throw $e;
         }
         if ($r === false) {
@@ -158,6 +167,7 @@ class OffDockPDO extends PDO {
         $this->_offdockSystem = strtolower((string)$this->getAttribute(PDO::ATTR_DRIVER_NAME)) ?: 'sql';
         $this->setAttribute(PDO::ATTR_STATEMENT_CLASS, [OffDockPDOStatement::class]);
     }
+    #[\ReturnTypeWillChange]
     public function query($query, ...$args) {
         $start = microtime(true) * 1000;
         try {
@@ -169,7 +179,8 @@ class OffDockPDO extends PDO {
         _offdock_db_span($query, $this->_offdockSystem, $start, $r === false ? 'error' : 'ok');
         return $r;
     }
-    public function exec($statement): int|false {
+    #[\ReturnTypeWillChange]
+    public function exec($statement) {
         $start = microtime(true) * 1000;
         try {
             $r = parent::exec($statement);
@@ -180,7 +191,8 @@ class OffDockPDO extends PDO {
         _offdock_db_span($statement, $this->_offdockSystem, $start, $r === false ? 'error' : 'ok');
         return $r;
     }
-    public function prepare($query, $options = []): OffDockPDOStatement|false {
+    #[\ReturnTypeWillChange]
+    public function prepare($query, $options = []) {
         $stmt = parent::prepare($query, $options);
         if ($stmt instanceof OffDockPDOStatement) {
             $stmt->_offdockSystem = $this->_offdockSystem;
