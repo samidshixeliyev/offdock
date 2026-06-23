@@ -3,11 +3,14 @@ import clsx from 'clsx'
 import {
   Activity, AlertTriangle, ChevronDown, ChevronRight,
   RefreshCw, GitBranch, Clock, Layers, Trash2, Search, X,
-  Globe, Database, Zap, Copy, Check, Tag,
+  Globe, Database, Zap, Copy, Check, Tag, Server, Boxes, AlertOctagon,
 } from 'lucide-react'
 import {
   api, OTelSpan, OTelTrace, OTelStatus,
 } from '../api/client'
+import { Select } from '../components/Select'
+import { Pagination } from '../components/Pagination'
+import ConfirmModal from '../components/ConfirmModal'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -738,7 +741,7 @@ const LANG_EXAMPLES: Array<{ id: string; label: string; code: string }> = [
     label: 'PHP (auto)',
     code: `# Nothing needed — offdock-tracer.php auto_prepend_file is injected.
 # Instruments every incoming HTTP request + outgoing curl calls.
-# PHP_INI_SCAN_DIR=/otel/php  ← set by OffDock`,
+# PHP_INI_SCAN_DIR=:/otel/php  ← set by OffDock (leading ":" keeps your app's own php inis)`,
   },
   {
     id: 'python',
@@ -867,13 +870,16 @@ export default function OTelTracesPage() {
   const [services, setServices] = useState<string[]>([])
   const [operations, setOperations] = useState<Array<{ name: string; spanKind: string }>>([])
   const [traces, setTraces] = useState<OTelTrace[]>([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [clearing, setClearing] = useState(false)
+  const [confirmClear, setConfirmClear] = useState(false)
 
   const [selectedService, setSelectedService] = useState('')
   const [selectedOp, setSelectedOp] = useState('')
-  const [limit, setLimit] = useState(20)
+  const [pageSize, setPageSize] = useState(25)
+  const [page, setPage] = useState(0)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [minDurationMs, setMinDurationMs] = useState('')
@@ -885,11 +891,11 @@ export default function OTelTracesPage() {
   const loadRef = useRef(0)
 
   type Filters = {
-    svc: string; op: string; lim: number; srch: string; stat: string
+    svc: string; op: string; lim: number; off: number; srch: string; stat: string
     minDur: string; tRange: string; kind: string; aKey: string; aVal: string
   }
   const filters: Filters = {
-    svc: selectedService, op: selectedOp, lim: limit, srch: search, stat: statusFilter,
+    svc: selectedService, op: selectedOp, lim: pageSize, off: page * pageSize, srch: search, stat: statusFilter,
     minDur: minDurationMs, tRange: timeRange, kind: spanKind, aKey: attrKey, aVal: attrVal,
   }
 
@@ -902,6 +908,7 @@ export default function OTelTracesPage() {
         service: f.svc || undefined,
         operation: f.op || undefined,
         limit: f.lim,
+        offset: f.off || undefined,
         search: f.srch || undefined,
         status: f.stat || undefined,
         min_duration_ms: f.minDur ? Number(f.minDur) : undefined,
@@ -910,9 +917,9 @@ export default function OTelTracesPage() {
         attr_key: f.aKey || undefined,
         attr_val: f.aVal || undefined,
       })
-      if (id === loadRef.current) setTraces(res.data ?? [])
+      if (id === loadRef.current) { setTraces(res.data ?? []); setTotal(res.total ?? 0) }
     } catch {
-      if (id === loadRef.current) setTraces([])
+      if (id === loadRef.current) { setTraces([]); setTotal(0) }
     } finally {
       if (id === loadRef.current) { setLoading(false); setRefreshing(false) }
     }
@@ -931,11 +938,16 @@ export default function OTelTracesPage() {
     setSelectedOp('')
   }, [selectedService])
 
-  // Filter/limit change (debounced for text inputs)
+  // Any filter change → reset to first page.
+  useEffect(() => {
+    setPage(0)
+  }, [selectedService, selectedOp, pageSize, search, statusFilter, minDurationMs, timeRange, spanKind, attrKey, attrVal])
+
+  // Filter/page change (debounced for text inputs)
   useEffect(() => {
     const t = setTimeout(() => loadTraces(filters), 250)
     return () => clearTimeout(t)
-  }, [selectedService, selectedOp, limit, search, statusFilter, minDurationMs, timeRange, spanKind, attrKey, attrVal]) // eslint-disable-line
+  }, [selectedService, selectedOp, pageSize, page, search, statusFilter, minDurationMs, timeRange, spanKind, attrKey, attrVal]) // eslint-disable-line
 
   const refresh = () => loadTraces(filters, true)
   const resetFilters = () => {
@@ -944,14 +956,14 @@ export default function OTelTracesPage() {
   }
 
   const clearAll = async () => {
-    if (!confirm('Delete all stored traces? This cannot be undone.')) return
+    setConfirmClear(false)
     setClearing(true)
-    try { await api.otelDeleteTraces(); setTraces([]); setStatus(s => s ? { ...s, span_count: 0 } : s) }
+    try { await api.otelDeleteTraces(); setTraces([]); setTotal(0); setStatus(s => s ? { ...s, span_count: 0 } : s) }
     catch { /* ignore */ } finally { setClearing(false) }
   }
 
-  const inputCls = 'bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-slate-500 transition-colors'
   const hasFilters = !!(selectedService || selectedOp || search || statusFilter || minDurationMs || timeRange || spanKind || (attrKey && attrKey.trim()))
+  const errorCount = traces.filter(traceHasError).length
 
   // Active-filter chips for at-a-glance visibility + one-click removal.
   const chips: Array<{ label: string; clear: () => void }> = []
@@ -968,70 +980,78 @@ export default function OTelTracesPage() {
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
       {/* Toolbar — row 1: title + primary filters */}
       <div className="shrink-0 flex flex-wrap items-center gap-2 px-4 py-3 border-b border-slate-800 bg-slate-900/30">
-        <Activity className="w-4 h-4 text-blue-400 shrink-0" />
-        <span className="text-sm font-semibold text-slate-200 mr-1">App Traces</span>
+        <div className="flex items-center gap-2 mr-1">
+          <div className="w-7 h-7 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-center">
+            <Activity className="w-4 h-4 text-blue-400" />
+          </div>
+          <span className="text-sm font-semibold text-slate-200">App Traces</span>
+        </div>
 
         {/* Service filter */}
-        <select value={selectedService} onChange={e => setSelectedService(e.target.value)} className={inputCls}>
-          <option value="">All services</option>
-          {services.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
+        <Select
+          size="sm" icon={Server} className="w-40"
+          value={selectedService}
+          onChange={setSelectedService}
+          placeholder="All services"
+          options={[{ value: '', label: 'All services' }, ...services.map(s => ({ value: s, label: s }))]}
+        />
 
         {/* Operation filter */}
         {operations.length > 0 && (
-          <select value={selectedOp} onChange={e => setSelectedOp(e.target.value)} className={inputCls}>
-            <option value="">All operations</option>
-            {operations.map(o => <option key={o.name} value={o.name}>{o.name}</option>)}
-          </select>
+          <Select
+            size="sm" icon={GitBranch} className="w-48"
+            value={selectedOp}
+            onChange={setSelectedOp}
+            placeholder="All operations"
+            options={[{ value: '', label: 'All operations' }, ...operations.map(o => ({ value: o.name, label: o.name, hint: o.spanKind }))]}
+          />
         )}
 
         {/* Time range */}
-        <select value={timeRange} onChange={e => setTimeRange(e.target.value)} className={inputCls}>
-          <option value="">All time</option>
-          <option value="1h">Last 1h</option>
-          <option value="6h">Last 6h</option>
-          <option value="24h">Last 24h</option>
-          <option value="7d">Last 7d</option>
-        </select>
+        <Select
+          size="sm" icon={Clock} className="w-32"
+          value={timeRange}
+          onChange={setTimeRange}
+          options={[
+            { value: '', label: 'All time' },
+            { value: '1h', label: 'Last 1h' },
+            { value: '6h', label: 'Last 6h' },
+            { value: '24h', label: 'Last 24h' },
+            { value: '7d', label: 'Last 7d' },
+          ]}
+        />
 
         {/* Status */}
-        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className={inputCls}>
-          <option value="">All status</option>
-          <option value="error">Errors only</option>
-        </select>
+        <Select
+          size="sm" className="w-28"
+          value={statusFilter}
+          onChange={setStatusFilter}
+          options={[
+            { value: '', label: 'All status' },
+            { value: 'error', label: 'Errors only' },
+          ]}
+        />
 
         {/* Span kind */}
-        <select value={spanKind} onChange={e => setSpanKind(e.target.value)} className={inputCls} title="Filter traces containing a span of this kind">
-          <option value="">All kinds</option>
-          <option value="server">Server</option>
-          <option value="client">Client</option>
-          <option value="producer">Producer</option>
-          <option value="consumer">Consumer</option>
-          <option value="internal">Internal</option>
-        </select>
+        <Select
+          size="sm" className="w-28"
+          value={spanKind}
+          onChange={setSpanKind}
+          options={[
+            { value: '', label: 'All kinds' },
+            { value: 'server', label: 'Server' },
+            { value: 'client', label: 'Client' },
+            { value: 'producer', label: 'Producer' },
+            { value: 'consumer', label: 'Consumer' },
+            { value: 'internal', label: 'Internal' },
+          ]}
+        />
 
-        {/* Limit */}
-        <select value={limit} onChange={e => setLimit(Number(e.target.value))} className={inputCls}>
-          <option value={20}>20 traces</option>
-          <option value={50}>50 traces</option>
-          <option value={100}>100 traces</option>
-        </select>
-
-        <div className="ml-auto flex items-center gap-2">
-          {!loading && (
-            <span className="text-[10px] text-slate-400 font-semibold tabular-nums">
-              {traces.length} trace{traces.length !== 1 ? 's' : ''}
-            </span>
-          )}
-          {status?.span_count !== undefined && (
-            <span className="text-[10px] text-slate-600 font-semibold uppercase tracking-wider">
-              · {status.span_count.toLocaleString()} spans stored
-            </span>
-          )}
+        <div className="ml-auto flex items-center gap-1">
           {traces.length > 0 && (
-            <button onClick={clearAll} disabled={clearing}
+            <button onClick={() => setConfirmClear(true)} disabled={clearing}
               title="Clear all traces"
-              className="p-1.5 rounded hover:bg-slate-800 text-slate-700 hover:text-red-400 transition-colors">
+              className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400 transition-colors">
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           )}
@@ -1039,6 +1059,31 @@ export default function OTelTracesPage() {
             className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-slate-300 transition-colors">
             <RefreshCw className={clsx('w-3.5 h-3.5', refreshing && 'animate-spin')} />
           </button>
+        </div>
+      </div>
+
+      {/* Stats strip */}
+      <div className="shrink-0 grid grid-cols-3 divide-x divide-slate-800/60 border-b border-slate-800 bg-slate-950/40">
+        <div className="px-4 py-2 flex items-center gap-2.5">
+          <Boxes className="w-4 h-4 text-blue-400 shrink-0" />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-200 tabular-nums leading-none">{total.toLocaleString()}</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">Matching traces</div>
+          </div>
+        </div>
+        <div className="px-4 py-2 flex items-center gap-2.5">
+          <AlertOctagon className={clsx('w-4 h-4 shrink-0', errorCount > 0 ? 'text-red-400' : 'text-slate-600')} />
+          <div className="min-w-0">
+            <div className={clsx('text-sm font-semibold tabular-nums leading-none', errorCount > 0 ? 'text-red-300' : 'text-slate-200')}>{errorCount}</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">Errors on page</div>
+          </div>
+        </div>
+        <div className="px-4 py-2 flex items-center gap-2.5">
+          <Layers className="w-4 h-4 text-violet-400 shrink-0" />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-200 tabular-nums leading-none">{(status?.span_count ?? 0).toLocaleString()}</div>
+            <div className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">Spans stored</div>
+          </div>
         </div>
       </div>
 
@@ -1180,6 +1225,20 @@ export default function OTelTracesPage() {
         )}
       </div>
 
+      {/* Pagination */}
+      {!loading && total > 0 && (
+        <div className="shrink-0 border-t border-slate-800/50 bg-slate-950/40">
+          <Pagination
+            total={total}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+            itemLabel="trace"
+          />
+        </div>
+      )}
+
       {/* Footer hint */}
       {!loading && traces.length > 0 && (
         <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-t border-slate-800/50 text-[10px] text-slate-600">
@@ -1190,6 +1249,17 @@ export default function OTelTracesPage() {
             {status?.otlp_http && <span className="font-mono text-blue-500/60">{status.otlp_http}</span>}
           </span>
         </div>
+      )}
+
+      {confirmClear && (
+        <ConfirmModal
+          danger
+          title="Delete all stored traces?"
+          message="Every captured trace and span will be permanently removed. This cannot be undone."
+          confirmLabel="Delete all traces"
+          onConfirm={clearAll}
+          onCancel={() => setConfirmClear(false)}
+        />
       )}
     </div>
   )

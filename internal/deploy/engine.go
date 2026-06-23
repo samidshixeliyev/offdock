@@ -717,7 +717,11 @@ func writeOTelComposeOverride(composePath, overridePath, envContent, projectName
 				if isFile("/var/offdock/otel/php/offdock.ini") {
 					mounts = append(mounts, vol{"/var/offdock/otel/php/tracer.php", "/otel/php/tracer.php"})
 					mounts = append(mounts, vol{"/var/offdock/otel/php/offdock.ini", "/otel/php/offdock.ini"})
-					envVars = append(envVars, "PHP_INI_SCAN_DIR=/otel/php")
+					// Leading separator (":") means "scan the image's default conf.d dir
+					// FIRST, then /otel/php". Without it PHP_INI_SCAN_DIR REPLACES the
+					// default dir, silently dropping the app's own extension .ini files
+					// (pdo, mysqli, opcache…) — which broke both the app and the tracer.
+					envVars = append(envVars, "PHP_INI_SCAN_DIR=:/otel/php")
 				}
 			case "python":
 				if isFile("/var/offdock/otel/python/sitecustomize.py") {

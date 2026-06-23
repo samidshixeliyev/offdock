@@ -786,6 +786,10 @@ func (h *H) OTelTraces(w http.ResponseWriter, r *http.Request) {
 	if l, err := strconv.Atoi(q.Get("limit")); err == nil && l > 0 {
 		limit = l
 	}
+	offset := 0
+	if o, err := strconv.Atoi(q.Get("offset")); err == nil && o > 0 {
+		offset = o
+	}
 
 	spans, _ := h.db.OTelSpans.FindWhere(func(s store.OTelSpan) bool {
 		if svc != "" && s.Service != svc {
@@ -868,16 +872,28 @@ func (h *H) OTelTraces(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(summaries, func(i, j int) bool { return summaries[i].start > summaries[j].start })
 
-	if len(summaries) > limit {
-		summaries = summaries[:limit]
+	total := len(summaries)
+	// Paginate: slice [offset : offset+limit] with bounds clamping.
+	if offset > total {
+		offset = total
 	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	pageSummaries := summaries[offset:end]
 
-	traces := make([]jaegerTrace, 0, len(summaries))
-	for _, s := range summaries {
+	traces := make([]jaegerTrace, 0, len(pageSummaries))
+	for _, s := range pageSummaries {
 		traces = append(traces, toJaegerTrace(s.id, byTrace[s.id]))
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"data": traces})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":   traces,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 // OTelTrace returns all spans for a single trace.

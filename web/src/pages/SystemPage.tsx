@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, SystemStats, DiskUsageRow } from '../api/client'
 import clsx from 'clsx'
+import ConfirmModal from '../components/ConfirmModal'
 
 function fmtBytes(bytes: number, decimals = 1) {
   if (bytes === 0) return '0 B'
@@ -687,6 +688,7 @@ function BackupsSection() {
   const [creating, setCreating] = useState(false)
   const [opts, setOpts] = useState({ scope: 'full', include_volumes: true, include_config: false, encrypt: true })
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [restorePlan, setRestorePlan] = useState<{ id: string; plan: import('../api/client').RestorePlan } | null>(null)
 
   const reload = () => api.listBackups().then(b => setList(b ?? [])).catch(() => {})
   useEffect(() => { reload(); api.getBackupSchedule().then(setSched).catch(() => {}) }, [])
@@ -702,9 +704,16 @@ function BackupsSection() {
   }
 
   async function restore(id: string) {
-    const plan = await api.inspectBackup(id)
-    const summary = `Restore will overwrite:\n- ${plan.projects.length} project dir(s)\n- ${plan.volumes.length} volume(s): ${plan.volumes.join(', ') || 'none'}\n- config: ${plan.has_config}\n- database: ${plan.has_db}\n\nProceed? (volumes + projects + config; DB needs a restart)`
-    if (!window.confirm(summary)) return
+    try {
+      const plan = await api.inspectBackup(id)
+      setRestorePlan({ id, plan })
+    } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) }
+  }
+
+  async function doRestore() {
+    if (!restorePlan) return
+    const { id, plan } = restorePlan
+    setRestorePlan(null)
     try {
       const r = await api.restoreBackup(id, { volumes: true, projects: true, config: plan.has_config, nginx: true, certs: true })
       setMsg({ kind: 'ok', text: `Restored: ${r.result.restored_volumes.length} volume(s), ${r.result.restored_projects.length} project(s).${r.warning ? ' ' + r.warning : ''}` })
@@ -794,6 +803,17 @@ function BackupsSection() {
           </div>
         )}
       </div>
+
+      {restorePlan && (
+        <ConfirmModal
+          danger
+          title="Restore this backup?"
+          message={`This overwrites ${restorePlan.plan.projects.length} project dir(s) and ${restorePlan.plan.volumes.length} volume(s)${restorePlan.plan.volumes.length ? ` (${restorePlan.plan.volumes.join(', ')})` : ''}${restorePlan.plan.has_config ? ', plus config.yaml' : ''}. The database is restored on next restart. This cannot be undone.`}
+          confirmLabel="Restore backup"
+          onConfirm={doRestore}
+          onCancel={() => setRestorePlan(null)}
+        />
+      )}
     </section>
   )
 }

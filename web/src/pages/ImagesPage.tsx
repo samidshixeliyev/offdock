@@ -14,6 +14,13 @@ import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
 
 type UploadTab = 'computer' | 'server'
 
+// docker load auto-detects gzip/bzip2/xz, so accept any compressed tar archive.
+const IMAGE_ARCHIVE_SUFFIXES = ['.tar', '.tar.gz', '.tgz', '.gz', '.tar.bz2', '.tbz', '.tbz2', '.tar.xz', '.txz']
+function isImageArchive(name: string): boolean {
+  const n = name.trim().toLowerCase()
+  return IMAGE_ARCHIVE_SUFFIXES.some(s => n.endsWith(s))
+}
+
 // ─── Type-to-confirm delete modal (GitHub-style) ─────────────────────────────
 function DeleteImageModal({ image, onDone, onClose }: { image: ImageUsage; onDone: () => void; onClose: () => void }) {
   const toast = useToast()
@@ -102,7 +109,7 @@ function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => v
   }
 
   const loadFromServer = async () => {
-    if (!serverPath.trim().endsWith('.tar')) { toast.error('Path must point to a .tar file'); return }
+    if (!isImageArchive(serverPath.trim())) { toast.error('Path must point to a .tar / .tar.gz / .tgz image archive'); return }
     try { await loadIntoDocker(serverPath.trim(), serverPath.split('/').pop() || serverPath) }
     catch (e) { setPhase('idle'); toast.error(e instanceof Error ? e.message : 'Load failed') }
   }
@@ -111,7 +118,7 @@ function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => v
 
   return (
     <Modal open onClose={busy ? () => {} : onClose} size="md" icon={HardDriveUpload} title="Add Docker Image"
-      subtitle="Upload a .tar from your computer or load one already on the server"
+      subtitle="Upload a .tar / .tar.gz from your computer or load one already on the server"
       footer={
         tab === 'computer'
           ? <><button onClick={onClose} disabled={busy} className="btn-secondary">Cancel</button>
@@ -145,12 +152,12 @@ function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => v
                 </div>
               ) : (
                 <div className="text-center">
-                  <p className="text-sm text-slate-300">Click to choose a <span className="font-mono">.tar</span> image</p>
-                  <p className="text-xs text-slate-500">Streamed to the server, then <code>docker load</code></p>
+                  <p className="text-sm text-slate-300">Click to choose a <span className="font-mono">.tar</span> / <span className="font-mono">.tar.gz</span> image</p>
+                  <p className="text-xs text-slate-500">Streamed to the server, then <code>docker load</code> (gzip/bzip2/xz auto-detected)</p>
                 </div>
               )}
             </button>
-            <input ref={fileRef} type="file" accept=".tar" className="hidden" onChange={e => { setFile(e.target.files?.[0] ?? null); setPhase('idle') }} />
+            <input ref={fileRef} type="file" accept=".tar,.tar.gz,.tgz,.gz,.tar.bz2,.tbz,.tbz2,.tar.xz,.txz" className="hidden" onChange={e => { setFile(e.target.files?.[0] ?? null); setPhase('idle') }} />
 
             {phase === 'uploading' && (
               <div>
@@ -163,8 +170,8 @@ function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => v
           </div>
         ) : (
           <div className="space-y-2">
-            <label className="block text-xs text-slate-500">Absolute path to a .tar on the server</label>
-            <input className="input font-mono text-xs" value={serverPath} onChange={e => setServerPath(e.target.value)} placeholder="/var/offdock/uploads/myimage.tar" />
+            <label className="block text-xs text-slate-500">Absolute path to a .tar / .tar.gz on the server</label>
+            <input className="input font-mono text-xs" value={serverPath} onChange={e => setServerPath(e.target.value)} placeholder="/var/offdock/uploads/myimage.tar.gz" />
             <p className="text-xs text-slate-600">Runs <code>docker load -i &lt;path&gt;</code> and registers any new images.</p>
           </div>
         )}
@@ -222,7 +229,7 @@ export default function ImagesPage() {
           <button onClick={handleSync} disabled={syncing} className="btn-secondary">
             {syncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCw className="w-4 h-4" />} Sync from Docker
           </button>
-          {can(PERMS.manageImages) && <button onClick={() => setShowUpload(true)} className="btn-primary"><Upload className="w-4 h-4" /> Add Image (.tar)</button>}
+          {can(PERMS.manageImages) && <button onClick={() => setShowUpload(true)} className="btn-primary"><Upload className="w-4 h-4" /> Add Image</button>}
         </>} />
 
       {/* Docker disk usage summary */}

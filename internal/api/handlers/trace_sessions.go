@@ -3,6 +3,7 @@ package handlers
 import (
 	"net/http"
 	"sort"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -33,6 +34,27 @@ func (h *H) ListTraceSessions(w http.ResponseWriter, r *http.Request) {
 		return sessions[i].StartedAt.After(sessions[j].StartedAt)
 	})
 
+	// Optional pagination. Without limit/offset the full list is returned
+	// inside the envelope (total == len), so older callers still work.
+	total := len(sessions)
+	q := r.URL.Query()
+	limit := total
+	if l, err := strconv.Atoi(q.Get("limit")); err == nil && l > 0 {
+		limit = l
+	}
+	offset := 0
+	if o, err := strconv.Atoi(q.Get("offset")); err == nil && o > 0 {
+		offset = o
+	}
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	sessions = sessions[offset:end]
+
 	out := make([]traceSessionSummary, 0, len(sessions))
 	for _, s := range sessions {
 		var httpN, sqlN, redisN int
@@ -62,7 +84,12 @@ func (h *H) ListTraceSessions(w http.ResponseWriter, r *http.Request) {
 			RedisCount:    redisN,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":   out,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 
 // GetTraceSession returns a single trace session including all events.

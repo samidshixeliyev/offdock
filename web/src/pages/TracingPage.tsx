@@ -10,6 +10,7 @@ import {
   Copy, Check, ExternalLink,
 } from 'lucide-react'
 import clsx from 'clsx'
+import { Pagination } from '../components/Pagination'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -663,14 +664,21 @@ function SessionReplayPanel({ sessionId, onBack }: { sessionId: string; onBack: 
 function SessionsListPanel({ onOpen, onOpenSidebar }: { onOpen: (id: string) => void; onOpenSidebar: () => void }) {
   const toast = useToast()
   const [sessions, setSessions] = useState<TraceSessionSummary[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(25)
   const [loading, setLoading] = useState(true)
 
   const load = async () => {
     setLoading(true)
-    try { setSessions(await api.listTraceSessions()) } catch { /* ignore */ }
+    try {
+      const res = await api.listTraceSessions({ limit: pageSize, offset: page * pageSize })
+      setSessions(res.data ?? [])
+      setTotal(res.total ?? 0)
+    } catch { /* ignore */ }
     setLoading(false)
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [page, pageSize]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const fmtDur = (started: string, ended: string | null): string => {
     if (!ended) return '—'
@@ -684,6 +692,7 @@ function SessionsListPanel({ onOpen, onOpenSidebar }: { onOpen: (id: string) => 
     try {
       await api.deleteTraceSession(id)
       setSessions(prev => prev.filter(s => s.id !== id))
+      setTotal(t => Math.max(0, t - 1))
       toast.success('Session deleted')
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Delete failed')
@@ -765,6 +774,19 @@ function SessionsListPanel({ onOpen, onOpenSidebar }: { onOpen: (id: string) => 
           </table>
         )}
       </div>
+
+      {!loading && total > 0 && (
+        <div className="shrink-0 border-t border-slate-800">
+          <Pagination
+            total={total}
+            page={page}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+            itemLabel="session"
+          />
+        </div>
+      )}
     </div>
   )
 }

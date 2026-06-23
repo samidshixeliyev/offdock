@@ -958,7 +958,14 @@ export const api = {
     request<void>(`/api/v1/containers/${encodeURIComponent(name)}/trace/enable`, { method: 'DELETE' }),
   traceUrl: (name: string) => `/api/v1/containers/${encodeURIComponent(name)}/trace`,
   // Persisted trace sessions
-  listTraceSessions: () => request<TraceSessionSummary[]>('/api/v1/trace/sessions'),
+  listTraceSessions: (params: { limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (params.limit) q.set('limit', String(params.limit))
+    if (params.offset) q.set('offset', String(params.offset))
+    const qs = q.toString()
+    return request<{ data: TraceSessionSummary[]; total: number; limit: number; offset: number }>(
+      `/api/v1/trace/sessions${qs ? `?${qs}` : ''}`)
+  },
   getTraceSession: (id: string) => request<TraceSession>(`/api/v1/trace/sessions/${id}`),
   deleteTraceSession: (id: string) =>
     request<void>(`/api/v1/trace/sessions/${id}`, { method: 'DELETE' }),
@@ -989,13 +996,14 @@ export const api = {
   otelOperations: (service: string) =>
     request<{ data: Array<{ name: string; spanKind: string }> }>(`/api/v1/otel/operations?service=${encodeURIComponent(service)}`),
   otelTraces: (params: {
-    service?: string; limit?: number; operation?: string
+    service?: string; limit?: number; offset?: number; operation?: string
     search?: string; status?: string; min_duration_ms?: number; time_range?: string
     span_kind?: string; attr_key?: string; attr_val?: string
   } = {}) => {
     const q = new URLSearchParams()
     if (params.service) q.set('service', params.service)
     if (params.limit) q.set('limit', String(params.limit))
+    if (params.offset) q.set('offset', String(params.offset))
     if (params.operation) q.set('operation', params.operation)
     if (params.search) q.set('search', params.search)
     if (params.status) q.set('status', params.status)
@@ -1004,7 +1012,7 @@ export const api = {
     if (params.span_kind) q.set('span_kind', params.span_kind)
     if (params.attr_key) q.set('attr_key', params.attr_key)
     if (params.attr_val) q.set('attr_val', params.attr_val)
-    return request<{ data: OTelTrace[] }>(`/api/v1/otel/traces?${q}`)
+    return request<{ data: OTelTrace[]; total: number; limit: number; offset: number }>(`/api/v1/otel/traces?${q}`)
   },
   otelTrace: (id: string) => request<{ data: OTelTrace[] }>(`/api/v1/otel/traces/${id}`),
   otelDeleteTraces: () => request<{ deleted: number }>('/api/v1/otel/traces', { method: 'DELETE' }),
