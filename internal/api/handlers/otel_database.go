@@ -23,7 +23,7 @@ var (
 	reSQLNumber       = regexp.MustCompile(`\b\d+(\.\d+)?\b`)
 	reSQLValuesList   = regexp.MustCompile(`(?i)\bVALUES\s*\([^)]*\)(\s*,\s*\([^)]*\))*`)
 	reSQLWhitespace   = regexp.MustCompile(`\s+`)
-	reSQLParam        = regexp.MustCompile(`[$:@]\w+|\?`)
+	reSQLParam        = regexp.MustCompile(`%\(\w+\)s|%s|[$:@]\w+|\?`) // $1 :name @p ? %s %(name)s
 )
 
 // normalizeSQL strips literals so structurally-identical queries group together.

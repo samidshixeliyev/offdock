@@ -143,95 +143,157 @@ def _sql_op(stmt):
         return ''
 
 
-def _wrap_cursor_execute(cursor_cls, system):
-    for meth in ('execute', 'executemany'):
-        orig = getattr(cursor_cls, meth, None)
-        if orig is None or getattr(orig, '__offdock__', False):
-            continue
+class _CursorProxy:
+    """Delegating proxy around a DB-API cursor that times execute/executemany.
 
-        def make(orig_fn):
-            def wrapper(self, operation, *a, **kw):
-                return _db_span(system, operation, _sql_op(operation),
-                                lambda: orig_fn(self, operation, *a, **kw))
-            wrapper.__offdock__ = True
-            return wrapper
-        try:
-            setattr(cursor_cls, meth, make(orig))
-        except Exception:
-            pass
+    A proxy (not class monkeypatching) is required because most drivers
+    (psycopg2, sqlite3, pyodbc…) implement the cursor as a C-extension type
+    whose attributes cannot be reassigned. __getattr__ forwards everything
+    else, so the proxy is transparent to the application.
+    """
+    __slots__ = ('_c', '_sys')
+
+    def __init__(self, cur, system):
+        object.__setattr__(self, '_c', cur)
+        object.__setattr__(self, '_sys', system)
+
+    def execute(self, operation, *a, **kw):
+        return _db_span(self._sys, operation, _sql_op(operation),
+                        lambda: self._c.execute(operation, *a, **kw))
+
+    def executemany(self, operation, *a, **kw):
+        return _db_span(self._sys, operation, _sql_op(operation),
+                        lambda: self._c.executemany(operation, *a, **kw))
+
+    def __getattr__(self, n):
+        return getattr(self._c, n)
+
+    def __setattr__(self, n, v):
+        setattr(self._c, n, v)
+
+    def __iter__(self):
+        return iter(self._c)
+
+    def __enter__(self):
+        self._c.__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return self._c.__exit__(*a)
+
+
+class _ConnProxy:
+    """Delegating proxy around a DB-API connection; its cursor() yields a traced cursor."""
+    __slots__ = ('_c', '_sys')
+
+    def __init__(self, conn, system):
+        object.__setattr__(self, '_c', conn)
+        object.__setattr__(self, '_sys', system)
+
+    def cursor(self, *a, **kw):
+        return _CursorProxy(self._c.cursor(*a, **kw), self._sys)
+
+    def __getattr__(self, n):
+        # sqlite3 (and a few others) expose execute()/executemany() directly on
+        # the connection. Wrap them only when the real connection has them, so
+        # hasattr() stays faithful for drivers that don't (e.g. psycopg2).
+        if n in ('execute', 'executemany'):
+            orig = getattr(self._c, n)
+
+            def traced(operation, *a, **kw):
+                return _db_span(self._sys, operation, _sql_op(operation),
+                                lambda: orig(operation, *a, **kw))
+            return traced
+        return getattr(self._c, n)
+
+    def __setattr__(self, n, v):
+        setattr(self._c, n, v)
+
+    def __enter__(self):
+        self._c.__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return self._c.__exit__(*a)
 
 
 def _wrap_dbapi_connect(module, system):
+    # Returns True only when connect was actually wrapped. During a package's own
+    # initialization the import hook fires for sub-modules while `connect` does
+    # not yet exist — we must NOT mark the module done in that case, or the
+    # top-level import (which DOES have connect) would be skipped.
     orig_connect = getattr(module, 'connect', None)
-    if orig_connect is None or getattr(orig_connect, '__offdock__', False):
-        return
+    if orig_connect is None:
+        return False
+    if getattr(orig_connect, '__offdock__', False):
+        return True
 
     def connect(*a, **kw):
-        conn = orig_connect(*a, **kw)
-        try:
-            cur = conn.cursor()
-            _wrap_cursor_execute(type(cur), system)
-            try:
-                cur.close()
-            except Exception:
-                pass
-        except Exception:
-            pass
-        return conn
+        return _ConnProxy(orig_connect(*a, **kw), system)
     connect.__offdock__ = True
     try:
         module.connect = connect
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _patch_db_module(name, module):
     try:
         if name in ('psycopg2', 'psycopg'):
-            _wrap_dbapi_connect(module, 'postgresql')
+            return _wrap_dbapi_connect(module, 'postgresql')
         elif name in ('pymysql', 'MySQLdb', 'mysql'):
             target = getattr(module, 'connector', module) if name == 'mysql' else module
-            _wrap_dbapi_connect(target, 'mysql')
+            return _wrap_dbapi_connect(target, 'mysql')
         elif name == 'sqlite3':
-            _wrap_dbapi_connect(module, 'sqlite')
+            return _wrap_dbapi_connect(module, 'sqlite')
         elif name == 'pyodbc':
-            _wrap_dbapi_connect(module, 'mssql')
+            return _wrap_dbapi_connect(module, 'mssql')
         elif name in ('cx_Oracle', 'oracledb'):
-            _wrap_dbapi_connect(module, 'oracle')
+            return _wrap_dbapi_connect(module, 'oracle')
         elif name == 'redis':
             cls = getattr(module, 'Redis', None)
-            if cls and not getattr(getattr(cls, 'execute_command', None), '__offdock__', False):
-                orig = cls.execute_command
+            if cls is None or getattr(cls, 'execute_command', None) is None:
+                return False
+            if getattr(cls.execute_command, '__offdock__', False):
+                return True
+            orig = cls.execute_command
 
-                def exec_cmd(self, *args, **kw):
-                    cmd = ' '.join(str(x) for x in args[:5]) if args else 'redis'
-                    op = str(args[0]).upper() if args else 'CMD'
-                    return _db_span('redis', cmd, op, lambda: orig(self, *args, **kw))
-                exec_cmd.__offdock__ = True
-                cls.execute_command = exec_cmd
+            def exec_cmd(self, *args, **kw):
+                cmd = ' '.join(str(x) for x in args[:5]) if args else 'redis'
+                op = str(args[0]).upper() if args else 'CMD'
+                return _db_span('redis', cmd, op, lambda: orig(self, *args, **kw))
+            exec_cmd.__offdock__ = True
+            cls.execute_command = exec_cmd
+            return True
         elif name == 'pymongo':
             coll = getattr(getattr(module, 'collection', None), 'Collection', None)
-            if coll:
-                for op in ('find', 'find_one', 'insert_one', 'insert_many',
-                           'update_one', 'update_many', 'delete_one', 'delete_many',
-                           'aggregate', 'count_documents'):
-                    orig = getattr(coll, op, None)
-                    if orig is None or getattr(orig, '__offdock__', False):
-                        continue
+            if coll is None:
+                return False
+            wrapped_any = False
+            for op in ('find', 'find_one', 'insert_one', 'insert_many',
+                       'update_one', 'update_many', 'delete_one', 'delete_many',
+                       'aggregate', 'count_documents'):
+                orig = getattr(coll, op, None)
+                if orig is None or getattr(orig, '__offdock__', False):
+                    continue
 
-                    def make(orig_fn, opname):
-                        def wrapper(self, *a, **kw):
-                            stmt = f"{opname} {getattr(self, 'name', '')}"
-                            return _db_span('mongodb', stmt, opname.upper(),
-                                            lambda: orig_fn(self, *a, **kw))
-                        wrapper.__offdock__ = True
-                        return wrapper
-                    try:
-                        setattr(coll, op, make(orig, op))
-                    except Exception:
-                        pass
+                def make(orig_fn, opname):
+                    def wrapper(self, *a, **kw):
+                        stmt = f"{opname} {getattr(self, 'name', '')}"
+                        return _db_span('mongodb', stmt, opname.upper(),
+                                        lambda: orig_fn(self, *a, **kw))
+                    wrapper.__offdock__ = True
+                    return wrapper
+                try:
+                    setattr(coll, op, make(orig, op))
+                    wrapped_any = True
+                except Exception:
+                    pass
+            return wrapped_any
     except Exception:
         pass
+    return False
 
 
 _DB_MODULES = {'psycopg2', 'psycopg', 'pymysql', 'MySQLdb', 'mysql', 'sqlite3',
@@ -245,15 +307,20 @@ def _patched_import(name, *a, **kw):
         if base in _DB_MODULES:
             import sys as _sys
             mod = _sys.modules.get(base, module)
+            # Only flag the module as done once a wrap actually succeeded, so a
+            # premature sub-module import (connect not ready yet) doesn't block it.
             if not getattr(mod, '__offdock_db__', False):
-                _patch_db_module(base, mod)
-                try:
-                    mod.__offdock_db__ = True
-                except Exception:
-                    pass
+                if _patch_db_module(base, mod):
+                    try:
+                        mod.__offdock_db__ = True
+                    except Exception:
+                        pass
     except Exception:
         pass
     return module
+
+
+_patched_import.__offdock__ = True
 
 
 _builtins.__import__ = _patched_import
