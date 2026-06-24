@@ -99,3 +99,161 @@ def _patched_getresponse(self):
 
 _hc.HTTPConnection.request     = _patched_request
 _hc.HTTPConnection.getresponse = _patched_getresponse
+
+
+# ─── Database instrumentation (zero-dependency) ───────────────────────────────
+# No otel packages offline, so we hook __import__ and wrap the common DB drivers'
+# execute methods. Each emits a span with db.system + db.statement so it lands in
+# OffDock's Database view. Everything is guarded — tracing never breaks the app.
+import builtins as _builtins
+import secrets as _secrets
+
+_orig_import = _builtins.__import__
+
+
+def _db_span(system, statement, op, run):
+    start = time.time()
+    tid, sid = _secrets.token_hex(16), _secrets.token_hex(8)
+
+    def _emit(status, error=None):
+        tags = {'db.system': system, 'db.statement': str(statement)[:4096]}
+        if op:
+            tags['db.operation'] = op
+        threading.Thread(target=_send, args=({
+            'trace_id': tid, 'span_id': sid, 'service': _SERVICE,
+            'name': f"{system} {op or 'query'}", 'kind': 'client',
+            'start_ms': int(start * 1000), 'end_ms': int(time.time() * 1000),
+            'status': status, 'error': error,
+            'tags': tags,
+        },), daemon=True).start()
+
+    try:
+        result = run()
+        _emit('ok')
+        return result
+    except Exception as e:  # noqa: BLE001 — re-raised below
+        _emit('error', str(e))
+        raise
+
+
+def _sql_op(stmt):
+    try:
+        return (str(stmt).strip().split() or [''])[0].upper()
+    except Exception:
+        return ''
+
+
+def _wrap_cursor_execute(cursor_cls, system):
+    for meth in ('execute', 'executemany'):
+        orig = getattr(cursor_cls, meth, None)
+        if orig is None or getattr(orig, '__offdock__', False):
+            continue
+
+        def make(orig_fn):
+            def wrapper(self, operation, *a, **kw):
+                return _db_span(system, operation, _sql_op(operation),
+                                lambda: orig_fn(self, operation, *a, **kw))
+            wrapper.__offdock__ = True
+            return wrapper
+        try:
+            setattr(cursor_cls, meth, make(orig))
+        except Exception:
+            pass
+
+
+def _wrap_dbapi_connect(module, system):
+    orig_connect = getattr(module, 'connect', None)
+    if orig_connect is None or getattr(orig_connect, '__offdock__', False):
+        return
+
+    def connect(*a, **kw):
+        conn = orig_connect(*a, **kw)
+        try:
+            cur = conn.cursor()
+            _wrap_cursor_execute(type(cur), system)
+            try:
+                cur.close()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return conn
+    connect.__offdock__ = True
+    try:
+        module.connect = connect
+    except Exception:
+        pass
+
+
+def _patch_db_module(name, module):
+    try:
+        if name in ('psycopg2', 'psycopg'):
+            _wrap_dbapi_connect(module, 'postgresql')
+        elif name in ('pymysql', 'MySQLdb', 'mysql'):
+            target = getattr(module, 'connector', module) if name == 'mysql' else module
+            _wrap_dbapi_connect(target, 'mysql')
+        elif name == 'sqlite3':
+            _wrap_dbapi_connect(module, 'sqlite')
+        elif name == 'pyodbc':
+            _wrap_dbapi_connect(module, 'mssql')
+        elif name in ('cx_Oracle', 'oracledb'):
+            _wrap_dbapi_connect(module, 'oracle')
+        elif name == 'redis':
+            cls = getattr(module, 'Redis', None)
+            if cls and not getattr(getattr(cls, 'execute_command', None), '__offdock__', False):
+                orig = cls.execute_command
+
+                def exec_cmd(self, *args, **kw):
+                    cmd = ' '.join(str(x) for x in args[:5]) if args else 'redis'
+                    op = str(args[0]).upper() if args else 'CMD'
+                    return _db_span('redis', cmd, op, lambda: orig(self, *args, **kw))
+                exec_cmd.__offdock__ = True
+                cls.execute_command = exec_cmd
+        elif name == 'pymongo':
+            coll = getattr(getattr(module, 'collection', None), 'Collection', None)
+            if coll:
+                for op in ('find', 'find_one', 'insert_one', 'insert_many',
+                           'update_one', 'update_many', 'delete_one', 'delete_many',
+                           'aggregate', 'count_documents'):
+                    orig = getattr(coll, op, None)
+                    if orig is None or getattr(orig, '__offdock__', False):
+                        continue
+
+                    def make(orig_fn, opname):
+                        def wrapper(self, *a, **kw):
+                            stmt = f"{opname} {getattr(self, 'name', '')}"
+                            return _db_span('mongodb', stmt, opname.upper(),
+                                            lambda: orig_fn(self, *a, **kw))
+                        wrapper.__offdock__ = True
+                        return wrapper
+                    try:
+                        setattr(coll, op, make(orig, op))
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+
+_DB_MODULES = {'psycopg2', 'psycopg', 'pymysql', 'MySQLdb', 'mysql', 'sqlite3',
+               'pyodbc', 'cx_Oracle', 'oracledb', 'redis', 'pymongo'}
+
+
+def _patched_import(name, *a, **kw):
+    module = _orig_import(name, *a, **kw)
+    try:
+        base = name.split('.')[0]
+        if base in _DB_MODULES:
+            import sys as _sys
+            mod = _sys.modules.get(base, module)
+            if not getattr(mod, '__offdock_db__', False):
+                _patch_db_module(base, mod)
+                try:
+                    mod.__offdock_db__ = True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return module
+
+
+_builtins.__import__ = _patched_import

@@ -338,7 +338,7 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	otelOverridePath := ""
 	if settings.OTelEnabled {
 		overridePath := filepath.Join(projectDir, ".otel-override.yml")
-		if err := writeOTelComposeOverride(composePath, overridePath, envContent, project.Name, isFile, settings.OTelLanguageOverrides); err != nil {
+		if err := writeOTelComposeOverride(composePath, overridePath, envContent, project.Name, isFile, appendLog, settings.OTelLanguageOverrides); err != nil {
 			appendLog("  WARNING: could not generate OTel compose override: %v", err)
 		} else {
 			otelOverridePath = overridePath
@@ -438,7 +438,7 @@ func (e *Engine) applyVersionFiles(ctx context.Context, projectID, projectName s
 	otelOverridePath := ""
 	if settings.OTelEnabled {
 		overridePath := filepath.Join(projectDir, ".otel-override.yml")
-		if err := writeOTelComposeOverride(composePath, overridePath, envContent, projectName, isFile, settings.OTelLanguageOverrides); err == nil {
+		if err := writeOTelComposeOverride(composePath, overridePath, envContent, projectName, isFile, nil, settings.OTelLanguageOverrides); err == nil {
 			otelOverridePath = overridePath
 		}
 	}
@@ -636,7 +636,10 @@ func resolveHostIP() string {
 //     NODE_OPTIONS, JAVA_TOOL_OPTIONS) to avoid clobbering them
 //   - injects host.docker.internal so containers can reach OffDock at :7070
 //   - only mounts tracer files that actually exist on the host
-func writeOTelComposeOverride(composePath, overridePath, envContent, projectName string, isFile func(string) bool, langOverrides ...map[string]string) error {
+func writeOTelComposeOverride(composePath, overridePath, envContent, projectName string, isFile func(string) bool, logf func(string, ...any), langOverrides ...map[string]string) error {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	overrides := map[string]string{}
 	if len(langOverrides) > 0 && langOverrides[0] != nil {
 		overrides = langOverrides[0]
@@ -648,8 +651,6 @@ func writeOTelComposeOverride(composePath, overridePath, envContent, projectName
 	if len(info.ServiceNames) == 0 {
 		return fmt.Errorf("no services found in compose file")
 	}
-
-	hostIP := resolveHostIP()
 
 	type vol struct{ host, container string }
 
@@ -665,13 +666,16 @@ func writeOTelComposeOverride(composePath, overridePath, envContent, projectName
 
 		// Apply manual language override if set; "none" disables injection entirely.
 		langs := svc.Languages
+		overridden := false
 		if ov, ok := overrides[svc.Name]; ok {
+			overridden = true
 			if ov == "none" || ov == "" {
 				langs = nil
 			} else {
 				langs = []string{ov}
 			}
 		}
+		injected := false // set true once a tracer/agent is actually mounted
 
 		// Inject OTLP transport vars directly into the container env so the agent
 		// actually reaches our backend. Writing them to .env alone doesn't work —
@@ -771,6 +775,25 @@ func writeOTelComposeOverride(composePath, overridePath, envContent, projectName
 				}
 			}
 		}
+		injected = len(mounts) > 0
+
+		// ── Per-service OTel diagnostic (surfaced in the deploy log) ───────────
+		// Makes silent "no traces" failures visible: operators see exactly which
+		// services got a tracer, which language, and which ones can't be auto-traced.
+		src := "auto-detected"
+		if overridden {
+			src = "manual override"
+		}
+		switch {
+		case len(langs) == 0:
+			logf("  OTel · %s: no tracer (infra image or set to 'none') — traces won't appear", svc.Name)
+		case contains(langs, "go"):
+			logf("  OTel · %s: go (%s) — zero-code tracing is NOT possible for Go; only the network tracer can see it. Build with the OTel SDK for app spans.", svc.Name, src)
+		case injected:
+			logf("  OTel · %s: %s (%s) tracer injected → http://host.docker.internal:7070", svc.Name, strings.Join(langs, "+"), src)
+		default:
+			logf("  OTel · %s: %s detected but tracer asset missing on host (/var/offdock/otel) — reinstall bundle", svc.Name, strings.Join(langs, "+"))
+		}
 
 		// Per-service service name overrides the project-level default in .env.
 		envVars = append(envVars, "OTEL_SERVICE_NAME="+projectName+"-"+svc.Name)
@@ -787,8 +810,13 @@ func writeOTelComposeOverride(composePath, overridePath, envContent, projectName
 				sb.WriteString("      - " + e + "\n")
 			}
 		}
+		// "host-gateway" is Docker's native token (≥20.10) for the bridge gateway
+		// the container can ALWAYS reach the host on — unlike a hard-coded host IP
+		// (resolveHostIP) which on a VPS is the public/primary address that a
+		// bridged container often cannot route to (firewall / no hairpin), silently
+		// dropping every OTLP / /v1/span POST. This is the fix for "no traces at all".
 		sb.WriteString("    extra_hosts:\n")
-		sb.WriteString("      - \"host.docker.internal:" + hostIP + "\"\n")
+		sb.WriteString("      - \"host.docker.internal:host-gateway\"\n")
 		if len(info.ExternalNetworks) > 0 {
 			sb.WriteString("    networks:\n")
 			sb.WriteString("      - default\n")
@@ -807,6 +835,16 @@ func writeOTelComposeOverride(composePath, overridePath, envContent, projectName
 	}
 
 	return atomicWrite(overridePath, []byte(sb.String()))
+}
+
+// contains reports whether s is in xs.
+func contains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }
 
 // parseEnvValue finds the value of key in an env file string (KEY=value lines).
