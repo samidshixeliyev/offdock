@@ -846,6 +846,8 @@ const LANG_EXAMPLES: Array<{ id: string; label: string; code: string }> = [
     label: 'Node.js (auto)',
     code: `# Nothing needed — offdock-tracer.js is injected automatically.
 # Instruments http/https/fetch calls + express/fastify request handlers.
+# AUTO DB SPANS: pg, mysql/mysql2, mongodb, redis/ioredis — captured
+# automatically with db.system + db.statement (shows in the Database view).
 # NODE_OPTIONS=--require /otel/node/tracer.js  ← set by OffDock`,
   },
   {
@@ -857,8 +859,10 @@ const LANG_EXAMPLES: Array<{ id: string; label: string; code: string }> = [
 #  • uncaught exceptions + fatal errors captured (type, message, stacktrace)
 # PHP_INI_SCAN_DIR=:/otel/php  ← set by OffDock (leading ":" keeps your app's inis)
 
-# ── One-line opt-in for full DB query spans (no extension needed) ──
-$pdo = offdock_pdo('mysql:host=db;dbname=app', 'user', 'pass');
+# ── DB query spans: ONE-LINE opt-in (PHP can't auto-trace PDO) ──
+# Unlike Node/Python, PHP cannot override its internal PDO class without a C
+# extension, so swap new PDO(...) for offdock_pdo(...) at your DB bootstrap:
+$pdo = offdock_pdo('pgsql:host=db;dbname=app', 'user', 'pass');  # mysql/mssql/sqlite too
 # every $pdo->query()/exec()/prepare()->execute() now emits a child span with
 # the full SQL, nested under the request — end-to-end like Dynatrace.
 
@@ -871,6 +875,8 @@ curl_setopt($ch, CURLOPT_HTTPHEADER, ['traceparent: '.offdock_traceparent()]);`,
     code: `# Nothing needed — sitecustomize.py is injected automatically.
 # Instruments outgoing HTTP calls via http.client
 # (covers requests, urllib, urllib3, httpx, and most HTTP libraries).
+# AUTO DB SPANS: psycopg2, pymysql/MySQLdb, sqlite3, pyodbc, redis, pymongo —
+# captured automatically with db.system + db.statement (Database view).
 # PYTHONPATH=/otel/python  ← prepended by OffDock`,
   },
   {

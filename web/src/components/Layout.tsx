@@ -289,13 +289,25 @@ export default function Layout() {
             )}
           </Link>
           {!railCollapsed && (
-            <button
-              onClick={() => setCollapsed(true)}
-              title="Collapse sidebar"
-              className="hidden md:flex p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors shrink-0"
-            >
-              <PanelLeftClose className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button
+                onClick={() => setEditing(e => !e)}
+                title={editing ? 'Done customizing' : 'Customize navigation'}
+                className={clsx(
+                  'hidden md:flex p-1.5 rounded-lg transition-colors',
+                  editing ? 'text-blue-300 bg-blue-500/15' : 'text-slate-500 hover:text-slate-200 hover:bg-slate-800',
+                )}
+              >
+                <Settings className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setCollapsed(true)}
+                title="Collapse sidebar"
+                className="hidden md:flex p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors"
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </button>
+            </div>
           )}
         </div>
 
@@ -345,7 +357,7 @@ export default function Layout() {
             ) : (
               <button
                 onClick={() => setEditing(true)}
-                className="flex items-center gap-2 w-full px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-200 border border-transparent hover:border-slate-700 rounded-lg transition-all"
+                className="flex items-center justify-center gap-2 w-full px-3 py-2 text-xs font-medium text-slate-300 bg-slate-800/60 border border-slate-700 rounded-lg hover:bg-slate-800 hover:text-white hover:border-slate-600 transition-all"
               >
                 <Pencil className="w-3.5 h-3.5" /> Customize navigation
               </button>
