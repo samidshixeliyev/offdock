@@ -364,6 +364,9 @@ func NewRouter(deps Deps) http.Handler {
 			r.With(authmw.RequirePermission(deps.DB, store.PermManageFiles)).Post("/rename", h.FileRename)
 			r.With(authmw.RequirePermission(deps.DB, store.PermManageFiles)).Delete("/delete", h.FileDelete)
 		})
+
+		// Storage explorer — OffDock data roots overview (sizes per location).
+		r.With(authmw.RequirePermission(deps.DB, store.PermManageFiles)).Get("/api/v1/storage/overview", h.StorageOverview)
 	})
 
 	return r

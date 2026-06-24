@@ -21,6 +21,7 @@ import ContainersPage from './pages/ContainersPage'
 import NetworksPage from './pages/NetworksPage'
 import VolumesPage from './pages/VolumesPage'
 import FilesPage from './pages/FilesPage'
+import StoragePage from './pages/StoragePage'
 import AuditPage from './pages/AuditPage'
 import TrafficPage from './pages/TrafficPage'
 import DNSPage from './pages/DNSPage'
@@ -62,6 +63,7 @@ export default function App() {
             <Route path="/networks" element={<NetworksPage />} />
             <Route path="/volumes" element={<VolumesPage />} />
             <Route path="/files" element={<FilesPage />} />
+            <Route path="/storage" element={<StoragePage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="/traffic" element={<TrafficPage />} />
             <Route path="/dns" element={<DNSPage />} />

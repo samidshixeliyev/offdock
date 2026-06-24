@@ -34,6 +34,7 @@ const navMain: NavItem[] = [
 ]
 const navSystem: NavItem[] = [
   { to: '/system',      label: 'System',      icon: Cpu,            superadminOnly: true },
+  { to: '/storage',     label: 'Storage',     icon: HardDrive,      superadminOnly: true },
   { to: '/terminal',    label: 'Terminal',    icon: TerminalSquare, perm: PERMS.terminal },
   { to: '/traffic',     label: 'Traffic',     icon: Activity },
   { to: '/dns',         label: 'DNS',         icon: MapPin },

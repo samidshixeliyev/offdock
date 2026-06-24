@@ -337,6 +337,16 @@ export interface FileEntry {
   mime: string
 }
 
+export interface StorageRoot {
+  key: string
+  label: string
+  path: string
+  desc: string
+  size: number
+  files: number
+  exists: boolean
+}
+
 export interface FileReadResult {
   path: string
   name: string
@@ -1018,6 +1028,7 @@ export const api = {
       method: 'POST', body: JSON.stringify({ source, dest, action }),
     }),
   listUploads: () => request<FileEntry[]>('/api/v1/uploads'),
+  storageOverview: () => request<{ roots: StorageRoot[] }>('/api/v1/storage/overview'),
 
   // DNS tickets
   listDNSTickets: () => request<DNSTicket[]>('/api/v1/dns/tickets'),
