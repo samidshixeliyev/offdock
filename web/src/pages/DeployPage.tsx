@@ -941,28 +941,50 @@ export default function DeployPage() {
           Zero-code distributed tracing — OffDock injects the right tracer per service at deploy time.
         </p>
 
-        {/* OpenTelemetry — toggle + per-service language picker */}
-        <div className="rounded-lg border border-slate-800 bg-slate-900/30 overflow-hidden">
-          <div className="flex items-center justify-between p-4">
-            <div>
-              <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={settingsDraft.otel_enabled ?? false}
-                  onChange={e => setSettingsDraft(d => ({ ...d, otel_enabled: e.target.checked }))}
-                  className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-blue-500"
-                />
-                <span className="text-sm font-medium text-slate-200">Enable OpenTelemetry tracing</span>
-              </label>
-              <p className="text-xs text-slate-500 mt-1 ml-[26px]">
-                Injects OTEL_* env vars and tracer agents automatically per service.
-                {settingsDraft.otel_enabled && <><br /><a href="/otel-traces" className="text-blue-400 hover:underline">Open App Traces →</a></>}
+        {/* OpenTelemetry — toggle switch + per-service language picker */}
+        {(() => {
+          const otelOn = settingsDraft.otel_enabled ?? false
+          return (
+        <div className={clsx(
+          'rounded-xl border overflow-hidden transition-colors',
+          otelOn ? 'border-blue-500/40 bg-blue-500/[0.04]' : 'border-slate-800 bg-slate-900/30',
+        )}>
+          <button
+            type="button"
+            onClick={() => setSettingsDraft(d => ({ ...d, otel_enabled: !otelOn }))}
+            className="w-full flex items-center gap-4 p-4 text-left hover:bg-slate-800/20 transition-colors"
+          >
+            {/* The switch */}
+            <span className={clsx(
+              'relative shrink-0 inline-flex h-6 w-11 items-center rounded-full transition-colors',
+              otelOn ? 'bg-blue-500' : 'bg-slate-700',
+            )}>
+              <span className={clsx(
+                'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                otelOn ? 'translate-x-6' : 'translate-x-1',
+              )} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <Activity className={clsx('w-4 h-4 shrink-0', otelOn ? 'text-blue-400' : 'text-slate-500')} />
+                <span className="text-sm font-semibold text-slate-100">Distributed tracing</span>
+                <span className={clsx(
+                  'text-[10px] px-1.5 py-0.5 rounded-full font-bold tracking-wide',
+                  otelOn ? 'bg-blue-500/20 text-blue-300' : 'bg-slate-800 text-slate-500',
+                )}>
+                  {otelOn ? 'ON' : 'OFF'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Zero-code OpenTelemetry — the right tracer is injected per service at deploy time.
               </p>
             </div>
-            <div className={`text-[10px] px-2 py-0.5 rounded font-semibold ${settingsDraft.otel_enabled ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-600'}`}>
-              {settingsDraft.otel_enabled ? 'ON' : 'OFF'}
-            </div>
-          </div>
+          </button>
+          {otelOn && (
+            <a href="/otel-traces" className="flex items-center gap-1.5 px-4 pb-3 -mt-1 text-xs text-blue-400 hover:text-blue-300 font-medium">
+              Open App Traces →
+            </a>
+          )}
 
           {settingsDraft.otel_enabled && (() => {
             const composeNames = new Set(composeServices.map(s => s.name))
@@ -1118,6 +1140,8 @@ export default function DeployPage() {
             )
           })()}
         </div>
+        )
+        })()}
 
       </div>
 

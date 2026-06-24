@@ -104,15 +104,10 @@ const SERVICE_COLORS = [
   'bg-fuchsia-500/20 text-fuchsia-300 border-fuchsia-500/30',
   'bg-orange-500/20 text-orange-300 border-orange-500/30',
 ]
-const SPAN_BAR_COLORS = [
-  'from-blue-500/70 to-blue-400/50',
-  'from-emerald-500/70 to-emerald-400/50',
-  'from-violet-500/70 to-violet-400/50',
-  'from-amber-500/70 to-amber-400/50',
-  'from-rose-500/70 to-rose-400/50',
-  'from-cyan-500/70 to-cyan-400/50',
-  'from-fuchsia-500/70 to-fuchsia-400/50',
-  'from-orange-500/70 to-orange-400/50',
+// Solid per-service bar colours (Grafana/Jaeger style — flat, not gradient).
+const SPAN_SOLID_COLORS = [
+  'bg-blue-500', 'bg-emerald-500', 'bg-violet-500', 'bg-amber-500',
+  'bg-rose-500', 'bg-cyan-500', 'bg-fuchsia-500', 'bg-orange-500',
 ]
 
 function serviceColorIdx(name: string): number {
@@ -550,15 +545,21 @@ function TraceHeader({ trace, totalDuration }: { trace: OTelTrace; totalDuration
 
 // ─── Waterfall time ruler ─────────────────────────────────────────────────────
 
+// Name column is fixed-width so the timeline (flex-1) dominates — the Grafana/
+// Jaeger layout. NAME_COL is shared by the ruler and every span row so ticks and
+// bars line up pixel-for-pixel.
+const NAME_COL = 'w-[38%] min-w-[220px] max-w-[480px] shrink-0'
+
 function WaterfallRuler({ traceDuration }: { traceDuration: number }) {
   const ticks = [0, 0.25, 0.5, 0.75, 1]
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900/70 border-b border-slate-800/60 sticky top-0 z-10">
-      <span className="w-3 shrink-0" />
-      <div className="flex-1 text-[9px] text-slate-600 uppercase tracking-wider font-semibold">Span · service</div>
-      <div className="shrink-0 w-[320px] relative h-3.5">
+    <div className="flex items-stretch px-3 py-1.5 bg-slate-900/80 border-b border-slate-800/60 sticky top-0 z-10">
+      <div className={clsx(NAME_COL, 'text-[9px] text-slate-500 uppercase tracking-wider font-semibold flex items-center')}>
+        Service · Operation
+      </div>
+      <div className="flex-1 relative h-3.5 min-w-[160px]">
         {ticks.map((f, i) => (
-          <div key={i} className="absolute top-0 bottom-0 border-l border-slate-700/30 flex items-start"
+          <div key={i} className="absolute top-0 bottom-0 border-l border-slate-700/40 flex items-start"
             style={{ left: `${f * 100}%` }}>
             <span className={clsx('text-[8px] text-slate-500 tabular-nums px-1', i === ticks.length - 1 && '-translate-x-full')}>
               {fmtDuration(traceDuration * f)}
@@ -566,7 +567,7 @@ function WaterfallRuler({ traceDuration }: { traceDuration: number }) {
           </div>
         ))}
       </div>
-      <div className="shrink-0 w-16 text-[9px] text-slate-600 uppercase tracking-wider font-semibold text-right">Offset</div>
+      <div className="shrink-0 w-14 text-[9px] text-slate-500 uppercase tracking-wider font-semibold text-right flex items-center justify-end">Start</div>
     </div>
   )
 }
@@ -594,111 +595,93 @@ function SpanRow({ node, traceStart, traceDuration, trace }: SpanRowProps) {
   const clampedLeft = Math.min(barLeft, 99)
   const clampedWidth = Math.max(Math.min(barWidth, 100 - clampedLeft), 0.6)
 
-  // Colour the bar by service so each service reads as a consistent lane;
-  // errors always go red regardless of service.
-  const barGradient = isErr
-    ? 'from-red-500/80 to-red-400/60'
-    : SPAN_BAR_COLORS[serviceColorIdx(service) % SPAN_BAR_COLORS.length]
-
   // Show a sub-label for common span types
   const httpMethod = tagVal(span, 'http.method') || tagVal(span, 'http.request.method')
   const httpStatus = tagVal(span, 'http.status_code') || tagVal(span, 'http.response.status_code')
   const dbSystem   = tagVal(span, 'db.system')
   const dbOp       = tagVal(span, 'db.operation')
 
+  const barColor = isErr ? 'bg-red-500' : SPAN_SOLID_COLORS[serviceColorIdx(service) % SPAN_SOLID_COLORS.length]
+  const stripeColor = isErr ? 'bg-red-500/70' : SPAN_SOLID_COLORS[serviceColorIdx(service) % SPAN_SOLID_COLORS.length]
+
   return (
     <>
       <div
         onClick={() => setOpen(o => !o)}
-        className="group flex items-start gap-2 px-3 py-1.5 hover:bg-slate-800/40 cursor-pointer border-b border-slate-800/30 transition-colors"
+        className={clsx(
+          'group relative flex items-stretch px-3 hover:bg-slate-800/40 cursor-pointer border-b border-slate-800/30 transition-colors',
+          open && 'bg-slate-800/30',
+        )}
       >
-        {/* Indent + arrow */}
-        <div className="flex items-center shrink-0 mt-0.5" style={{ paddingLeft: depth * 16 }}>
-          {open
-            ? <ChevronDown className="w-3 h-3 text-slate-500" />
-            : <ChevronRight className="w-3 h-3 text-slate-600 group-hover:text-slate-400" />
-          }
-        </div>
+        {/* Service color stripe (Dynatrace-style left accent) */}
+        <span className={clsx('absolute left-0 top-0 bottom-0 w-0.5', stripeColor)} />
 
-        {/* Left: service + operation + kind hints */}
-        <div className="flex items-center gap-2 min-w-0 flex-1">
+        {/* Name column: tree guides + chevron + service + operation */}
+        <div className={clsx(NAME_COL, 'flex items-center py-1.5')}>
+          {/* Tree depth guide lines */}
+          {depth > 0 && (
+            <div className="flex self-stretch shrink-0">
+              {Array.from({ length: depth }).map((_, i) => (
+                <span key={i} className="w-3.5 self-stretch border-l border-slate-700/50" />
+              ))}
+            </div>
+          )}
+          {/* Expand/collapse */}
+          <span className="shrink-0 w-4 flex justify-center">
+            {open
+              ? <ChevronDown className="w-3 h-3 text-slate-400" />
+              : <ChevronRight className="w-3 h-3 text-slate-600 group-hover:text-slate-400" />}
+          </span>
           <ServiceBadge name={service} small />
-          <span className={clsx(
-            'text-[11px] font-mono truncate',
-            isErr ? 'text-red-300' : 'text-slate-200',
-          )}>
+          <span className={clsx('ml-1.5 text-[11px] font-mono truncate', isErr ? 'text-red-300' : 'text-slate-200')}>
             {span.operationName}
           </span>
-          {/* HTTP method + status inline hint */}
           {httpMethod && (
-            <span className="shrink-0 text-[9px] font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-1 py-px">
-              {httpMethod}
-            </span>
+            <span className="ml-1.5 shrink-0 text-[9px] font-bold text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded px-1 py-px">{httpMethod}</span>
           )}
           {httpStatus && (
-            <span className={clsx(
-              'shrink-0 text-[9px] font-bold rounded px-1 py-px border',
+            <span className={clsx('ml-1 shrink-0 text-[9px] font-bold rounded px-1 py-px border',
               Number(httpStatus) >= 500 ? 'text-red-400 bg-red-500/10 border-red-500/20'
               : Number(httpStatus) >= 400 ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
-              : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
-            )}>
-              {httpStatus}
-            </span>
+              : 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20')}>{httpStatus}</span>
           )}
-          {/* DB type hint */}
           {dbSystem && !httpMethod && (
-            <span className="shrink-0 text-[9px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1 py-px">
-              {dbSystem.toUpperCase()}
-              {dbOp ? ` ${dbOp}` : ''}
-            </span>
-          )}
-          {isErr && (
-            <span className="shrink-0 text-[9px] font-semibold text-red-400 bg-red-500/10 border border-red-500/20 rounded px-1 py-px">
-              ERR
+            <span className="ml-1.5 shrink-0 text-[9px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-1 py-px">
+              {dbSystem.toUpperCase()}{dbOp ? ` ${dbOp}` : ''}
             </span>
           )}
         </div>
 
-        {/* Waterfall bar column */}
-        <div className="shrink-0 w-[320px] relative h-5 flex items-center"
-          title={`${span.operationName}\nstart +${fmtDuration(offsetUs)} · ${fmtDuration(span.duration)}`}>
-          <div className="absolute inset-0 flex items-center">
-            {/* Grid lines aligned to the ruler ticks */}
-            {[0, 25, 50, 75, 100].map(pct => (
-              <div key={pct} className="absolute top-0 bottom-0 w-px bg-slate-700/25" style={{ left: `${pct}%` }} />
-            ))}
-            {/* Baseline */}
-            <div className="absolute left-0 right-0 h-px bg-slate-800/60" />
-            {/* Bar */}
-            <div
-              className={clsx('absolute h-[11px] rounded-[3px] bg-gradient-to-r shadow-sm', barGradient,
-                isErr && 'ring-1 ring-red-400/40')}
-              style={{ left: `${clampedLeft}%`, width: `${clampedWidth}%` }}
-            />
-            {/* Inline duration label, placed just after the bar */}
-            <span
-              className="absolute text-[9px] font-mono text-slate-400 tabular-nums whitespace-nowrap pointer-events-none"
-              style={
-                clampedLeft + clampedWidth > 82
-                  ? { right: `${100 - clampedLeft}%`, paddingRight: 4 }
-                  : { left: `${clampedLeft + clampedWidth}%`, paddingLeft: 4 }
-              }
-            >
-              {fmtDuration(span.duration)}
-            </span>
-          </div>
+        {/* Timeline column (dominant, flex-1) */}
+        <div className="flex-1 relative min-w-[160px] flex items-center py-1.5"
+          title={`${span.operationName}\nstart +${fmtDuration(offsetUs)} · duration ${fmtDuration(span.duration)}`}>
+          {/* Gridlines aligned to the ruler ticks */}
+          {[0, 25, 50, 75, 100].map(pct => (
+            <div key={pct} className="absolute top-0 bottom-0 w-px bg-slate-700/20" style={{ left: `${pct}%` }} />
+          ))}
+          {/* Bar */}
+          <div
+            className={clsx('absolute h-2.5 rounded-[3px]', barColor, isErr && 'ring-1 ring-red-400/50')}
+            style={{ left: `${clampedLeft}%`, width: `${clampedWidth}%`, minWidth: 2 }}
+          />
+          {/* Duration label, just outside the bar (flips inside-left near the end) */}
+          <span
+            className="absolute text-[9px] font-mono text-slate-400 tabular-nums whitespace-nowrap pointer-events-none"
+            style={clampedLeft + clampedWidth > 82
+              ? { right: `${100 - clampedLeft}%`, paddingRight: 4 }
+              : { left: `${clampedLeft + clampedWidth}%`, paddingLeft: 4 }}
+          >
+            {fmtDuration(span.duration)}
+          </span>
         </div>
 
-        {/* Offset from trace start */}
-        <span className="shrink-0 text-[10px] font-mono text-slate-600 w-16 text-right tabular-nums">
+        {/* Start offset */}
+        <span className="shrink-0 text-[10px] font-mono text-slate-600 w-14 text-right tabular-nums self-center">
           +{fmtDuration(offsetUs)}
         </span>
       </div>
 
-      {/* Structured span detail */}
-      {open && (
-        <SpanDetailPanel span={span} trace={trace} />
-      )}
+      {open && <SpanDetailPanel span={span} trace={trace} />}
     </>
   )
 }
