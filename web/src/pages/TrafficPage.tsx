@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, TrafficReport, TrafficBucket, TrafficCount, TrafficEntry, HostStat, ConnectionsReport } from '../api/client'
+import { api, TrafficReport, TrafficBucket, TrafficCount, TrafficEntry, HostStat, ConnectionsReport, TrafficLog } from '../api/client'
 import { Page, PageHeader, Panel, StatCard, EmptyState, Tabs } from '../components/ui'
 import { Select } from '../components/Select'
 import { formatBytes } from '../lib/format'
@@ -7,9 +7,10 @@ import clsx from 'clsx'
 import {
   Activity, RefreshCw, Globe, AlertTriangle, Network, Gauge, ArrowDownToLine,
   ChevronDown, Users, Search, X, Clock, Zap, Server, Wifi, Monitor, ShieldAlert,
+  FileText, Trash2, Download,
 } from 'lucide-react'
 
-type TabId = 'overview' | 'hosts' | 'response' | 'errors' | 'requests' | 'connections'
+type TabId = 'overview' | 'hosts' | 'response' | 'errors' | 'requests' | 'connections' | 'logs'
 
 const WINDOWS = [
   { label: '1h', hours: 1 }, { label: '6h', hours: 6 },
@@ -260,6 +261,76 @@ function HostTable({ stats }: { stats: HostStat[] }) {
   )
 }
 
+// ─── Captured-payload body block ──────────────────────────────────────────────
+function TrafficBody({ label, text, binary, truncated, contentType, bytes }: {
+  label: string
+  text?: string
+  binary?: boolean
+  truncated?: boolean
+  contentType?: string
+  bytes?: number
+}) {
+  const [open, setOpen] = useState(true)
+  const hasText = !!text && text.length > 0
+  const download = () => {
+    if (!text) return
+    let blob: Blob
+    if (binary) {
+      const bin = atob(text)
+      const buf = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i)
+      blob = new Blob([buf], { type: contentType || 'application/octet-stream' })
+    } else {
+      blob = new Blob([text], { type: contentType || 'text/plain' })
+    }
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${label.toLowerCase().replace(/\s+/g, '-')}${binary ? '.bin' : '.txt'}`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+  return (
+    <div className="border border-slate-800 rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-3 py-2 bg-slate-900/60 hover:bg-slate-800/40 transition-colors text-left"
+      >
+        <ChevronDown className={clsx('w-3.5 h-3.5 text-slate-500 transition-transform', !open && '-rotate-90')} />
+        <span className="text-[11px] font-semibold text-slate-300">{label}</span>
+        {contentType && <span className="text-[10px] text-slate-600 truncate max-w-[180px]">{contentType}</span>}
+        {typeof bytes === 'number' && bytes > 0 && <span className="text-[10px] text-slate-600">{formatBytes(bytes)}</span>}
+        {binary && <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-300">binary</span>}
+        {truncated && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300">truncated</span>}
+        {hasText && (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={e => { e.stopPropagation(); download() }}
+            className="ml-auto text-slate-500 hover:text-blue-400"
+            title="Download"
+          >
+            <Download className="w-3.5 h-3.5" />
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="px-3 py-2 bg-slate-950/40">
+          {!hasText ? (
+            <div className="text-[11px] text-slate-600 italic">empty</div>
+          ) : binary ? (
+            <div className="text-[11px] text-slate-500">
+              Binary payload ({formatBytes(bytes || 0)}) — base64 stored. Use the download button to retrieve raw bytes.
+            </div>
+          ) : (
+            <pre className="text-[11px] font-mono text-slate-300 whitespace-pre-wrap break-all max-h-64 overflow-y-auto">{text}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function TrafficPage() {
   const [tab, setTab] = useState<TabId>('overview')
@@ -273,6 +344,31 @@ export default function TrafficPage() {
   const [fStatus, setFStatus] = useState<'all' | '2xx' | '3xx' | '4xx' | '5xx'>('all')
   const [fMethod, setFMethod] = useState('all')
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Captured traffic logs (trie-indexed backend).
+  const [logs, setLogs] = useState<TrafficLog[]>([])
+  const [logsTotal, setLogsTotal] = useState(0)
+  const [logSearch, setLogSearch] = useState('')
+  const [logErrOnly, setLogErrOnly] = useState(false)
+  const [logSel, setLogSel] = useState<TrafficLog | null>(null)
+  const [logLoading, setLogLoading] = useState(false)
+
+  useEffect(() => {
+    if (tab !== 'logs') return
+    setLogLoading(true)
+    const t = setTimeout(() => {
+      api.trafficLogs({ search: logSearch || undefined, status: logErrOnly ? 'error' : undefined, limit: 200 })
+        .then(r => { setLogs(r.data ?? []); setLogsTotal(r.total) })
+        .catch(() => {})
+        .finally(() => setLogLoading(false))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [tab, logSearch, logErrOnly])
+
+  const openLog = (l: TrafficLog) => { api.trafficLog(l.id).then(setLogSel).catch(() => setLogSel(l)) }
+  const clearLogs = async () => {
+    try { await api.clearTrafficLogs(); setLogs([]); setLogsTotal(0); setLogSel(null) } catch {}
+  }
 
   const load = async () => {
     try {
@@ -394,6 +490,7 @@ export default function TrafficPage() {
           { id: 'errors' as TabId, label: 'Errors', icon: ShieldAlert, count: s ? s.status_4xx + s.status_5xx : undefined },
           { id: 'requests' as TabId, label: 'Requests', icon: Search, count: report?.recent.length },
           { id: 'connections' as TabId, label: 'Connections', icon: Network },
+          { id: 'logs' as TabId, label: 'Logs', icon: FileText, count: logsTotal || undefined },
         ]}
         active={tab}
         onChange={setTab}
@@ -838,6 +935,78 @@ export default function TrafficPage() {
                     </Panel>
                   </>
                 )}
+              </div>
+            )}
+
+            {/* ── TRAFFIC LOGS ── */}
+            {tab === 'logs' && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="relative flex-1 min-w-[200px]">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    <input
+                      value={logSearch}
+                      onChange={e => setLogSearch(e.target.value)}
+                      placeholder="Search path / method / host…"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-9 pr-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
+                    <input type="checkbox" checked={logErrOnly} onChange={e => setLogErrOnly(e.target.checked)} className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-blue-500" />
+                    Errors only
+                  </label>
+                  <span className="text-xs text-slate-600">{logsTotal} captured</span>
+                  <button onClick={clearLogs} className="btn-secondary gap-1.5 text-xs"><Trash2 className="w-3.5 h-3.5" /> Clear</button>
+                </div>
+
+                {logsTotal === 0 && !logLoading && (
+                  <EmptyState
+                    icon={FileText}
+                    title="No captured traffic yet"
+                    description="HTTP request/response payloads are captured while a container trace is active (Containers → Trace). TLS-encrypted traffic isn't visible to the wire tracer."
+                  />
+                )}
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* List */}
+                  <Panel title={`Exchanges — ${logLoading ? 'loading…' : `${logs.length} shown`}`}>
+                    <div className="max-h-[60vh] overflow-y-auto divide-y divide-slate-800/50">
+                      {logs.map(l => (
+                        <button
+                          key={l.id}
+                          onClick={() => openLog(l)}
+                          className={clsx('w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-slate-800/40 transition-colors', logSel?.id === l.id && 'bg-slate-800/60')}
+                        >
+                          <span className="text-[10px] font-bold text-blue-400 w-12 shrink-0">{l.method}</span>
+                          <span className={clsx('text-[10px] font-bold w-9 shrink-0',
+                            l.status >= 500 ? 'text-red-400' : l.status >= 400 ? 'text-amber-400' : l.status >= 300 ? 'text-blue-400' : 'text-emerald-400')}>
+                            {l.status || '—'}
+                          </span>
+                          <span className="flex-1 min-w-0 text-xs font-mono text-slate-300 truncate">{l.path}</span>
+                          <span className="text-[10px] text-slate-600 shrink-0">{fmtMs(l.duration_ms)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </Panel>
+
+                  {/* Detail */}
+                  <Panel title={logSel ? `Payload — ${logSel.method} ${logSel.path}` : 'Payload'}>
+                    {!logSel ? (
+                      <div className="p-6 text-center text-slate-600 text-sm">Click an exchange to inspect its request &amp; response.</div>
+                    ) : (
+                      <div className="space-y-3 max-h-[60vh] overflow-y-auto text-xs">
+                        <div className="flex flex-wrap gap-2 text-[11px] text-slate-500">
+                          <span>{logSel.container}</span>·<span>{new Date(logSel.time).toLocaleString()}</span>·<span>{fmtMs(logSel.duration_ms)}</span>
+                          {logSel.src_addr && <span>{logSel.src_addr} → {logSel.dst_addr}</span>}
+                        </div>
+                        <TrafficBody label="Request headers" text={logSel.req_headers} />
+                        <TrafficBody label="Request body" text={logSel.req_body} binary={logSel.req_binary} truncated={logSel.req_truncated} contentType={logSel.req_content_type} bytes={logSel.req_bytes} />
+                        <TrafficBody label="Response headers" text={logSel.resp_headers} />
+                        <TrafficBody label="Response body" text={logSel.resp_body} binary={logSel.resp_binary} truncated={logSel.resp_truncated} contentType={logSel.resp_content_type} bytes={logSel.resp_bytes} />
+                      </div>
+                    )}
+                  </Panel>
+                </div>
               </div>
             )}
           </>

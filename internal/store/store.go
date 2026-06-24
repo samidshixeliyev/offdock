@@ -28,6 +28,7 @@ type DB struct {
 	DNSTickets     *Collection[DNSTicket]
 	DeployTags     *Collection[DeployTag]
 	ScheduledDeploys *Collection[ScheduledDeploy]
+	TrafficLogs    *Collection[TrafficLog]
 	TraceSessions  *Collection[TraceSession]
 	OTelSpans      *Collection[OTelSpan]
 	TermPolicy     *Collection[TerminalPolicy]
@@ -92,6 +93,9 @@ func Open(dataDir string) (*DB, error) {
 		return nil, err
 	}
 	if db.ScheduledDeploys, err = NewCollection[ScheduledDeploy](open("scheduled_deploys")); err != nil {
+		return nil, err
+	}
+	if db.TrafficLogs, err = NewCollection[TrafficLog](open("traffic_logs")); err != nil {
 		return nil, err
 	}
 	if db.DeployTags, err = NewCollection[DeployTag](open("deploy_tags")); err != nil {
@@ -329,6 +333,7 @@ func defaultRetention() RetentionSettings {
 		OTelSpansMaxCount:     50_000,
 		TraceSessionsMaxCount: 500,
 		AuditEventsMaxCount:   10_000,
+		TrafficLogsMaxCount:   5_000,
 	}
 }
 
@@ -353,6 +358,9 @@ func LoadRetentionSettings(dataDir string) RetentionSettings {
 	}
 	if s.AuditEventsMaxCount <= 0 {
 		s.AuditEventsMaxCount = d.AuditEventsMaxCount
+	}
+	if s.TrafficLogsMaxCount <= 0 {
+		s.TrafficLogsMaxCount = d.TrafficLogsMaxCount
 	}
 	return s
 }

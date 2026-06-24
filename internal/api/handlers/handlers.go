@@ -16,6 +16,7 @@ import (
 	authmw "offdock/internal/middleware"
 	"offdock/internal/store"
 	"offdock/internal/system"
+	"offdock/internal/trafficindex"
 )
 
 // H bundles all dependencies required by handlers.
@@ -40,6 +41,8 @@ type H struct {
 	deployCancels  sync.Map  // streamKey → context.CancelFunc
 	limiter        *authmw.LoginLimiter
 	spanPruneMu    sync.Mutex // prevents concurrent PruneOTelSpans goroutines
+	trafficPruneMu sync.Mutex // prevents concurrent traffic-log retention goroutines
+	trafficIdx     *trafficindex.Index // in-memory trie+time index for fast traffic search/load
 }
 
 // New returns an initialised handler bundle.
@@ -59,7 +62,7 @@ func New(
 	smtpSettings store.SMTPSettings,
 	oauthSettings store.OAuthSettings,
 ) *H {
-	return &H{
+	h := &H{
 		db:             db,
 		auth:           authSvc,
 		enc:            enc,
@@ -75,7 +78,35 @@ func New(
 		smtpSettings:   smtpSettings,
 		oauthSettings:  oauthSettings,
 		limiter:        authmw.NewLoginLimiter(10, time.Minute),
+		trafficIdx:     buildTrafficIndex(db),
 	}
+	// Enforce traffic-log retention periodically so age-based expiry applies even
+	// when no capture is active (the index stays in sync — prune runs in-handler).
+	go func() {
+		for {
+			if h.trafficPruneMu.TryLock() {
+				h.pruneTrafficLogs()
+				h.trafficPruneMu.Unlock()
+			}
+			time.Sleep(6 * time.Hour)
+		}
+	}()
+	return h
+}
+
+// buildTrafficIndex loads existing traffic-log metadata into the in-memory
+// trie+time index at startup so search/load are fast immediately.
+func buildTrafficIndex(db *store.DB) *trafficindex.Index {
+	idx := trafficindex.New()
+	all, _ := db.TrafficLogs.FindAll()
+	for _, t := range all {
+		idx.Add(trafficindex.Entry{
+			ID: t.ID, Time: t.Time, Container: t.Container, Method: t.Method,
+			Host: t.Host, Path: t.Path, Status: t.Status, DurationMs: t.DurationMs,
+			ReqBytes: t.ReqBytes, RespBytes: t.RespBytes,
+		})
+	}
+	return idx
 }
 
 // --- helpers ----------------------------------------------------------------

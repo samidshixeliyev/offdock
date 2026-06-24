@@ -245,6 +245,10 @@ func NewRouter(deps Deps) http.Handler {
 		// Traffic analytics (nginx access-log metrics + live network connections)
 		r.Get("/api/v1/traffic", h.Traffic)
 		r.Get("/api/v1/traffic/connections", h.TrafficConnections)
+		// Captured HTTP traffic logs (request/response payloads) — trie-indexed.
+		r.Get("/api/v1/traffic/logs", h.ListTrafficLogs)
+		r.Get("/api/v1/traffic/logs/{id}", h.GetTrafficLog)
+		r.With(authmw.RequireRoleLive(deps.DB, store.RoleAdmin)).Delete("/api/v1/traffic/logs", h.ClearTrafficLogs)
 
 		// Container deep tracing (HTTP + SQL + Redis) via nsenter + tcpdump — SSE stream.
 		// Enable/disable toggle persisted in-memory per container.

@@ -398,6 +398,9 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 		method, path, host string
 		spanID             string
 		t                  time.Time
+		// Captured request side for the persisted TrafficLog.
+		reqHeaders, reqBody, reqCT, srcAddr, dstAddr string
+		reqBytes                                     int
 	}
 	openReqs := make(map[string]openReq)
 	// activeSpan tracks the most recent http_req span_id per src endpoint,
@@ -432,9 +435,15 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 		switch ev.Type {
 		case TraceHTTPReq:
 			ev.SpanID = newSpanID()
+			reqHdr, reqBody := splitHTTPMessage(payload)
 			openReqs[connKey] = openReq{
 				method: ev.Method, path: ev.Path, host: ev.Host,
 				spanID: ev.SpanID, t: p.wallT,
+				reqHeaders: reqHdr, reqBody: reqBody,
+				reqCT:    httpHeaderValue(reqHdr, "Content-Type"),
+				reqBytes: len(reqBody),
+				srcAddr:  fmt.Sprintf("%s:%d", p.srcIP, p.srcPort),
+				dstAddr:  fmt.Sprintf("%s:%d", p.dstIP, p.dstPort),
 			}
 			activeSpan[srcEndpoint] = ev.SpanID
 
@@ -442,6 +451,21 @@ func (h *H) ContainerTrace(w http.ResponseWriter, r *http.Request) {
 			if req, ok := openReqs[revKey]; ok {
 				ev.DurationMs = float64(p.wallT.Sub(req.t).Milliseconds())
 				ev.ParentSpanID = req.spanID
+				// Build + persist the captured exchange (binary-safe, 1MB cap).
+				respHdr, respBody := splitHTTPMessage(payload)
+				respCT := httpHeaderValue(respHdr, "Content-Type")
+				reqStored, reqBin, reqTrunc := encodeTrafficBody(req.reqBody, req.reqCT, contentLength(req.reqHeaders))
+				respStored, respBin, respTrunc := encodeTrafficBody(respBody, respCT, contentLength(respHdr))
+				tl := store.TrafficLog{
+					ID: store.NewULID(), Time: req.t.UTC(), Container: name,
+					Method: req.method, Host: req.host, Path: req.path, Status: ev.Status,
+					DurationMs: ev.DurationMs, SrcAddr: req.srcAddr, DstAddr: req.dstAddr,
+					ReqHeaders: req.reqHeaders, ReqBody: reqStored, ReqContentType: req.reqCT,
+					ReqBytes: req.reqBytes, ReqBinary: reqBin, ReqTruncated: reqTrunc,
+					RespHeaders: respHdr, RespBody: respStored, RespContentType: respCT,
+					RespBytes: len(respBody), RespBinary: respBin, RespTruncated: respTrunc,
+				}
+				go h.saveTrafficLog(tl)
 				delete(openReqs, revKey)
 			}
 			// Parse rows_affected from PostgreSQL CommandComplete e.g. "C....SELECT 4"

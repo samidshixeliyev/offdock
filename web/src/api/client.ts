@@ -337,6 +337,31 @@ export interface FileEntry {
   mime: string
 }
 
+export interface TrafficLog {
+  id: string
+  time: string
+  container: string
+  method: string
+  host: string
+  path: string
+  status: number
+  duration_ms: number
+  src_addr?: string
+  dst_addr?: string
+  req_headers?: string
+  req_body?: string
+  req_content_type?: string
+  req_bytes?: number
+  req_binary?: boolean
+  req_truncated?: boolean
+  resp_headers?: string
+  resp_body?: string
+  resp_content_type?: string
+  resp_bytes?: number
+  resp_binary?: boolean
+  resp_truncated?: boolean
+}
+
 export interface StorageRoot {
   key: string
   label: string
@@ -656,6 +681,8 @@ export interface RetentionSettings {
   trace_sessions_max_age_days: number
   audit_events_max_count: number
   audit_events_max_age_days: number
+  traffic_logs_max_count: number
+  traffic_logs_max_age_days: number
   app_logs_max_lines: number
 }
 
@@ -1029,6 +1056,19 @@ export const api = {
     }),
   listUploads: () => request<FileEntry[]>('/api/v1/uploads'),
   storageOverview: () => request<{ roots: StorageRoot[] }>('/api/v1/storage/overview'),
+
+  // --- Traffic logs (captured HTTP exchanges, trie-indexed) ---
+  trafficLogs: (params: { search?: string; container?: string; status?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams()
+    if (params.search) qs.set('search', params.search)
+    if (params.container) qs.set('container', params.container)
+    if (params.status) qs.set('status', params.status)
+    if (params.limit) qs.set('limit', String(params.limit))
+    if (params.offset) qs.set('offset', String(params.offset))
+    return request<{ data: TrafficLog[]; total: number; limit: number; offset: number }>(`/api/v1/traffic/logs?${qs.toString()}`)
+  },
+  trafficLog: (id: string) => request<TrafficLog>(`/api/v1/traffic/logs/${id}`),
+  clearTrafficLogs: () => request<{ deleted: number }>('/api/v1/traffic/logs', { method: 'DELETE' }),
 
   // DNS tickets
   listDNSTickets: () => request<DNSTicket[]>('/api/v1/dns/tickets'),

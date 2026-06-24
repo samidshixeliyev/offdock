@@ -290,6 +290,42 @@ type ScheduledDeploy struct {
 
 func (s ScheduledDeploy) GetID() string { return s.ID }
 
+// --- TrafficLog -------------------------------------------------------------
+
+// TrafficLog is a captured HTTP request/response exchange from the container
+// wire tracer (tcpdump). Bodies are stored UTF-8 for text content; binary or
+// non-UTF8 bodies are base64-encoded with Binary=true. Bodies are capped (see
+// the capture site) with Truncated=true when the wire payload exceeded the cap
+// or spanned multiple packets.
+type TrafficLog struct {
+	ID         string    `json:"id"`
+	Time       time.Time `json:"time"`
+	Container  string    `json:"container"`
+	Method     string    `json:"method"`
+	Host       string    `json:"host"`
+	Path       string    `json:"path"`
+	Status     int       `json:"status"`
+	DurationMs float64   `json:"duration_ms"`
+	SrcAddr    string    `json:"src_addr"`
+	DstAddr    string    `json:"dst_addr"`
+
+	ReqHeaders      string `json:"req_headers"`
+	ReqBody         string `json:"req_body"`
+	ReqContentType  string `json:"req_content_type"`
+	ReqBytes        int    `json:"req_bytes"`
+	ReqBinary       bool   `json:"req_binary"`
+	ReqTruncated    bool   `json:"req_truncated"`
+
+	RespHeaders     string `json:"resp_headers"`
+	RespBody        string `json:"resp_body"`
+	RespContentType string `json:"resp_content_type"`
+	RespBytes       int    `json:"resp_bytes"`
+	RespBinary      bool   `json:"resp_binary"`
+	RespTruncated   bool   `json:"resp_truncated"`
+}
+
+func (t TrafficLog) GetID() string { return t.ID }
+
 // --- DeploySettings ---------------------------------------------------------
 
 // DeploySettings holds per-project deployment behaviour configuration.
@@ -684,6 +720,8 @@ type RetentionSettings struct {
 	TraceSessionsMaxAgeDays int `json:"trace_sessions_max_age_days"` // 0 → unlimited
 	AuditEventsMaxCount     int `json:"audit_events_max_count"`      // 0 → default 10 000
 	AuditEventsMaxAgeDays   int `json:"audit_events_max_age_days"`   // 0 → unlimited
+	TrafficLogsMaxCount     int `json:"traffic_logs_max_count"`      // 0 → default 5 000
+	TrafficLogsMaxAgeDays   int `json:"traffic_logs_max_age_days"`   // 0 → unlimited
 	AppLogsMaxLines         int `json:"app_logs_max_lines"`          // 0 → unlimited (logrotate handles OS-level rotation)
 }
 

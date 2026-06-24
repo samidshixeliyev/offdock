@@ -113,6 +113,8 @@ export default function SettingsPage() {
     trace_sessions_max_age_days: 0,
     audit_events_max_count: 10000,
     audit_events_max_age_days: 0,
+    traffic_logs_max_count: 5000,
+    traffic_logs_max_age_days: 0,
     app_logs_max_lines: 0,
   })
   const [savingRetention, setSavingRetention] = useState(false)
@@ -505,6 +507,32 @@ export default function SettingsPage() {
                     placeholder="0 = unlimited" />
                 </div>
               </div>
+            </div>
+
+            {/* Traffic logs */}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Traffic Logs</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Max exchange count</label>
+                  <input type="number" min="100" max="200000"
+                    className="input w-full"
+                    value={retention.traffic_logs_max_count}
+                    onChange={e => setRetention(r => ({ ...r, traffic_logs_max_count: Number(e.target.value) }))}
+                    disabled={!isSuperAdmin}
+                    placeholder="5000" />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">Max age (days)</label>
+                  <input type="number" min="0" max="3650"
+                    className="input w-full"
+                    value={retention.traffic_logs_max_age_days}
+                    onChange={e => setRetention(r => ({ ...r, traffic_logs_max_age_days: Number(e.target.value) }))}
+                    disabled={!isSuperAdmin}
+                    placeholder="0 = unlimited" />
+                </div>
+              </div>
+              <p className="text-[10px] text-slate-600">Captured HTTP request/response payloads (Traffic → Logs). Oldest exchanges are trimmed on capture and on the 6-hour prune cycle.</p>
             </div>
 
             {/* App logs */}
