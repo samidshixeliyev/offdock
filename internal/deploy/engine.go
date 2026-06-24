@@ -101,7 +101,7 @@ func (e *Engine) resolveSettings(projectID string) store.DeploySettings {
 
 // Deploy runs a deployment using the latest compose + env version.
 func (e *Engine) Deploy(ctx context.Context, projectID, triggeredBy string, logFn LogFunc) (*store.DeploymentRecord, error) {
-	return e.DeployVersion(ctx, projectID, triggeredBy, 0, 0, nil, logFn)
+	return e.DeployVersion(ctx, projectID, triggeredBy, "", 0, 0, nil, logFn)
 }
 
 // DeployVersion deploys a specific compose+env version combination.
@@ -114,7 +114,9 @@ func (e *Engine) Deploy(ctx context.Context, projectID, triggeredBy string, logF
 //  2. docker compose up -d --force-recreate --remove-orphans
 //  3. Poll health until stable or timeout (per-project settings).
 //  4. Reload nginx if a config is active.
-func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy string, composeVersion, envVersion int, imageOverrides map[string]string, logFn LogFunc) (*store.DeploymentRecord, error) {
+// deployID, when non-empty, is used as the deployment record's ID so the caller
+// (and its SSE stream key) correlate with the persisted record. Empty = generate one.
+func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy, deployID string, composeVersion, envVersion int, imageOverrides map[string]string, logFn LogFunc) (*store.DeploymentRecord, error) {
 	// Serialise deploys per project so two concurrent triggers cannot race on
 	// `compose up` and the project directory.
 	lock := e.projectLock(projectID)
@@ -221,8 +223,12 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 	if selectedEnv != nil {
 		envVerUsed = selectedEnv.Version
 	}
+	recID := deployID
+	if recID == "" {
+		recID = store.NewULID()
+	}
 	rec := store.DeploymentRecord{
-		ID:                store.NewULID(),
+		ID:                recID,
 		ProjectID:         projectID,
 		TriggeredBy:       triggeredBy,
 		Strategy:          "direct-replace",
@@ -237,7 +243,9 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 
 	fail := func(reason error) (*store.DeploymentRecord, error) {
 		now := time.Now().UTC()
-		if errors.Is(reason, context.Canceled) {
+		recovered := false // true once an auto-rollback brings a healthy stack back
+		cancelled := errors.Is(reason, context.Canceled)
+		if cancelled {
 			rec.Status = store.DeployStatusCancelled
 			log("[STAGE:ERROR] Cancelled")
 			rec.LogText += "\n[STAGE:ERROR] Cancelled"
@@ -247,32 +255,55 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy strin
 			log("[STAGE:ERROR] " + reason.Error())
 			rec.LogText += "\n[STAGE:ERROR] " + reason.Error()
 			rec.LogText += "\nFAILED: " + reason.Error()
-
-			// Auto-rollback to the previous good version, if enabled and one
-			// exists that differs from the failed attempt.
-			if settings.RollbackOnFailure && prevComposeV > 0 &&
-				(prevComposeV != selectedCompose.Version || prevEnvV != envVerUsed) {
-				log("[STAGE] Auto-rollback to compose v%d, env v%d", prevComposeV, prevEnvV)
-				rec.LogText += fmt.Sprintf("\n[STAGE] Auto-rollback to compose v%d, env v%d", prevComposeV, prevEnvV)
-				rbCtx, rbCancel := context.WithTimeout(context.Background(), defaultDeployTimeout)
-				out, rbErr := e.applyVersionFiles(rbCtx, projectID, project.Name, prevComposeV, prevEnvV)
-				rbCancel()
-				if rbErr != nil {
-					rec.LogText += "\nAuto-rollback FAILED: " + rbErr.Error() + "\n" + strings.TrimSpace(out)
-					log("Auto-rollback failed: %v", rbErr)
-				} else {
-					rec.LogText += fmt.Sprintf("\nAuto-rollback: re-deployed compose v%d, env v%d (stack restarted — health NOT re-verified; check container status).", prevComposeV, prevEnvV)
-					log("Auto-rollback: re-deployed compose v%d, env v%d (health not re-verified)", prevComposeV, prevEnvV)
-				}
-			}
 		}
+
+		// Recovery (for BOTH failure and cancel): restore the previous good
+		// version and HEALTH-VERIFY it, so we only report recovery when the old
+		// version is actually back up. Uses a fresh context since the deploy
+		// ctx may already be cancelled.
+		canRollback := settings.RollbackOnFailure && prevComposeV > 0 &&
+			(prevComposeV != selectedCompose.Version || prevEnvV != envVerUsed)
+		if canRollback {
+			log("[STAGE] Auto-rollback to compose v%d, env v%d", prevComposeV, prevEnvV)
+			rec.LogText += fmt.Sprintf("\n[STAGE] Auto-rollback to compose v%d, env v%d", prevComposeV, prevEnvV)
+			rbCtx, rbCancel := context.WithTimeout(context.Background(), deployTimeoutDur)
+			out, rbErr := e.applyVersionFiles(rbCtx, projectID, project.Name, prevComposeV, prevEnvV)
+			if rbErr == nil {
+				rbComposePath := filepath.Join(e.projectsDir, projectID, "docker-compose.yml")
+				rbErr = e.waitHealthy(rbCtx, composeProjectName(project.Name), rbComposePath,
+					time.Duration(settings.HealthTimeoutSecs)*time.Second,
+					time.Duration(settings.HealthStableSecs)*time.Second, log)
+			}
+			rbCancel()
+			if rbErr != nil {
+				rec.LogText += "\nAuto-rollback FAILED: " + rbErr.Error() + "\n" + strings.TrimSpace(out)
+				log("Auto-rollback failed: %v", rbErr)
+			} else {
+				recovered = true
+				rec.RolledBackTo = fmt.Sprintf("compose_v%d/env_v%d", prevComposeV, prevEnvV)
+				rec.LogText += fmt.Sprintf("\nAuto-rollback OK: compose v%d, env v%d is healthy.", prevComposeV, prevEnvV)
+				log("Auto-rollback OK: compose v%d, env v%d healthy", prevComposeV, prevEnvV)
+			}
+		} else if !recovered {
+			// No auto-rollback configured — the in-place stack may be partially
+			// recreated; make that explicit so the operator can act.
+			rec.LogText += "\nWARNING: stack may be in a partial state (direct in-place deploy). Redeploy or roll back manually."
+			log("WARNING: stack may be in a partial state — redeploy or roll back manually")
+		}
+
 		rec.FinishedAt = &now
 		_ = e.db.Deployments.Save(rec)
-		project.Status = store.ProjectStatusError
+		// A recovered auto-rollback means the previous good version is healthy —
+		// the project is running, not errored.
+		if recovered {
+			project.Status = store.ProjectStatusRunning
+		} else {
+			project.Status = store.ProjectStatusError
+		}
 		project.UpdatedAt = time.Now().UTC()
 		_ = e.db.Projects.Save(project)
 		webhookStatus := "failed"
-		if errors.Is(reason, context.Canceled) {
+		if cancelled {
 			webhookStatus = "cancelled"
 		}
 		go fireWebhook(settings.WebhookURL, webhookStatus, project.Name, rec.ID)

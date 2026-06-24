@@ -286,6 +286,15 @@ func (h *H) DeleteEnvVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "env v"+strconv.Itoa(ver)+" is referenced by tag(s): "+strings.Join(names, ", ")+" — delete those tags first")
 		return
 	}
+	// Protect versions still referenced by deployment history so a
+	// "roll back to this deployment" never hits a missing version.
+	deps, _ := h.db.Deployments.FindWhere(func(d store.DeploymentRecord) bool {
+		return d.ProjectID == projectID && d.EnvVersion == ver
+	})
+	if len(deps) > 0 {
+		writeError(w, http.StatusConflict, "env v"+strconv.Itoa(ver)+" is used by "+strconv.Itoa(len(deps))+" deployment record(s) — delete those from the history first to keep rollback valid")
+		return
+	}
 	if err := h.db.EnvVars.Delete(target.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not delete env version")
 		return

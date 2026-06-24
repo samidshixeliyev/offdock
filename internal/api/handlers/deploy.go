@@ -104,7 +104,7 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 			msg, _ := json.Marshal(map[string]string{"log": line})
 			h.hub.Publish(streamKey, string(msg))
 		}
-		rec, err := h.deployer.DeployVersion(ctx, projectID, claims.UserID, composeVersion, envVersion, imagePins, logFn)
+		rec, err := h.deployer.DeployVersion(ctx, projectID, claims.UserID, depID, composeVersion, envVersion, imagePins, logFn)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			h.hub.Publish(streamKey, string(msg))
@@ -164,8 +164,11 @@ func (h *H) DeployStream(w http.ResponseWriter, r *http.Request) {
 	h.hub.Subscribe(w, r, "deploy:"+depID)
 }
 
-// CancelDeploy signals a running deployment to stop.
-// The deploy goroutine will clean up the _next stack and mark the record as cancelled.
+// CancelDeploy signals a running deployment to stop. The engine uses a
+// direct in-place `--force-recreate` strategy (no _next stack), so on cancel the
+// goroutine marks the record cancelled and — if RollbackOnFailure is enabled —
+// the engine restores and health-verifies the previous good version. Otherwise
+// the stack is left as-is and a warning is logged so the operator can redeploy.
 func (h *H) CancelDeploy(w http.ResponseWriter, r *http.Request) {
 	depID := chi.URLParam(r, "dep_id")
 	streamKey := "deploy:" + depID

@@ -257,6 +257,14 @@ type DeploymentRecord struct {
 	// names the tag/deployment they restored (for history readability).
 	IsRollback bool   `json:"is_rollback"`
 	RollbackOf string `json:"rollback_of"`
+	// RolledBackTo is set when a FAILED deploy auto-recovered: it names the
+	// previous good version the engine restored and health-verified.
+	RolledBackTo string `json:"rolled_back_to,omitempty"`
+	// ImageSnapshot records the exact image reference each compose service ran
+	// at the end of a successful deploy (service name → repo:tag or repo@sha256).
+	// Lets any past deployment be re-deployed as a true image-level rollback
+	// without a manual tag. Empty for older records / failed deploys.
+	ImageSnapshot map[string]string `json:"image_snapshot,omitempty"`
 }
 
 func (d DeploymentRecord) GetID() string { return d.ID }

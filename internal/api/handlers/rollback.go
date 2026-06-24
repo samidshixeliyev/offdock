@@ -95,7 +95,7 @@ func (h *H) Rollback(w http.ResponseWriter, r *http.Request) {
 			msg, _ := json.Marshal(map[string]string{"log": line})
 			h.hub.Publish(streamKey, string(msg))
 		}
-		rec, err := h.deployer.DeployVersion(ctx, projectID, claims.UserID, composeVersion, envVersion, imagePins, logFn)
+		rec, err := h.deployer.DeployVersion(ctx, projectID, claims.UserID, depID, composeVersion, envVersion, imagePins, logFn)
 		if err != nil {
 			msg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			h.hub.Publish(streamKey, string(msg))

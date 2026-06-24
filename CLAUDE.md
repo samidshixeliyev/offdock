@@ -55,9 +55,19 @@ All Docker operations use `os/exec` CLI calls (`docker`, `docker compose`).
 
 ### Deployment Engine (`internal/deploy/engine.go`)
 
-Healthcheck-cutover strategy: brings up `<project>_next` stack → polls health every 3s
-(120s timeout) → cuts over by stopping old stack → re-runs as canonical name → reloads nginx.
-Streams log lines to SSE clients via the hub.
+**Direct in-place replacement** strategy (NOT blue-green — there is no `_next` stack):
+1. Write compose + env to disk (atomic).
+2. `docker compose up -d --force-recreate --remove-orphans`.
+3. Poll health every 3s until all containers are healthy/stable or timeout (per-project
+   settings, default 120s). One-shot/init containers that exited 0 count as healthy.
+4. Reload nginx if a config is active. Streams log lines to SSE clients via the hub.
+
+Per-project mutex serialises deploys. `DeployVersion(... deployID ...)` uses the caller's
+ID so the SSE stream key and the persisted record correlate. On failure OR cancel, if
+`RollbackOnFailure` is set the engine restores the previous good version **and health-verifies
+it** (project goes back to `running`); otherwise it logs that the in-place stack may be in a
+partial state. This strategy has brief downtime during recreate — acceptable for the
+air-gapped deployment cadence.
 
 ### Nginx Control (`internal/nginx/`)
 
