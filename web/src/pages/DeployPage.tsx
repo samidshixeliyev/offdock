@@ -1174,21 +1174,23 @@ export default function DeployPage() {
         </div>
       </div>
 
-      {/* Save bar — applies all settings on this tab */}
-      <div className="sticky bottom-0 flex items-center gap-3 p-4 rounded-xl bg-slate-900/90 backdrop-blur border border-slate-800">
-        <button
-          onClick={saveSettings}
-          disabled={settingsSaving}
-          className="btn-primary text-sm"
-        >
-          {settingsSaving ? 'Saving…' : 'Save settings'}
-        </button>
-        {settingsSaved && <span className="text-xs text-green-400">✓ Saved</span>}
-        {settings && (
-          <span className="text-xs text-slate-600 ml-auto">
-            Current: health {settings.health_timeout_secs}s · deploy {settings.deploy_timeout_secs}s · stable {settings.health_stable_secs}s
-          </span>
-        )}
+      {/* Save bar — sticks to the bottom of the scroll viewport while editing. */}
+      <div className="sticky bottom-0 z-30 -mx-6 px-6 py-3 bg-slate-950/95 backdrop-blur border-t border-slate-800">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={saveSettings}
+            disabled={settingsSaving}
+            className="btn-primary text-sm"
+          >
+            {settingsSaving ? 'Saving…' : 'Save settings'}
+          </button>
+          {settingsSaved && <span className="text-xs text-green-400">✓ Saved</span>}
+          {settings && (
+            <span className="text-xs text-slate-600 ml-auto hidden sm:block">
+              Current: health {settings.health_timeout_secs}s · deploy {settings.deploy_timeout_secs}s · stable {settings.health_stable_secs}s
+            </span>
+          )}
+        </div>
       </div>
       </div>
       )}

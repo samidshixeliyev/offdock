@@ -942,11 +942,30 @@ func detectServiceLanguages(image string, buildHint ...string) []string {
 		img = img[i+1:]
 	}
 
+	// Known web UIs/management consoles that ship ON TOP of an infra product —
+	// these ARE app runtimes (mostly Node) and SHOULD be traced, so they must win
+	// before the infra-skip below (whose substrings like "redis"/"mongo" would
+	// otherwise swallow them).
+	uiApps := map[string]string{
+		"redisinsight": "nodejs",
+		"rediscommander": "nodejs",
+		"redis-commander": "nodejs",
+		"mongo-express": "nodejs",
+		"mongoexpress": "nodejs",
+		"pgadmin": "python",
+		"pgadmin4": "python",
+		"adminer": "php",
+		"phpmyadmin": "php",
+	}
+	if lang, ok := uiApps[img]; ok {
+		return []string{lang}
+	}
+
 	// Skip known pure-infra images — injecting tracers into these causes startup errors.
-	// Use exact-match or prefix-only checks for images that have UI/management variants
-	// (e.g. kafka-ui, rabbitmq:management) so those variants still get language detection.
+	// "redis"/"mongo" use exact/prefix matching (not substring) so UI variants like
+	// redisinsight / mongo-express above are not wrongly swallowed.
 	infraKeywords := []string{
-		"postgres", "mysql", "mariadb", "redis", "mongo", "nginx", "caddy",
+		"postgres", "mysql", "mariadb", "nginx", "caddy",
 		"traefik", "zookeeper", "kibana",
 		"grafana", "prometheus", "mssql", "sqlserver", "memcached", "nats",
 		"vault", "consul", "etcd", "haproxy",
@@ -956,9 +975,9 @@ func detectServiceLanguages(image string, buildHint ...string) []string {
 			return nil
 		}
 	}
-	// These images have UI/management variants (e.g. kafka-ui, rabbitmq:management).
-	// Only skip if the image name IS the infra image, not a derivative.
-	infraExact := []string{"kafka", "rabbitmq", "activemq", "elasticsearch", "logstash"}
+	// These images have UI/management variants (e.g. kafka-ui, rabbitmq:management,
+	// redisinsight, mongo-express). Only skip if the image name IS the infra image.
+	infraExact := []string{"kafka", "rabbitmq", "activemq", "elasticsearch", "logstash", "redis", "mongo", "mongod"}
 	for _, kw := range infraExact {
 		if img == kw || strings.HasPrefix(img, kw+":") {
 			return nil

@@ -1,6 +1,9 @@
 // Custom-designed dropdown — replaces native <select> for a consistent,
 // keyboard-accessible, dark-themed control. Offline-safe (no external deps).
-import { useEffect, useRef, useState } from 'react'
+// The popover renders in a portal with fixed positioning so it is never clipped
+// by a parent's `overflow-hidden` and never lost behind another stacking context.
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import { Check, ChevronDown, Search, type LucideIcon } from 'lucide-react'
 
@@ -32,7 +35,9 @@ export function Select<T extends string>({
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [activeIdx, setActiveIdx] = useState(0)
+  const [pos, setPos] = useState<{ top: number; left?: number; right?: number; width: number; flipUp: boolean } | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const popRef = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
 
   const selected = options.find(o => o.value === value)
@@ -41,11 +46,37 @@ export function Select<T extends string>({
     ? options.filter(o => o.label.toLowerCase().includes(query.trim().toLowerCase()))
     : options
 
-  // Close on outside click.
+  // Compute the popover's fixed position from the trigger's rect. Re-run on open
+  // and on any scroll/resize so it stays glued to the trigger.
+  useLayoutEffect(() => {
+    if (!open) return
+    const update = () => {
+      const el = rootRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const spaceBelow = window.innerHeight - r.bottom
+      const flipUp = spaceBelow < 280 && r.top > spaceBelow
+      const base = { width: r.width, flipUp, top: flipUp ? r.top : r.bottom }
+      setPos(align === 'right'
+        ? { ...base, right: window.innerWidth - r.right }
+        : { ...base, left: r.left })
+    }
+    update()
+    window.addEventListener('scroll', update, true)
+    window.addEventListener('resize', update)
+    return () => {
+      window.removeEventListener('scroll', update, true)
+      window.removeEventListener('resize', update)
+    }
+  }, [open, align])
+
+  // Close on outside click — accounts for the portaled popover too.
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (rootRef.current?.contains(t) || popRef.current?.contains(t)) return
+      setOpen(false)
     }
     window.addEventListener('mousedown', onDown)
     return () => window.removeEventListener('mousedown', onDown)
@@ -101,11 +132,22 @@ export function Select<T extends string>({
         <ChevronDown className={clsx('w-4 h-4 text-slate-500 shrink-0 transition-transform', open && 'rotate-180')} />
       </button>
 
-      {open && (
-        <div className={clsx(
-          'absolute z-50 mt-1 min-w-full w-max max-w-[min(20rem,80vw)] rounded-lg border border-slate-700 bg-slate-900 shadow-2xl shadow-black/40 animate-scaleIn origin-top',
-          align === 'right' ? 'right-0' : 'left-0',
-        )}>
+      {open && pos && createPortal(
+        <div
+          ref={popRef}
+          style={{
+            position: 'fixed',
+            top: pos.flipUp ? undefined : pos.top + 4,
+            bottom: pos.flipUp ? window.innerHeight - pos.top + 4 : undefined,
+            left: pos.left,
+            right: pos.right,
+            minWidth: pos.width,
+          }}
+          className={clsx(
+            'z-[200] w-max max-w-[min(20rem,80vw)] rounded-lg border border-slate-700 bg-slate-900 shadow-2xl shadow-black/40 animate-scaleIn',
+            pos.flipUp ? 'origin-bottom' : 'origin-top',
+          )}
+        >
           {useSearch && (
             <div className="p-2 border-b border-slate-800">
               <div className="relative">
@@ -145,7 +187,8 @@ export function Select<T extends string>({
               )
             })}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

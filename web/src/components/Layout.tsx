@@ -7,7 +7,7 @@ import {
   LayoutDashboard, Boxes, Container, Globe, Network, HardDrive, FolderTree,
   Cpu, TerminalSquare, Activity, ScrollText, Users, LogOut, ChevronRight,
   MapPin, Settings, FileText, Menu, Layers, BookOpen,
-  PanelLeftClose, PanelLeftOpen, GripVertical, Eye, EyeOff, Pencil, RotateCcw, Check,
+  PanelLeftClose, PanelLeftOpen, GripVertical, Eye, EyeOff, RotateCcw, Check,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -335,33 +335,25 @@ export default function Layout() {
           {renderGroup('System', visibleSystem, 'system', visibleMain.length)}
         </nav>
 
-        {/* Customize controls */}
-        {!railCollapsed && (
+        {/* Customize controls — entered via the gear in the header; only the
+            Done / Reset controls live here while actively editing. */}
+        {!railCollapsed && editing && (
           <div className="px-3 pb-2">
-            {editing ? (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setEditing(false)}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-lg hover:bg-emerald-500/15 transition-colors"
-                >
-                  <Check className="w-3.5 h-3.5" /> Done
-                </button>
-                <button
-                  onClick={resetNav}
-                  title="Reset to default order"
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-400 border border-slate-700 rounded-lg hover:text-slate-200 hover:bg-slate-800 transition-colors"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" /> Reset
-                </button>
-              </div>
-            ) : (
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setEditing(true)}
-                className="flex items-center justify-center gap-2 w-full px-3 py-2 text-xs font-medium text-slate-300 bg-slate-800/60 border border-slate-700 rounded-lg hover:bg-slate-800 hover:text-white hover:border-slate-600 transition-all"
+                onClick={() => setEditing(false)}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-lg hover:bg-emerald-500/15 transition-colors"
               >
-                <Pencil className="w-3.5 h-3.5" /> Customize navigation
+                <Check className="w-3.5 h-3.5" /> Done
               </button>
-            )}
+              <button
+                onClick={resetNav}
+                title="Reset to default order"
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-400 border border-slate-700 rounded-lg hover:text-slate-200 hover:bg-slate-800 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> Reset
+              </button>
+            </div>
           </div>
         )}
 
