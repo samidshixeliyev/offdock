@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -128,6 +131,249 @@ func (h *H) TriggerDeploy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"deployment_id": depID,
 		"stream":        "/api/v1/projects/" + projectID + "/deployments/" + depID + "/stream",
+	})
+}
+
+// DeployDiff previews what a deploy will change vs the currently-running version:
+// env var add/remove/change (secret values masked) and compose YAML before/after.
+// Query: compose_version, env_version (0 = latest target).
+func (h *H) DeployDiff(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if _, err := h.db.Projects.FindByID(projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	q := r.URL.Query()
+	targetCompose, _ := strconv.Atoi(q.Get("compose_version"))
+	targetEnv, _ := strconv.Atoi(q.Get("env_version"))
+
+	// Current = last successful deployment's versions (what's live).
+	deps, _ := h.db.Deployments.FindWhere(func(d store.DeploymentRecord) bool {
+		return d.ProjectID == projectID && d.Status == store.DeployStatusSuccess
+	})
+	sort.Slice(deps, func(i, j int) bool { return deps[i].StartedAt.After(deps[j].StartedAt) })
+	curCompose, curEnv := 0, 0
+	if len(deps) > 0 {
+		curCompose = deps[0].NewComposeVersion
+		curEnv = deps[0].EnvVersion
+	}
+
+	composes, _ := h.db.Compose.FindWhere(func(c store.ComposeConfig) bool { return c.ProjectID == projectID })
+	pickCompose := func(ver int) *store.ComposeConfig {
+		var latest *store.ComposeConfig
+		for i := range composes {
+			if ver > 0 && composes[i].Version == ver {
+				return &composes[i]
+			}
+			if latest == nil || composes[i].Version > latest.Version {
+				latest = &composes[i]
+			}
+		}
+		return latest
+	}
+	tgtC, curC := pickCompose(targetCompose), pickCompose(curCompose)
+	tgtYAML, curYAML := "", ""
+	if tgtC != nil {
+		tgtYAML = tgtC.RawYAML
+	}
+	if curC != nil && curCompose > 0 {
+		curYAML = curC.RawYAML
+	}
+
+	// Env diff (decrypt to compare; mask secret values).
+	envs, _ := h.db.EnvVars.FindWhere(func(v store.EnvVarSet) bool { return v.ProjectID == projectID })
+	pickEnv := func(ver int) *store.EnvVarSet {
+		var latest *store.EnvVarSet
+		for i := range envs {
+			if ver > 0 && envs[i].Version == ver {
+				return &envs[i]
+			}
+			if latest == nil || envs[i].Version > latest.Version {
+				latest = &envs[i]
+			}
+		}
+		return latest
+	}
+	toMap := func(set *store.EnvVarSet) (map[string]string, map[string]bool) {
+		vals := map[string]string{}
+		secret := map[string]bool{}
+		if set == nil {
+			return vals, secret
+		}
+		for _, v := range set.Vars {
+			p, err := h.enc.Decrypt(v.Value)
+			if err != nil {
+				p = ""
+			}
+			vals[v.Key] = p
+			secret[v.Key] = v.IsSecret
+		}
+		return vals, secret
+	}
+	curVals, curSec := toMap(pickEnv(curEnv))
+	if curEnv == 0 {
+		curVals, curSec = map[string]string{}, map[string]bool{}
+	}
+	tgtVals, tgtSec := toMap(pickEnv(targetEnv))
+	mask := func(key, val string, secret bool) string {
+		if secret {
+			return "••••••••"
+		}
+		_ = key
+		return val
+	}
+	type envChange struct {
+		Key string `json:"key"`
+		Old string `json:"old,omitempty"`
+		New string `json:"new,omitempty"`
+	}
+	added, removed, changed := []envChange{}, []envChange{}, []envChange{}
+	for k, nv := range tgtVals {
+		if ov, ok := curVals[k]; !ok {
+			added = append(added, envChange{Key: k, New: mask(k, nv, tgtSec[k])})
+		} else if ov != nv {
+			changed = append(changed, envChange{Key: k, Old: mask(k, ov, curSec[k]), New: mask(k, nv, tgtSec[k])})
+		}
+	}
+	for k, ov := range curVals {
+		if _, ok := tgtVals[k]; !ok {
+			removed = append(removed, envChange{Key: k, Old: mask(k, ov, curSec[k])})
+		}
+	}
+	sortByKey := func(s []envChange) { sort.Slice(s, func(i, j int) bool { return s[i].Key < s[j].Key }) }
+	sortByKey(added)
+	sortByKey(removed)
+	sortByKey(changed)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"current":        map[string]int{"compose_version": curCompose, "env_version": curEnv},
+		"target":         map[string]int{"compose_version": targetCompose, "env_version": targetEnv},
+		"compose_changed": strings.TrimSpace(tgtYAML) != strings.TrimSpace(curYAML),
+		"compose_current": curYAML,
+		"compose_target":  tgtYAML,
+		"env_added":       added,
+		"env_removed":     removed,
+		"env_changed":     changed,
+		"first_deploy":    len(deps) == 0,
+	})
+}
+
+// DeployMetrics returns aggregate deployment analytics for a project:
+// totals by status, success rate, average/median duration, MTTR (mean time to
+// recovery), deploy frequency, and the current streak.
+func (h *H) DeployMetrics(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "id")
+	if _, err := h.db.Projects.FindByID(projectID); err != nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	deps, _ := h.db.Deployments.FindWhere(func(d store.DeploymentRecord) bool {
+		return d.ProjectID == projectID
+	})
+	sort.Slice(deps, func(i, j int) bool { return deps[i].StartedAt.Before(deps[j].StartedAt) })
+
+	var success, failed, cancelled, rollbacks int
+	var durs []float64 // seconds, finished deploys only
+	now := time.Now()
+	var last7, last30 int
+	for _, d := range deps {
+		switch d.Status {
+		case store.DeployStatusSuccess:
+			success++
+		case store.DeployStatusFailed:
+			failed++
+		case store.DeployStatusCancelled:
+			cancelled++
+		}
+		if d.IsRollback {
+			rollbacks++
+		}
+		if d.FinishedAt != nil {
+			durs = append(durs, d.FinishedAt.Sub(d.StartedAt).Seconds())
+		}
+		if now.Sub(d.StartedAt) <= 7*24*time.Hour {
+			last7++
+		}
+		if now.Sub(d.StartedAt) <= 30*24*time.Hour {
+			last30++
+		}
+	}
+	total := len(deps)
+	finished := success + failed + cancelled
+	var successRate float64
+	if finished > 0 {
+		successRate = float64(success) / float64(finished) * 100
+	}
+
+	// Duration stats.
+	var avgDur, medDur, maxDur float64
+	if len(durs) > 0 {
+		sorted := append([]float64(nil), durs...)
+		sort.Float64s(sorted)
+		var sum float64
+		for _, v := range sorted {
+			sum += v
+		}
+		avgDur = sum / float64(len(sorted))
+		medDur = sorted[len(sorted)/2]
+		maxDur = sorted[len(sorted)-1]
+	}
+
+	// MTTR: mean gap from a failed deploy to the next successful one.
+	var recoveries []float64
+	for i := 0; i < len(deps); i++ {
+		if deps[i].Status != store.DeployStatusFailed || deps[i].FinishedAt == nil {
+			continue
+		}
+		for j := i + 1; j < len(deps); j++ {
+			if deps[j].Status == store.DeployStatusSuccess && deps[j].FinishedAt != nil {
+				recoveries = append(recoveries, deps[j].FinishedAt.Sub(*deps[i].FinishedAt).Seconds())
+				break
+			}
+		}
+	}
+	var mttr float64
+	if len(recoveries) > 0 {
+		var sum float64
+		for _, v := range recoveries {
+			sum += v
+		}
+		mttr = sum / float64(len(recoveries))
+	}
+
+	// Current streak: consecutive same-status outcomes from the newest end.
+	streak := 0
+	streakKind := ""
+	for i := len(deps) - 1; i >= 0; i-- {
+		s := string(deps[i].Status)
+		if s != string(store.DeployStatusSuccess) && s != string(store.DeployStatusFailed) {
+			continue
+		}
+		if streakKind == "" {
+			streakKind = s
+			streak = 1
+		} else if s == streakKind {
+			streak++
+		} else {
+			break
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":          total,
+		"success":        success,
+		"failed":         failed,
+		"cancelled":      cancelled,
+		"rollbacks":      rollbacks,
+		"success_rate":   successRate,
+		"avg_duration_s": avgDur,
+		"med_duration_s": medDur,
+		"max_duration_s": maxDur,
+		"mttr_s":         mttr,
+		"deploys_7d":     last7,
+		"deploys_30d":    last30,
+		"streak":         streak,
+		"streak_kind":    streakKind,
 	})
 }
 

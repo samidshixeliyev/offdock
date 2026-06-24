@@ -27,6 +27,7 @@ type DB struct {
 	OTPChallenges  *Collection[OTPChallenge]
 	DNSTickets     *Collection[DNSTicket]
 	DeployTags     *Collection[DeployTag]
+	ScheduledDeploys *Collection[ScheduledDeploy]
 	TraceSessions  *Collection[TraceSession]
 	OTelSpans      *Collection[OTelSpan]
 	TermPolicy     *Collection[TerminalPolicy]
@@ -88,6 +89,9 @@ func Open(dataDir string) (*DB, error) {
 		return nil, err
 	}
 	if db.DNSTickets, err = NewCollection[DNSTicket](open("dns_tickets")); err != nil {
+		return nil, err
+	}
+	if db.ScheduledDeploys, err = NewCollection[ScheduledDeploy](open("scheduled_deploys")); err != nil {
 		return nil, err
 	}
 	if db.DeployTags, err = NewCollection[DeployTag](open("deploy_tags")); err != nil {

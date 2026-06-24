@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -357,6 +358,11 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy, depl
 		return fail(fmt.Errorf("write .env: %w", err))
 	}
 
+	// ── Pre-deploy hook ──────────────────────────────────────────────────────
+	if err := e.runHook(ctx, projectDir, "Pre-deploy", settings.PreDeployCmd, appendLog); err != nil {
+		return fail(err)
+	}
+
 	safeProject := composeProjectName(project.Name)
 
 	// ── Step 3: Force-recreate all containers ────────────────────────────────
@@ -393,6 +399,12 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy, depl
 		return fail(fmt.Errorf("health check failed: %w", err))
 	}
 
+	// ── Post-deploy hook (smoke test) ────────────────────────────────────────
+	// Runs after health passes; a failure fails the deploy → auto-rollback if on.
+	if err := e.runHook(ctx, projectDir, "Post-deploy", settings.PostDeployCmd, appendLog); err != nil {
+		return fail(err)
+	}
+
 	// ── Nginx reload (if configured) ─────────────────────────────────────────
 	nginxCfgs, _ := e.db.Nginx.FindWhere(func(n store.NginxConfig) bool {
 		return n.ProjectID == projectID && n.Active
@@ -403,6 +415,14 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy, depl
 		if _, err := nginxpkg.Apply(nginxCfgs[0], project.Name); err != nil {
 			appendLog("  WARNING: nginx reload failed: %v", err)
 		}
+	}
+
+	// ── Image snapshot ───────────────────────────────────────────────────────
+	// Record the exact image each service is running so this deployment can be
+	// re-deployed later as a true image-level rollback without a manual tag.
+	if pins, perr := e.docker.ProjectServiceImages(ctx, safeProject); perr == nil && len(pins) > 0 {
+		rec.ImageSnapshot = pins
+		appendLog("  Image snapshot captured for %d service(s)", len(pins))
 	}
 
 	// ── Finish ───────────────────────────────────────────────────────────────
@@ -419,6 +439,30 @@ func (e *Engine) DeployVersion(ctx context.Context, projectID, triggeredBy, depl
 	appendLog("Deployment complete in %s", time.Since(rec.StartedAt).Round(time.Millisecond))
 	go fireWebhook(settings.WebhookURL, "success", project.Name, rec.ID)
 	return &rec, nil
+}
+
+// runHook executes an operator-configured pre/post-deploy command on the host
+// via `sh -c`, in the project directory, streaming its output to the deploy log.
+// A non-zero exit returns an error so the caller can abort/fail the deploy.
+func (e *Engine) runHook(ctx context.Context, projectDir, name, command string, log func(string, ...any)) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil
+	}
+	log("[STAGE] %s hook", name)
+	log("  $ %s", command)
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = projectDir
+	out, err := cmd.CombinedOutput()
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if strings.TrimSpace(line) != "" {
+			log("  %s", line)
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("%s hook failed: %w", name, err)
+	}
+	return nil
 }
 
 // applyVersionFiles writes a specific compose+env version pair to disk and

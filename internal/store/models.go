@@ -269,6 +269,27 @@ type DeploymentRecord struct {
 
 func (d DeploymentRecord) GetID() string { return d.ID }
 
+// --- ScheduledDeploy --------------------------------------------------------
+
+// ScheduledDeploy is a one-shot deployment queued to run at RunAt. The deploy
+// scheduler polls for due, pending entries and triggers them via the engine.
+type ScheduledDeploy struct {
+	ID             string    `json:"id"`
+	ProjectID      string    `json:"project_id"`
+	RunAt          time.Time `json:"run_at"`
+	ComposeVersion int       `json:"compose_version"` // 0 = latest
+	EnvVersion     int       `json:"env_version"`     // 0 = latest
+	TagID          string    `json:"tag_id,omitempty"`
+	Note           string    `json:"note,omitempty"`
+	Status         string    `json:"status"` // pending | done | failed | cancelled
+	Result         string    `json:"result,omitempty"`
+	DeploymentID   string    `json:"deployment_id,omitempty"` // the record it produced
+	CreatedBy      string    `json:"created_by"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (s ScheduledDeploy) GetID() string { return s.ID }
+
 // --- DeploySettings ---------------------------------------------------------
 
 // DeploySettings holds per-project deployment behaviour configuration.
@@ -283,6 +304,14 @@ type DeploySettings struct {
 	// RollbackOnFailure, when true, automatically re-deploys the previously
 	// successful compose+env version if a deploy fails its health check.
 	RollbackOnFailure bool `json:"rollback_on_failure"`
+
+	// PreDeployCmd runs on the host (sh -c, in the project dir) BEFORE `compose
+	// up` — a non-zero exit aborts the deploy (use for DB migrations, backups).
+	// PostDeployCmd runs AFTER the health check passes — a non-zero exit fails
+	// the deploy and triggers auto-rollback if enabled (use for smoke tests).
+	// Both are subject to the deploy timeout. Empty = skipped.
+	PreDeployCmd  string `json:"pre_deploy_cmd,omitempty"`
+	PostDeployCmd string `json:"post_deploy_cmd,omitempty"`
 	// Network config injected into every service of the compose file at deploy
 	// time (the raw YAML in the DB is left untouched). For offline name
 	// resolution between containers and host.

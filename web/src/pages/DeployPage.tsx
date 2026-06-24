@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { api, ComposeConfig, ComposeServiceInfo, DeploymentRecord, DeploySettings, EnvVarSet, DeployTag, ImageUsage } from '../api/client'
+import { api, ComposeConfig, ComposeServiceInfo, DeploymentRecord, DeploySettings, EnvVarSet, DeployTag, ImageUsage, DeployMetrics, ScheduledDeploy, DeployDiff } from '../api/client'
 import clsx from 'clsx'
 import {
   Search, FileText, Container as ContainerIcon, HeartPulse, Server, CheckCircle2,
@@ -42,6 +42,15 @@ function relativeTime(iso: string): string {
   if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`
   if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`
   return `${Math.floor(ms / 86400000)}d ago`
+}
+
+function fmtSecs(s: number): string {
+  if (!s || s <= 0) return '—'
+  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)}s`
+  const m = Math.floor(s / 60), r = Math.round(s % 60)
+  if (m < 60) return `${m}m ${r}s`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
 }
 
 const statusBadge = (s: string) =>
@@ -208,6 +217,13 @@ export default function DeployPage() {
   const [imageOverrides, setImageOverrides] = useState<Record<string, string>>({})
   const [loadedImages, setLoadedImages] = useState<ImageUsage[]>([])
 
+  // Deploy analytics + scheduled deploys.
+  const [metrics, setMetrics] = useState<DeployMetrics | null>(null)
+  const [schedules, setSchedules] = useState<ScheduledDeploy[]>([])
+  const [schedAt, setSchedAt] = useState('')
+  const [schedNote, setSchedNote] = useState('')
+  const [diff, setDiff] = useState<DeployDiff | null>(null)
+
   const logRef = useRef<HTMLDivElement>(null)
   const esRef = useRef<EventSource | null>(null)
   const isAtBottomRef = useRef<boolean>(true)
@@ -247,6 +263,8 @@ export default function DeployPage() {
         health_timeout_secs: s.health_timeout_secs, deploy_timeout_secs: s.deploy_timeout_secs,
         health_stable_secs: s.health_stable_secs, webhook_url: s.webhook_url ?? '', otel_enabled: s.otel_enabled ?? false,
         otel_language_overrides: s.otel_language_overrides, tag_retention: s.tag_retention ?? 0,
+        rollback_on_failure: s.rollback_on_failure ?? false,
+        pre_deploy_cmd: s.pre_deploy_cmd ?? '', post_deploy_cmd: s.post_deploy_cmd ?? '',
       })
       setLangOverrides(s.otel_language_overrides ?? {})
       setImageOverrides(s.image_overrides ?? {})
@@ -254,7 +272,15 @@ export default function DeployPage() {
     api.getComposeServices(id).then(r => setComposeServices(r.services ?? [])).catch(() => {})
     api.listDeployTags(id).then(t => setTags(t ?? [])).catch(() => {})
     api.imageUsage().then(r => setLoadedImages(r.images ?? [])).catch(() => {})
+    api.deployMetrics(id).then(setMetrics).catch(() => {})
+    api.listScheduledDeploys(id).then(s => setSchedules(s ?? [])).catch(() => {})
   }, [id])
+
+  // Load the change preview whenever the confirm modal opens.
+  useEffect(() => {
+    if (!id || !confirmTarget) { setDiff(null); return }
+    api.deployDiff(id, confirmTarget.compose, confirmTarget.env).then(setDiff).catch(() => setDiff(null))
+  }, [confirmTarget, id])
 
   useEffect(() => {
     if (!logRef.current) return
@@ -336,6 +362,23 @@ export default function DeployPage() {
     setConfirmTarget({ compose: composeVer, env: envVer, label, tagId })
   }
 
+  const createSchedule = async () => {
+    if (!id || !schedAt) return
+    try {
+      const sd = await api.createScheduledDeploy(id, { run_at: new Date(schedAt).toISOString(), note: schedNote.trim() || undefined })
+      setSchedules(prev => [sd, ...prev])
+      setSchedAt(''); setSchedNote('')
+      toast.success('Deploy scheduled')
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Could not schedule') }
+  }
+  const deleteSchedule = async (sid: string) => {
+    if (!id) return
+    try {
+      await api.deleteScheduledDeploy(id, sid)
+      setSchedules(prev => prev.filter(s => s.id !== sid))
+    } catch (e) { toast.error(e instanceof Error ? e.message : 'Delete failed') }
+  }
+
   const saveSettings = async () => {
     if (!id) return
     setSettingsSaving(true)
@@ -394,6 +437,25 @@ export default function DeployPage() {
       </div>
 
       {/* ═══ DEPLOY TAB ════════════════════════════════════════════════════ */}
+      {/* Metrics strip */}
+      {tab === 'deploy' && metrics && metrics.total > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+          {[
+            { label: 'Success rate', value: `${metrics.success_rate.toFixed(0)}%`, tone: metrics.success_rate >= 80 ? 'text-emerald-400' : metrics.success_rate >= 50 ? 'text-amber-400' : 'text-red-400' },
+            { label: 'Deploys', value: String(metrics.total), tone: 'text-slate-200' },
+            { label: 'Avg time', value: fmtSecs(metrics.avg_duration_s), tone: 'text-slate-200' },
+            { label: 'MTTR', value: metrics.mttr_s > 0 ? fmtSecs(metrics.mttr_s) : '—', tone: 'text-slate-200' },
+            { label: 'Last 7d', value: String(metrics.deploys_7d), tone: 'text-slate-200' },
+            { label: 'Streak', value: metrics.streak > 0 ? `${metrics.streak} ${metrics.streak_kind === 'success' ? '✓' : '✗'}` : '—', tone: metrics.streak_kind === 'success' ? 'text-emerald-400' : metrics.streak_kind === 'failed' ? 'text-red-400' : 'text-slate-200' },
+          ].map(s => (
+            <div key={s.label} className="card-static px-3 py-2.5">
+              <div className={clsx('text-lg font-semibold tabular-nums', s.tone)}>{s.value}</div>
+              <div className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">{s.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* ── Deploy now ─────────────────────────────────────────────────────── */}
       {tab === 'deploy' && (
       <div className="card-static">
@@ -787,6 +849,63 @@ export default function DeployPage() {
       </div>
       )}
 
+      {/* ── Scheduled deploys ───────────────────────────────────────────────── */}
+      {tab === 'releases' && (
+      <div className="card space-y-4">
+        <div>
+          <h2 className="text-base font-semibold text-slate-100">Scheduled deploys</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Queue a one-shot deploy of the latest version for a future time (maintenance window). Fires automatically.</p>
+        </div>
+        {can(PERMS.deploy) && (
+          <div className="flex flex-wrap items-end gap-3 p-3 rounded-xl bg-slate-950/60 border border-slate-800">
+            <div>
+              <label className="block text-[11px] text-slate-500 mb-1">When</label>
+              <input
+                type="datetime-local"
+                value={schedAt}
+                onChange={e => setSchedAt(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div className="flex-1 min-w-[160px]">
+              <label className="block text-[11px] text-slate-500 mb-1">Note (optional)</label>
+              <input
+                type="text"
+                value={schedNote}
+                onChange={e => setSchedNote(e.target.value)}
+                placeholder="Nightly release"
+                className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <button onClick={createSchedule} disabled={!schedAt} className="btn-primary text-xs disabled:opacity-40">Schedule</button>
+          </div>
+        )}
+        {schedules.length === 0 ? (
+          <p className="text-xs text-slate-600 italic">No scheduled deploys.</p>
+        ) : (
+          <div className="space-y-2">
+            {schedules.map(s => (
+              <div key={s.id} className="flex items-center gap-3 p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+                <div className={clsx('w-2 h-2 rounded-full shrink-0',
+                  s.status === 'pending' ? 'bg-blue-400' : s.status === 'done' ? 'bg-emerald-400' : s.status === 'failed' ? 'bg-red-400' : 'bg-slate-600')} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-slate-200">{new Date(s.run_at).toLocaleString()}</div>
+                  <div className="text-[11px] text-slate-500">
+                    {s.status}{s.note ? ` · ${s.note}` : ''}{s.result ? ` · ${s.result}` : ''} · by {s.created_by}
+                  </div>
+                </div>
+                {s.status === 'pending' && (
+                  <button onClick={() => deleteSchedule(s.id)} title="Cancel" className="p-1.5 rounded-lg text-slate-600 hover:text-red-400 hover:bg-red-500/10">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      )}
+
       {/* ── Manage versions (delete old compose/env versions) ───────────────── */}
       {tab === 'releases' && can(PERMS.editCompose) && (composeHistory.length > 0 || envHistory.length > 0) && (
         <div className="card space-y-4">
@@ -904,6 +1023,42 @@ export default function DeployPage() {
               className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
             />
             <p className="text-xs text-slate-600 mt-1">Time a "running" container must stay up before considered healthy</p>
+          </div>
+        </div>
+
+        {/* Reliability — auto-rollback + lifecycle hooks */}
+        <div className="mt-5 pt-4 border-t border-slate-800 space-y-4">
+          <label className="flex items-start gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={settingsDraft.rollback_on_failure ?? false}
+              onChange={e => setSettingsDraft(d => ({ ...d, rollback_on_failure: e.target.checked }))}
+              className="mt-0.5 w-4 h-4 rounded border-slate-600 bg-slate-800 accent-blue-500"
+            />
+            <div>
+              <span className="text-sm font-medium text-slate-200">Auto-rollback on failure</span>
+              <p className="text-xs text-slate-500 mt-0.5">If a deploy fails its health check (or is cancelled), restore the previous good version and re-verify its health automatically.</p>
+            </div>
+          </label>
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">Pre-deploy command <span className="text-slate-600">(runs on host before deploy — non-zero exit aborts)</span></label>
+            <input
+              type="text"
+              placeholder="e.g. ./migrate.sh  (runs in the project dir)"
+              value={settingsDraft.pre_deploy_cmd ?? ''}
+              onChange={e => setSettingsDraft(d => ({ ...d, pre_deploy_cmd: e.target.value }))}
+              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">Post-deploy command <span className="text-slate-600">(smoke test after health passes — failure fails the deploy)</span></label>
+            <input
+              type="text"
+              placeholder="e.g. curl -fsS http://localhost:8080/health"
+              value={settingsDraft.post_deploy_cmd ?? ''}
+              onChange={e => setSettingsDraft(d => ({ ...d, post_deploy_cmd: e.target.value }))}
+              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 font-mono"
+            />
           </div>
         </div>
       </div>
@@ -1358,6 +1513,35 @@ export default function DeployPage() {
                     <span className="text-slate-300">{svc}</span><span className="text-slate-600">→</span><span className="text-blue-300">{ref}</span>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Change preview (diff vs what's currently running) */}
+            {diff && !diff.first_deploy && (
+              <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3 space-y-2">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500">
+                  Changes vs running (compose v{diff.current.compose_version || '—'} · env v{diff.current.env_version || '—'})
+                </p>
+                <div className="flex flex-wrap gap-3 text-[11px]">
+                  <span className={diff.compose_changed ? 'text-amber-400' : 'text-slate-600'}>
+                    {diff.compose_changed ? '● compose changed' : '○ compose unchanged'}
+                  </span>
+                  <span className="text-emerald-400">+{diff.env_added.length} env</span>
+                  <span className="text-red-400">−{diff.env_removed.length} env</span>
+                  <span className="text-amber-400">~{diff.env_changed.length} env</span>
+                </div>
+                {(diff.env_added.length > 0 || diff.env_removed.length > 0 || diff.env_changed.length > 0) && (
+                  <div className="font-mono text-[11px] max-h-40 overflow-y-auto space-y-0.5">
+                    {diff.env_added.map(c => <div key={'a' + c.key} className="text-emerald-400">+ {c.key}={c.new}</div>)}
+                    {diff.env_removed.map(c => <div key={'r' + c.key} className="text-red-400">− {c.key}={c.old}</div>)}
+                    {diff.env_changed.map(c => <div key={'c' + c.key} className="text-amber-300">~ {c.key}: {c.old} → {c.new}</div>)}
+                  </div>
+                )}
+              </div>
+            )}
+            {diff?.first_deploy && (
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3 text-xs text-blue-300">
+                First deploy for this project — nothing to diff against yet.
               </div>
             )}
 

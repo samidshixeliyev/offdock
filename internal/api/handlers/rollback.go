@@ -76,6 +76,9 @@ func (h *H) Rollback(w http.ResponseWriter, r *http.Request) {
 		}
 		composeVersion = dep.NewComposeVersion
 		envVersion = dep.EnvVersion
+		// Pin the exact images that deployment ran (true image-level rollback)
+		// when a snapshot was captured.
+		imagePins = dep.ImageSnapshot
 		rollbackOf = "deployment:" + dep.ID
 	default:
 		rollbackOf = fmt.Sprintf("compose_v%d/env_v%d", composeVersion, envVersion)

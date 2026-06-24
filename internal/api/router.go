@@ -195,6 +195,8 @@ func NewRouter(deps Deps) http.Handler {
 		r.Get("/api/v1/deployments", h.ListAllDeployments)
 		r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Post("/api/v1/projects/{id}/deploy", h.TriggerDeploy)
 		r.Get("/api/v1/projects/{id}/deployments", h.ListDeployments)
+		r.Get("/api/v1/projects/{id}/deploy-metrics", h.DeployMetrics)
+		r.Get("/api/v1/projects/{id}/deploy-diff", h.DeployDiff)
 		r.Get("/api/v1/projects/{id}/deployments/{dep_id}", h.GetDeployment)
 		r.Get("/api/v1/projects/{id}/deployments/{dep_id}/stream", h.DeployStream) // SSE
 		r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Post("/api/v1/projects/{id}/deployments/{dep_id}/cancel", h.CancelDeploy)
@@ -212,6 +214,11 @@ func NewRouter(deps Deps) http.Handler {
 
 			// Rollback — re-deploy a project to a tagged/historical version pair.
 			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Post("/api/v1/projects/{id}/rollback", h.Rollback)
+
+			// Scheduled deploys — queue a one-shot deploy for a future time.
+			r.Get("/api/v1/projects/{id}/scheduled-deploys", h.ListScheduledDeploys)
+			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Post("/api/v1/projects/{id}/scheduled-deploys", h.CreateScheduledDeploy)
+			r.With(authmw.RequirePermission(deps.DB, store.PermDeploy)).Delete("/api/v1/projects/{id}/scheduled-deploys/{sched_id}", h.DeleteScheduledDeploy)
 
 		// Containers & logs
 		r.Get("/api/v1/projects/{id}/containers", h.ListContainers)

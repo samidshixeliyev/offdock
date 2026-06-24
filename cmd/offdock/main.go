@@ -169,6 +169,10 @@ func main() {
 	backupScheduler := backup.NewScheduler(db, backupBuilder, filepath.Join(backupBase, "backups"))
 	go backupScheduler.Run(context.Background())
 
+	// Deploy scheduler — fires one-shot ScheduledDeploy entries when due.
+	deployScheduler := deploy.NewScheduler(db, deployer)
+	go deployScheduler.Run(context.Background())
+
 	smtpMode := cfg.SMTPMode
 	if smtpMode == "" && cfg.SMTPStartTLS {
 		smtpMode = "starttls"

@@ -102,6 +102,55 @@ export interface DeploymentRecord {
   started_at: string
   finished_at: string | null
   log_text: string
+  is_rollback?: boolean
+  rollback_of?: string
+  rolled_back_to?: string
+  image_snapshot?: Record<string, string>
+}
+
+export interface DeployMetrics {
+  total: number
+  success: number
+  failed: number
+  cancelled: number
+  rollbacks: number
+  success_rate: number
+  avg_duration_s: number
+  med_duration_s: number
+  max_duration_s: number
+  mttr_s: number
+  deploys_7d: number
+  deploys_30d: number
+  streak: number
+  streak_kind: string
+}
+
+export interface EnvChange { key: string; old?: string; new?: string }
+export interface DeployDiff {
+  current: { compose_version: number; env_version: number }
+  target: { compose_version: number; env_version: number }
+  compose_changed: boolean
+  compose_current: string
+  compose_target: string
+  env_added: EnvChange[]
+  env_removed: EnvChange[]
+  env_changed: EnvChange[]
+  first_deploy: boolean
+}
+
+export interface ScheduledDeploy {
+  id: string
+  project_id: string
+  run_at: string
+  compose_version: number
+  env_version: number
+  tag_id?: string
+  note?: string
+  status: 'pending' | 'done' | 'failed' | 'cancelled'
+  result?: string
+  deployment_id?: string
+  created_by: string
+  created_at: string
 }
 
 export interface DeploySettings {
@@ -120,6 +169,9 @@ export interface DeploySettings {
   // Keep only the most recent N non-protected release tags (0 = unlimited).
   tag_retention?: number
   webhook_url?: string
+  // Host commands run before (migrations) / after (smoke test) deploy.
+  pre_deploy_cmd?: string
+  post_deploy_cmd?: string
   // OpenTelemetry — one toggle, everything auto-configured (native OTLP receiver)
   otel_enabled?: boolean
   // Manual language overrides: service name → "java"|"nodejs"|"php"|"python"|"ruby"|"dotnet"|"go"|"none"
@@ -1183,6 +1235,18 @@ export const api = {
     }),
   toggleTagProtected: (projectId: string, tagId: string) =>
     request<DeployTag>(`/api/v1/projects/${projectId}/deploy-tags/${tagId}/protect`, { method: 'POST' }),
+
+  // --- Deploy analytics, diff, schedules ---
+  deployMetrics: (projectId: string) =>
+    request<DeployMetrics>(`/api/v1/projects/${projectId}/deploy-metrics`),
+  deployDiff: (projectId: string, composeVersion = 0, envVersion = 0) =>
+    request<DeployDiff>(`/api/v1/projects/${projectId}/deploy-diff?compose_version=${composeVersion}&env_version=${envVersion}`),
+  listScheduledDeploys: (projectId: string) =>
+    request<ScheduledDeploy[]>(`/api/v1/projects/${projectId}/scheduled-deploys`),
+  createScheduledDeploy: (projectId: string, body: { run_at: string; compose_version?: number; env_version?: number; tag_id?: string; note?: string }) =>
+    request<ScheduledDeploy>(`/api/v1/projects/${projectId}/scheduled-deploys`, { method: 'POST', body: JSON.stringify(body) }),
+  deleteScheduledDeploy: (projectId: string, schedId: string) =>
+    request<void>(`/api/v1/projects/${projectId}/scheduled-deploys/${schedId}`, { method: 'DELETE' }),
 
   // --- Backups (Tier 2) ---
   listBackups: () => request<BackupRecord[]>('/api/v1/system/backups'),
