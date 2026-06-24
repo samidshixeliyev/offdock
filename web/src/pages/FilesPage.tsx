@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { api, FileEntry, FileReadResult } from '../api/client'
 import clsx from 'clsx'
+import ConfirmModal from '../components/ConfirmModal'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function fmtSize(bytes: number): string {
@@ -387,6 +388,7 @@ export default function FilesPage() {
   const uploadInputRef = useRef<HTMLInputElement>(null)
   const [uploads, setUploads] = useState<UploadTask[]>([])
   const [dragOver, setDragOver] = useState(false)
+  const [confirmDeleteSel, setConfirmDeleteSel] = useState(false)
 
   const browse = useCallback(async (path: string) => {
     setLoading(true); setError(''); setSearchResults(null); setSelected(new Set())
@@ -471,6 +473,20 @@ export default function FilesPage() {
       {showNew && <NewItemModal basePath={cwd} onClose={() => setShowNew(false)} onCreated={() => browse(cwd)} />}
       {deleteEntry && <DeleteModal entry={deleteEntry} onClose={() => setDeleteEntry(null)} onDeleted={() => { browse(cwd); if (openFile?.path === deleteEntry.path) setOpenFile(null) }} />}
       {renameEntry && <RenameModal entry={renameEntry} onClose={() => setRenameEntry(null)} onRenamed={() => browse(cwd)} />}
+      {confirmDeleteSel && (
+        <ConfirmModal
+          danger
+          title={`Delete ${selected.size} item${selected.size !== 1 ? 's' : ''}?`}
+          message="The selected files and folders will be permanently deleted. This cannot be undone."
+          confirmLabel="Delete selected"
+          onConfirm={() => {
+            setConfirmDeleteSel(false)
+            Promise.all([...selected].map(p => api.fileDelete(p)))
+              .finally(() => { setSelected(new Set()); browse(cwd) })
+          }}
+          onCancel={() => setConfirmDeleteSel(false)}
+        />
+      )}
 
       {/* Sidebar */}
       <aside className="w-44 bg-slate-900/60 border-r border-slate-800 flex flex-col shrink-0">
@@ -746,12 +762,7 @@ export default function FilesPage() {
               {selected.size > 0 && ` · ${selected.size} selected`}
             </span>
             {selected.size > 0 && (
-              <button onClick={() => {
-                if (window.confirm(`Delete ${selected.size} item(s)?`)) {
-                  Promise.all([...selected].map(p => api.fileDelete(p)))
-                    .finally(() => { setSelected(new Set()); browse(cwd) })
-                }
-              }} className="text-red-500 hover:text-red-400 transition-colors">
+              <button onClick={() => setConfirmDeleteSel(true)} className="text-red-500 hover:text-red-400 transition-colors">
                 Delete selected
               </button>
             )}

@@ -195,6 +195,47 @@ export interface OTelStatus {
   span_count?: number
 }
 
+export interface OTelServiceStat {
+  name: string
+  spans: number
+  errors: number
+  traces: number
+}
+export interface OTelOperationInfo {
+  name: string
+  spanKind: string
+  count: number
+  errors: number
+  avg_ms: number
+}
+
+export interface OTelDatabaseQuery {
+  normalized: string
+  sample: string
+  service: string
+  db_system: string
+  db_name: string
+  table: string
+  operation: string
+  count: number
+  total_ms: number
+  avg_ms: number
+  max_ms: number
+  min_ms: number
+  errors: number
+  services: string[]
+  last_seen_us: number
+  example_trace_id: string
+}
+export interface OTelDatabaseResult {
+  data: OTelDatabaseQuery[]
+  total: number
+  limit: number
+  offset: number
+  systems: string[]
+  totals: { queries: number; executions: number; total_ms: number; slowest_ms: number }
+}
+
 export interface DiskUsageRow {
   type: string
   total: string
@@ -958,7 +999,14 @@ export const api = {
     request<void>(`/api/v1/containers/${encodeURIComponent(name)}/trace/enable`, { method: 'DELETE' }),
   traceUrl: (name: string) => `/api/v1/containers/${encodeURIComponent(name)}/trace`,
   // Persisted trace sessions
-  listTraceSessions: () => request<TraceSessionSummary[]>('/api/v1/trace/sessions'),
+  listTraceSessions: (params: { limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams()
+    if (params.limit) q.set('limit', String(params.limit))
+    if (params.offset) q.set('offset', String(params.offset))
+    const qs = q.toString()
+    return request<{ data: TraceSessionSummary[]; total: number; limit: number; offset: number }>(
+      `/api/v1/trace/sessions${qs ? `?${qs}` : ''}`)
+  },
   getTraceSession: (id: string) => request<TraceSession>(`/api/v1/trace/sessions/${id}`),
   deleteTraceSession: (id: string) =>
     request<void>(`/api/v1/trace/sessions/${id}`, { method: 'DELETE' }),
@@ -986,16 +1034,18 @@ export const api = {
   // OpenTelemetry / Jaeger proxy
   otelStatus: () => request<OTelStatus>('/api/v1/otel/status'),
   otelServices: () => request<{ data: string[] }>('/api/v1/otel/services'),
+  otelServiceStats: () => request<{ data: OTelServiceStat[] }>('/api/v1/otel/service-stats'),
   otelOperations: (service: string) =>
-    request<{ data: Array<{ name: string; spanKind: string }> }>(`/api/v1/otel/operations?service=${encodeURIComponent(service)}`),
+    request<{ data: OTelOperationInfo[] }>(`/api/v1/otel/operations?service=${encodeURIComponent(service)}`),
   otelTraces: (params: {
-    service?: string; limit?: number; operation?: string
+    service?: string; limit?: number; offset?: number; operation?: string
     search?: string; status?: string; min_duration_ms?: number; time_range?: string
     span_kind?: string; attr_key?: string; attr_val?: string
   } = {}) => {
     const q = new URLSearchParams()
     if (params.service) q.set('service', params.service)
     if (params.limit) q.set('limit', String(params.limit))
+    if (params.offset) q.set('offset', String(params.offset))
     if (params.operation) q.set('operation', params.operation)
     if (params.search) q.set('search', params.search)
     if (params.status) q.set('status', params.status)
@@ -1004,10 +1054,26 @@ export const api = {
     if (params.span_kind) q.set('span_kind', params.span_kind)
     if (params.attr_key) q.set('attr_key', params.attr_key)
     if (params.attr_val) q.set('attr_val', params.attr_val)
-    return request<{ data: OTelTrace[] }>(`/api/v1/otel/traces?${q}`)
+    return request<{ data: OTelTrace[]; total: number; limit: number; offset: number }>(`/api/v1/otel/traces?${q}`)
   },
   otelTrace: (id: string) => request<{ data: OTelTrace[] }>(`/api/v1/otel/traces/${id}`),
   otelDeleteTraces: () => request<{ deleted: number }>('/api/v1/otel/traces', { method: 'DELETE' }),
+  otelDatabase: (params: {
+    service?: string; db_system?: string; search?: string; time_range?: string
+    min_duration_ms?: number; sort?: string; limit?: number; offset?: number; by_service?: boolean
+  } = {}) => {
+    const q = new URLSearchParams()
+    if (params.service) q.set('service', params.service)
+    if (params.db_system) q.set('db_system', params.db_system)
+    if (params.search) q.set('search', params.search)
+    if (params.time_range) q.set('time_range', params.time_range)
+    if (params.min_duration_ms) q.set('min_duration_ms', String(params.min_duration_ms))
+    if (params.sort) q.set('sort', params.sort)
+    if (params.limit) q.set('limit', String(params.limit))
+    if (params.offset) q.set('offset', String(params.offset))
+    if (params.by_service) q.set('by_service', 'true')
+    return request<OTelDatabaseResult>(`/api/v1/otel/database?${q}`)
+  },
 
   // Retention settings
   getRetentionSettings: () => request<RetentionSettings>('/api/v1/settings/retention'),

@@ -5,12 +5,29 @@ import clsx from 'clsx'
 import {
   Search, FileText, Container as ContainerIcon, HeartPulse, Server, CheckCircle2,
   Loader2, AlertCircle, RotateCcw, Rocket, Eye, EyeOff, Tag as TagIcon, Trash2,
+  SlidersHorizontal, GitBranch, Activity,
 } from 'lucide-react'
 import { useToast } from '../components/Toast'
 import { usePermissions, PERMS } from '../hooks/usePermissions'
 import { useAuth } from '../hooks/useAuth'
 import { Modal } from '../components/Modal'
+import { Select, SelectOption } from '../components/Select'
 import { ReadOnlyBanner } from '../components/ReadOnlyBanner'
+
+// Language options shared by every OTel language picker. The hint tells the
+// operator exactly what each tracer captures — including Go's hard limitation
+// (no zero-code tracing possible) — which is the #1 source of confusion.
+type LangValue = '' | 'java' | 'nodejs' | 'php' | 'python' | 'ruby' | 'dotnet' | 'go' | 'none'
+const LANG_OPTIONS: SelectOption<Exclude<LangValue, ''>>[] = [
+  { value: 'java', label: 'Java', hint: 'auto: HTTP + JDBC' },
+  { value: 'nodejs', label: 'Node.js', hint: 'HTTP + pg/mysql/mongo/redis' },
+  { value: 'php', label: 'PHP', hint: 'HTTP + PDO' },
+  { value: 'python', label: 'Python', hint: 'HTTP + DB-API' },
+  { value: 'ruby', label: 'Ruby', hint: 'HTTP' },
+  { value: 'dotnet', label: '.NET / C#', hint: 'auto: HTTP + EF/ADO' },
+  { value: 'go', label: 'Go', hint: 'network-trace only' },
+  { value: 'none', label: 'Disabled (skip)', hint: 'no tracer' },
+]
 
 function duration(d: DeploymentRecord) {
   if (!d.finished_at) return '—'
@@ -163,6 +180,10 @@ export default function DeployPage() {
   const [log, setLog] = useState<string[]>([])
   const [deploying, setDeploying] = useState(false)
   const [streamKey, setStreamKey] = useState('')
+
+  // Top-level tabs split the page so the deploy action, release management, and
+  // configuration are no longer crammed into one long scroll.
+  const [tab, setTab] = useState<'deploy' | 'releases' | 'settings'>('deploy')
 
   const [rollbackCompose, setRollbackCompose] = useState(0)
   const [rollbackEnv, setRollbackEnv] = useState(0)
@@ -351,7 +372,30 @@ export default function DeployPage() {
     {!can(PERMS.deploy) && <ReadOnlyBanner message="You don't have permission to deploy. Viewing in read-only mode." />}
     <div className="p-6 max-w-5xl space-y-6 animate-fadeIn">
 
+      {/* ── Tab bar ────────────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-900/60 border border-slate-800 w-fit">
+        {([
+          { id: 'deploy', label: 'Deploy', icon: Rocket },
+          { id: 'releases', label: 'Releases', icon: GitBranch },
+          { id: 'settings', label: 'Settings', icon: SlidersHorizontal },
+        ] as const).map(t => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={clsx(
+              'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all',
+              tab === t.id ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60',
+            )}
+          >
+            <t.icon className="w-4 h-4" />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ═══ DEPLOY TAB ════════════════════════════════════════════════════ */}
       {/* ── Deploy now ─────────────────────────────────────────────────────── */}
+      {tab === 'deploy' && (
       <div className="card-static">
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -437,8 +481,11 @@ export default function DeployPage() {
           )}
         </div>
       </div>
+      )}
 
+      {/* ═══ RELEASES TAB ══════════════════════════════════════════════════ */}
       {/* ── Release Tags + Rollback ──────────────────────────────────────────── */}
+      {tab === 'releases' && (
       <div className="card space-y-5">
         {/* Header */}
         <div className="flex items-center justify-between">
@@ -738,9 +785,10 @@ export default function DeployPage() {
           </button>
         </div>
       </div>
+      )}
 
       {/* ── Manage versions (delete old compose/env versions) ───────────────── */}
-      {can(PERMS.editCompose) && (composeHistory.length > 0 || envHistory.length > 0) && (
+      {tab === 'releases' && can(PERMS.editCompose) && (composeHistory.length > 0 || envHistory.length > 0) && (
         <div className="card space-y-4">
           <div>
             <h2 className="text-base font-semibold text-slate-100">Manage Versions</h2>
@@ -810,9 +858,16 @@ export default function DeployPage() {
         </div>
       )}
 
+      {/* ═══ SETTINGS TAB ══════════════════════════════════════════════════ */}
       {/* ── Deploy settings ────────────────────────────────────────────────── */}
+      {tab === 'settings' && (
+      <div className="space-y-5">
       <div className="card">
-        <h2 className="text-sm font-semibold text-white mb-4">Deploy Settings</h2>
+        <div className="flex items-center gap-2 mb-1">
+          <SlidersHorizontal className="w-4 h-4 text-slate-400" />
+          <h2 className="text-sm font-semibold text-white">Deployment behavior</h2>
+        </div>
+        <p className="text-xs text-slate-500 mb-4">Timeouts and health-check tuning for the cutover deploy strategy.</p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-xs text-slate-400 mb-1">Health timeout (seconds)</label>
@@ -851,9 +906,16 @@ export default function DeployPage() {
             <p className="text-xs text-slate-600 mt-1">Time a "running" container must stay up before considered healthy</p>
           </div>
         </div>
+      </div>
 
-        {/* Webhook URL */}
-        <div className="mt-4">
+      {/* Notifications card */}
+      <div className="card">
+        <div className="flex items-center gap-2 mb-1">
+          <Activity className="w-4 h-4 text-slate-400" />
+          <h2 className="text-sm font-semibold text-white">Notifications</h2>
+        </div>
+        <p className="text-xs text-slate-500 mb-4">Fire an HTTP callback when a deploy finishes.</p>
+        <div>
           <label className="block text-xs text-slate-400 mb-1">Webhook URL <span className="text-slate-600">(optional — POST on deploy complete/fail)</span></label>
           <input
             type="url"
@@ -867,29 +929,62 @@ export default function DeployPage() {
             Payload: <code className="text-slate-400 font-mono">{'{"status":"success|failed","project":"...","deploy_id":"...","timestamp":"..."}'}</code>
           </p>
         </div>
+      </div>
 
-        {/* OpenTelemetry — toggle + per-service language picker */}
-        <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/30 overflow-hidden">
-          <div className="flex items-center justify-between p-4">
-            <div>
-              <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={settingsDraft.otel_enabled ?? false}
-                  onChange={e => setSettingsDraft(d => ({ ...d, otel_enabled: e.target.checked }))}
-                  className="w-4 h-4 rounded border-slate-600 bg-slate-800 accent-blue-500"
-                />
-                <span className="text-sm font-medium text-slate-200">Enable OpenTelemetry tracing</span>
-              </label>
-              <p className="text-xs text-slate-500 mt-1 ml-[26px]">
-                Injects OTEL_* env vars and tracer agents automatically per service.
-                {settingsDraft.otel_enabled && <><br /><a href="/otel-traces" className="text-blue-400 hover:underline">Open App Traces →</a></>}
+      {/* Observability card */}
+      <div className="card">
+        <div className="flex items-center gap-2 mb-1">
+          <Activity className="w-4 h-4 text-blue-400" />
+          <h2 className="text-sm font-semibold text-white">Observability</h2>
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Zero-code distributed tracing — OffDock injects the right tracer per service at deploy time.
+        </p>
+
+        {/* OpenTelemetry — toggle switch + per-service language picker */}
+        {(() => {
+          const otelOn = settingsDraft.otel_enabled ?? false
+          return (
+        <div className={clsx(
+          'rounded-xl border overflow-hidden transition-colors',
+          otelOn ? 'border-blue-500/40 bg-blue-500/[0.04]' : 'border-slate-800 bg-slate-900/30',
+        )}>
+          <button
+            type="button"
+            onClick={() => setSettingsDraft(d => ({ ...d, otel_enabled: !otelOn }))}
+            className="w-full flex items-center gap-4 p-4 text-left hover:bg-slate-800/20 transition-colors"
+          >
+            {/* The switch */}
+            <span className={clsx(
+              'relative shrink-0 inline-flex h-6 w-11 items-center rounded-full transition-colors',
+              otelOn ? 'bg-blue-500' : 'bg-slate-700',
+            )}>
+              <span className={clsx(
+                'inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform',
+                otelOn ? 'translate-x-6' : 'translate-x-1',
+              )} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <Activity className={clsx('w-4 h-4 shrink-0', otelOn ? 'text-blue-400' : 'text-slate-500')} />
+                <span className="text-sm font-semibold text-slate-100">Distributed tracing</span>
+                <span className={clsx(
+                  'text-[10px] px-1.5 py-0.5 rounded-full font-bold tracking-wide',
+                  otelOn ? 'bg-blue-500/20 text-blue-300' : 'bg-slate-800 text-slate-500',
+                )}>
+                  {otelOn ? 'ON' : 'OFF'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Zero-code OpenTelemetry — the right tracer is injected per service at deploy time.
               </p>
             </div>
-            <div className={`text-[10px] px-2 py-0.5 rounded font-semibold ${settingsDraft.otel_enabled ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-800 text-slate-600'}`}>
-              {settingsDraft.otel_enabled ? 'ON' : 'OFF'}
-            </div>
-          </div>
+          </button>
+          {otelOn && (
+            <a href="/otel-traces" className="flex items-center gap-1.5 px-4 pb-3 -mt-1 text-xs text-blue-400 hover:text-blue-300 font-medium">
+              Open App Traces →
+            </a>
+          )}
 
           {settingsDraft.otel_enabled && (() => {
             const composeNames = new Set(composeServices.map(s => s.name))
@@ -923,37 +1018,32 @@ export default function DeployPage() {
                 {/* Auto-detected compose services */}
                 {composeServices.map(svc => {
                   const detected = (svc.detected_langs ?? []).length > 0 ? (svc.detected_langs ?? []).join(', ') : 'none detected'
-                  const override = langOverrides[svc.name] ?? ''
+                  const override = (langOverrides[svc.name] ?? '') as LangValue
+                  const autoOpt: SelectOption<LangValue> = { value: '', label: `Auto (${detected})`, hint: 'detected from image' }
+                  const isGo = override === 'go' || (override === '' && (svc.detected_langs ?? []).includes('go'))
                   return (
-                    <div key={svc.name} className="flex items-center gap-3 text-sm">
+                    <div key={svc.name} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
                       <div className="flex-1 min-w-0">
                         <span className="font-mono text-slate-200 text-xs">{svc.name}</span>
                         {svc.image && (
                           <span className="ml-2 text-[10px] text-slate-600 font-mono truncate">{svc.image}</span>
                         )}
+                        {isGo && (
+                          <span className="ml-2 text-[10px] text-amber-400">⚠ Go can't be zero-code traced — network-trace only</span>
+                        )}
                       </div>
-                      <select
+                      <Select<LangValue>
+                        size="sm"
+                        align="right"
                         value={override}
-                        onChange={e => {
-                          const v = e.target.value
-                          setLangOverrides(prev => {
-                            const next = { ...prev }
-                            if (v === '') { delete next[svc.name] } else { next[svc.name] = v }
-                            return next
-                          })
-                        }}
-                        className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
-                      >
-                        <option value="">Auto ({detected})</option>
-                        <option value="java">Java</option>
-                        <option value="nodejs">Node.js</option>
-                        <option value="php">PHP</option>
-                        <option value="python">Python</option>
-                        <option value="ruby">Ruby</option>
-                        <option value="dotnet">.NET / C#</option>
-                        <option value="go">Go</option>
-                        <option value="none">Disabled (skip)</option>
-                      </select>
+                        options={[autoOpt, ...LANG_OPTIONS]}
+                        onChange={v => setLangOverrides(prev => {
+                          const next = { ...prev }
+                          if (v === '') { delete next[svc.name] } else { next[svc.name] = v }
+                          return next
+                        })}
+                        className="w-52 shrink-0"
+                      />
                       {override && override !== 'none' && (
                         <span className="text-[10px] text-blue-400 font-semibold shrink-0">overridden</span>
                       )}
@@ -966,30 +1056,21 @@ export default function DeployPage() {
 
                 {/* Manual overrides — services not present in the compose file */}
                 {manualNames.map(name => {
-                  const override = langOverrides[name] ?? ''
+                  const override = (langOverrides[name] ?? '') as Exclude<LangValue, ''>
                   return (
-                    <div key={name} className="flex items-center gap-3 text-sm">
+                    <div key={name} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
                       <div className="flex-1 min-w-0">
                         <span className="font-mono text-slate-200 text-xs">{name}</span>
                         <span className="ml-2 text-[10px] text-amber-500/80 font-semibold shrink-0">manual</span>
                       </div>
-                      <select
-                        value={override}
-                        onChange={e => {
-                          const v = e.target.value
-                          setLangOverrides(prev => ({ ...prev, [name]: v }))
-                        }}
-                        className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
-                      >
-                        <option value="java">Java</option>
-                        <option value="nodejs">Node.js</option>
-                        <option value="php">PHP</option>
-                        <option value="python">Python</option>
-                        <option value="ruby">Ruby</option>
-                        <option value="dotnet">.NET / C#</option>
-                        <option value="go">Go</option>
-                        <option value="none">Disabled (skip)</option>
-                      </select>
+                      <Select<Exclude<LangValue, ''>>
+                        size="sm"
+                        align="right"
+                        value={override || 'java'}
+                        options={LANG_OPTIONS}
+                        onChange={v => setLangOverrides(prev => ({ ...prev, [name]: v }))}
+                        className="w-52 shrink-0"
+                      />
                       <button
                         type="button"
                         onClick={() => removeOverride(name)}
@@ -1020,20 +1101,13 @@ export default function DeployPage() {
                       onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManual() } }}
                       className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
                     />
-                    <select
-                      value={manualLang}
-                      onChange={e => setManualLang(e.target.value)}
-                      className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0"
-                    >
-                      <option value="java">Java</option>
-                      <option value="nodejs">Node.js</option>
-                      <option value="php">PHP</option>
-                      <option value="python">Python</option>
-                      <option value="ruby">Ruby</option>
-                      <option value="dotnet">.NET / C#</option>
-                      <option value="go">Go</option>
-                      <option value="none">Disabled (skip)</option>
-                    </select>
+                    <Select<Exclude<LangValue, ''>>
+                      size="sm"
+                      value={(manualLang || 'java') as Exclude<LangValue, ''>}
+                      options={LANG_OPTIONS}
+                      onChange={v => setManualLang(v)}
+                      className="w-48 shrink-0"
+                    />
                     <div className="flex items-center gap-2 shrink-0">
                       <button
                         type="button"
@@ -1066,17 +1140,23 @@ export default function DeployPage() {
             )
           })()}
         </div>
+        )
+        })()}
 
-        {/* Image overrides — deploy a specific previously-loaded image per service */}
-        <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/30 overflow-hidden">
-          <div className="px-4 pt-4">
-            <p className="text-sm font-medium text-slate-200">Image overrides</p>
-            <p className="text-xs text-slate-500 mt-1">
-              Deploy a specific previously-loaded image version per service (image rollback) without editing the compose YAML.
-              Leave as “Use compose image” to keep what the compose file specifies.
-            </p>
-          </div>
-          <div className="px-4 pb-4 pt-3 space-y-2">
+      </div>
+
+      {/* Image overrides card */}
+      <div className="card">
+        <div className="flex items-center gap-2 mb-1">
+          <ContainerIcon className="w-4 h-4 text-violet-400" />
+          <h2 className="text-sm font-semibold text-white">Image overrides</h2>
+        </div>
+        <p className="text-xs text-slate-500 mb-4">
+          Deploy a specific previously-loaded image version per service (image rollback) without editing the compose YAML.
+          Leave as “Use compose image” to keep what the compose file specifies.
+        </p>
+        <div className="rounded-lg border border-slate-800 bg-slate-900/30 overflow-hidden">
+          <div className="px-4 py-4 space-y-2">
             {composeServices.length === 0 ? (
               <p className="text-[11px] text-slate-600 italic">No compose services detected yet. Save a compose file first.</p>
             ) : composeServices.map(svc => {
@@ -1086,53 +1166,60 @@ export default function DeployPage() {
                 .filter(i => i.repository && i.repository !== '<none>' && i.tag && i.tag !== '<none>')
                 .map(i => `${i.repository}:${i.tag}`)
               const uniqueOptions = Array.from(new Set(options)).sort()
+              const imgOpts: SelectOption<string>[] = [
+                { value: '', label: 'Use compose image', hint: 'default' },
+                ...uniqueOptions.map(o => ({ value: o, label: o })),
+              ]
+              if (current && !uniqueOptions.includes(current)) imgOpts.push({ value: current, label: current, hint: 'not loaded' })
               return (
-                <div key={svc.name} className="flex items-center gap-3 text-sm">
+                <div key={svc.name} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
                   <div className="flex-1 min-w-0">
                     <span className="font-mono text-slate-200 text-xs">{svc.name}</span>
                     {svc.image && <span className="ml-2 text-[10px] text-slate-600 font-mono truncate">compose: {svc.image}</span>}
                   </div>
-                  <select
+                  <Select<string>
+                    size="sm"
+                    align="right"
+                    searchable
                     value={current}
-                    onChange={e => {
-                      const v = e.target.value
-                      setImageOverrides(prev => {
-                        const next = { ...prev }
-                        if (v === '') delete next[svc.name]; else next[svc.name] = v
-                        return next
-                      })
-                    }}
-                    className="text-xs rounded border border-slate-700 bg-slate-900 text-slate-200 px-2 py-1 focus:outline-none focus:border-slate-500 shrink-0 max-w-[260px]"
-                  >
-                    <option value="">Use compose image</option>
-                    {uniqueOptions.map(o => <option key={o} value={o}>{o}</option>)}
-                    {current && !uniqueOptions.includes(current) && <option value={current}>{current} (not loaded)</option>}
-                  </select>
+                    options={imgOpts}
+                    onChange={v => setImageOverrides(prev => {
+                      const next = { ...prev }
+                      if (v === '') delete next[svc.name]; else next[svc.name] = v
+                      return next
+                    })}
+                    className="w-64 shrink-0"
+                  />
                   {current && <span className="text-[10px] text-blue-400 font-semibold shrink-0">overridden</span>}
                 </div>
               )
             })}
           </div>
         </div>
-
-        <div className="flex items-center gap-3 mt-4">
-          <button
-            onClick={saveSettings}
-            disabled={settingsSaving}
-            className="btn-secondary text-sm"
-          >
-            {settingsSaving ? 'Saving…' : 'Save settings'}
-          </button>
-          {settingsSaved && <span className="text-xs text-green-400">✓ Saved</span>}
-          {settings && (
-            <span className="text-xs text-slate-600">
-              Current: health {settings.health_timeout_secs}s · deploy {settings.deploy_timeout_secs}s · stable {settings.health_stable_secs}s
-            </span>
-          )}
-        </div>
       </div>
 
+      {/* Save bar — plain footer at the end of the settings content. */}
+      <div className="flex items-center gap-3 p-4 rounded-xl bg-slate-900/60 border border-slate-800">
+        <button
+          onClick={saveSettings}
+          disabled={settingsSaving}
+          className="btn-primary text-sm"
+        >
+          {settingsSaving ? 'Saving…' : 'Save settings'}
+        </button>
+        {settingsSaved && <span className="text-xs text-green-400">✓ Saved</span>}
+        {settings && (
+          <span className="text-xs text-slate-600 ml-auto hidden sm:block">
+            Current: health {settings.health_timeout_secs}s · deploy {settings.deploy_timeout_secs}s · stable {settings.health_stable_secs}s
+          </span>
+        )}
+      </div>
+      </div>
+      )}
+
+      {/* ═══ DEPLOY TAB (history) ══════════════════════════════════════════ */}
       {/* ── Deployment history ─────────────────────────────────────────────── */}
+      {tab === 'deploy' && (
       <section>
         <h2 className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">Deployment History</h2>
         {deployments.length === 0 ? (
@@ -1220,6 +1307,7 @@ export default function DeployPage() {
           </div>
         )}
       </section>
+      )}
     </div>
 
     {/* ── "What will deploy" confirmation ─────────────────────────────────── */}

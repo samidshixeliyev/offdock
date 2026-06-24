@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
 import { RefreshCw, Play, Square, Download, FileText, WifiOff, Trash2, Search, X } from 'lucide-react'
 import clsx from 'clsx'
+import ConfirmModal from '../components/ConfirmModal'
 
 type LogLine = { raw: string; level: string }
 
@@ -38,6 +39,7 @@ export default function AppLogsPage() {
   const [hiddenLevels, setHiddenLevels] = useState<Set<Level>>(new Set())
   const [autoScroll, setAutoScroll] = useState(true)
   const [clearing, setClearing] = useState(false)
+  const [confirmClear, setConfirmClear] = useState(false)
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -99,7 +101,7 @@ export default function AppLogsPage() {
   useEffect(() => () => { esRef.current?.close() }, [])
 
   const clearLogs = async () => {
-    if (!confirm('Clear the OffDock log file? This cannot be undone.')) return
+    setConfirmClear(false)
     setClearing(true)
     try {
       await api.clearAppLogs()
@@ -267,7 +269,7 @@ export default function AppLogsPage() {
           {/* Clear (superadmin only) */}
           {isSuperAdmin && (
             <button
-              onClick={clearLogs}
+              onClick={() => setConfirmClear(true)}
               disabled={clearing}
               title="Clear log file"
               className="p-1.5 rounded hover:bg-slate-800 text-slate-600 hover:text-red-400 transition-colors"
@@ -328,6 +330,17 @@ export default function AppLogsPage() {
         )}
         <div ref={bottomRef} />
       </div>
+
+      {confirmClear && (
+        <ConfirmModal
+          danger
+          title="Clear log file?"
+          message="The OffDock log file will be emptied. This cannot be undone."
+          confirmLabel="Clear logs"
+          onConfirm={clearLogs}
+          onCancel={() => setConfirmClear(false)}
+        />
+      )}
     </div>
   )
 }

@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, TrafficReport, TrafficBucket, TrafficCount, TrafficEntry, HostStat, ConnectionsReport } from '../api/client'
 import { Page, PageHeader, Panel, StatCard, EmptyState, Tabs } from '../components/ui'
+import { Select } from '../components/Select'
 import { formatBytes } from '../lib/format'
 import clsx from 'clsx'
 import {
   Activity, RefreshCw, Globe, AlertTriangle, Network, Gauge, ArrowDownToLine,
-  ChevronDown, Users, Search, X, Clock, Zap, Server, Wifi, Monitor,
+  ChevronDown, Users, Search, X, Clock, Zap, Server, Wifi, Monitor, ShieldAlert,
 } from 'lucide-react'
 
-type TabId = 'overview' | 'hosts' | 'response' | 'requests' | 'connections'
+type TabId = 'overview' | 'hosts' | 'response' | 'errors' | 'requests' | 'connections'
 
 const WINDOWS = [
   { label: '1h', hours: 1 }, { label: '6h', hours: 6 },
@@ -317,6 +318,24 @@ export default function TrafficPage() {
 
   const hasTimingData = (s?.avg_response_ms ?? 0) > 0
 
+  // ── Error analytics (computed from the recent feed) ──
+  const errorData = useMemo(() => {
+    const recent = report?.recent ?? []
+    const errors = recent.filter(e => e.status >= 400)
+    const byPath = new Map<string, { count: number; statuses: Set<number> }>()
+    const byStatus = new Map<number, number>()
+    for (const e of errors) {
+      const p = byPath.get(e.path) ?? { count: 0, statuses: new Set<number>() }
+      p.count++; p.statuses.add(e.status); byPath.set(e.path, p)
+      byStatus.set(e.status, (byStatus.get(e.status) ?? 0) + 1)
+    }
+    const topPaths = [...byPath.entries()]
+      .map(([path, v]) => ({ path, count: v.count, statuses: [...v.statuses].sort((a, b) => a - b) }))
+      .sort((a, b) => b.count - a.count).slice(0, 15)
+    const statusBreakdown = [...byStatus.entries()].map(([status, count]) => ({ status, count })).sort((a, b) => b.count - a.count)
+    return { errors, topPaths, statusBreakdown }
+  }, [report])
+
   return (
     <Page>
       <PageHeader
@@ -372,6 +391,7 @@ export default function TrafficPage() {
           { id: 'overview' as TabId, label: 'Overview', icon: Activity },
           { id: 'hosts' as TabId, label: 'By Host', icon: Globe },
           { id: 'response' as TabId, label: 'Response Times', icon: Clock },
+          { id: 'errors' as TabId, label: 'Errors', icon: ShieldAlert, count: s ? s.status_4xx + s.status_5xx : undefined },
           { id: 'requests' as TabId, label: 'Requests', icon: Search, count: report?.recent.length },
           { id: 'connections' as TabId, label: 'Connections', icon: Network },
         ]}
@@ -533,6 +553,118 @@ export default function TrafficPage() {
               </div>
             )}
 
+            {/* ── ERRORS ── */}
+            {tab === 'errors' && s && report && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <StatCard label="Total errors" value={(s.status_4xx + s.status_5xx).toLocaleString()} icon={ShieldAlert}
+                    tone={errRate > 5 ? 'red' : 'amber'} sublabel={`${errRate.toFixed(1)}% of traffic`} />
+                  <StatCard label="Client (4xx)" value={s.status_4xx.toLocaleString()} icon={AlertTriangle} tone="amber"
+                    sublabel={s.total > 0 ? `${((s.status_4xx / s.total) * 100).toFixed(1)}%` : undefined} />
+                  <StatCard label="Server (5xx)" value={s.status_5xx.toLocaleString()} icon={AlertTriangle} tone="red"
+                    sublabel={s.total > 0 ? `${((s.status_5xx / s.total) * 100).toFixed(1)}%` : undefined} />
+                  <StatCard label="Failing paths" value={errorData.topPaths.length.toLocaleString()} icon={Search} tone="violet"
+                    sublabel="distinct in feed" />
+                </div>
+
+                <div className="px-4 py-2.5 rounded-xl bg-slate-900/40 border border-slate-800 text-xs text-slate-500 flex items-center gap-2">
+                  <ShieldAlert className="w-3.5 h-3.5 shrink-0 text-slate-600" />
+                  Status totals are window-wide; the path/status breakdown below is computed from the most recent {report.recent.length} requests.
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <Panel title="Top failing paths" icon={AlertTriangle} className="lg:col-span-2">
+                    {errorData.topPaths.length === 0 ? (
+                      <EmptyState icon={ShieldAlert} title="No errors in the recent feed" description="4xx/5xx requests from the live feed are grouped here." />
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-800 text-slate-600 text-[11px] uppercase tracking-wider">
+                              <th className="px-3 py-2 text-left font-medium">Path</th>
+                              <th className="px-3 py-2 text-left font-medium">Statuses</th>
+                              <th className="px-3 py-2 text-right font-medium">Count</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {errorData.topPaths.map(p => (
+                              <tr key={p.path} className="border-b border-slate-800/40 hover:bg-slate-800/20">
+                                <td className="px-3 py-2 font-mono text-slate-300 max-w-[360px] truncate" title={p.path}>{p.path}</td>
+                                <td className="px-3 py-2">
+                                  <div className="flex flex-wrap gap-1">
+                                    {p.statuses.map(st => (
+                                      <span key={st} className={clsx('px-1.5 py-0.5 rounded text-[10px] font-semibold', statusColor(st))}>{st}</span>
+                                    ))}
+                                  </div>
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums text-slate-300 font-semibold">{p.count.toLocaleString()}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </Panel>
+
+                  <Panel title="Error status breakdown" icon={Gauge}>
+                    {errorData.statusBreakdown.length === 0 ? (
+                      <EmptyState icon={Gauge} title="No errors" description="Nothing failed in the recent feed." />
+                    ) : (
+                      <div className="p-3 space-y-1.5">
+                        {errorData.statusBreakdown.map(b => {
+                          const max = Math.max(...errorData.statusBreakdown.map(x => x.count), 1)
+                          return (
+                            <div key={b.status} className="relative flex items-center gap-2 px-2 py-1.5 rounded-lg overflow-hidden">
+                              <div className={clsx('absolute inset-y-0 left-0 rounded-lg opacity-10', b.status >= 500 ? 'bg-red-500' : 'bg-amber-500')}
+                                style={{ width: `${(b.count / max) * 100}%` }} />
+                              <span className={clsx('relative px-1.5 py-0.5 rounded text-[10px] font-bold', statusColor(b.status))}>{b.status}</span>
+                              <span className="relative tabular-nums text-xs text-slate-400 ml-auto">{b.count.toLocaleString()}</span>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </Panel>
+                </div>
+
+                <Panel title="Recent errors" icon={ShieldAlert} actions={<span className="text-xs text-slate-600">{errorData.errors.length} shown</span>}>
+                  {errorData.errors.length === 0 ? (
+                    <EmptyState icon={ShieldAlert} title="No recent errors" description="Failed requests from the live feed appear here." />
+                  ) : (
+                    <div className="overflow-x-auto max-h-[440px] overflow-y-auto">
+                      <table className="w-full text-xs">
+                        <thead className="sticky top-0 bg-slate-900 z-10">
+                          <tr className="border-b border-slate-800 text-slate-600 text-[11px] uppercase tracking-wider">
+                            <th className="px-3 py-2 text-left font-medium">Time</th>
+                            <th className="px-3 py-2 text-left font-medium">Method</th>
+                            <th className="px-3 py-2 text-left font-medium">Path</th>
+                            <th className="px-3 py-2 text-left font-medium">Status</th>
+                            <th className="px-3 py-2 text-left font-medium">Host</th>
+                            <th className="px-3 py-2 text-left font-medium">Client</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {errorData.errors.slice(0, 200).map((e, i) => {
+                            const t = new Date(e.time)
+                            return (
+                              <tr key={i} className="border-b border-slate-800/40 hover:bg-slate-800/20">
+                                <td className="px-3 py-2 text-slate-600 tabular-nums whitespace-nowrap">{t.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
+                                <td className="px-3 py-2"><span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-bold', methodColor(e.method))}>{e.method}</span></td>
+                                <td className="px-3 py-2 font-mono text-slate-300 max-w-[260px] truncate" title={e.path}>{e.path}</td>
+                                <td className="px-3 py-2"><span className={clsx('px-1.5 py-0.5 rounded text-[10px] font-semibold', statusColor(e.status))}>{e.status}</span></td>
+                                <td className="px-3 py-2 font-mono text-slate-500 truncate max-w-[120px]">{e.host || '—'}</td>
+                                <td className="px-3 py-2 font-mono text-slate-600">{e.ip}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Panel>
+              </div>
+            )}
+
             {/* ── REQUESTS FEED ── */}
             {tab === 'requests' && report && (
               <Panel
@@ -562,10 +694,8 @@ export default function TrafficPage() {
                       </button>
                     ))}
                   </div>
-                  <select className="select text-xs py-1.5" value={fMethod} onChange={e => setFMethod(e.target.value)}>
-                    <option value="all">All methods</option>
-                    {feedMethods.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
+                  <Select size="sm" className="w-36" value={fMethod} onChange={setFMethod}
+                    options={[{ value: 'all', label: 'All methods' }, ...feedMethods.map(m => ({ value: m, label: m }))]} />
                   {(fSearch || fStatus !== 'all' || fMethod !== 'all') && (
                     <button onClick={() => { setFSearch(''); setFStatus('all'); setFMethod('all') }}
                       className="text-slate-500 hover:text-slate-200 p-1.5 rounded hover:bg-slate-800">

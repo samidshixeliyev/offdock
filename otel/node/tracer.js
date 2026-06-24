@@ -223,3 +223,143 @@ if (typeof globalThis.fetch === 'function') {
     }
   };
 }
+
+// ─── Database instrumentation (zero-dependency) ───────────────────────────────
+// We can't pull in @opentelemetry/instrumentation-* offline, so we hook
+// Module._load and wrap the common DB drivers' query methods directly. Each
+// emits a span carrying db.system + db.statement so they show up in OffDock's
+// Database view. Everything is wrapped in try/catch — tracing never breaks the app.
+(function instrumentDatabases() {
+  let Module;
+  try { Module = require('module'); } catch { return; }
+  const origLoad = Module._load;
+  if (typeof origLoad !== 'function' || origLoad.__offdock) return;
+
+  // Emit a DB span. `exec` runs the original call and we time it, supporting
+  // both promise-returning and callback-style driver APIs.
+  function dbSpan(system, statement, op, exec) {
+    const start = Date.now();
+    const tid = genTraceId(), sid = genSpanId();
+    const finish = (status, error) => {
+      const tags = { 'db.system': system, 'db.statement': String(statement || '').slice(0, 4096) };
+      if (op) tags['db.operation'] = op;
+      send({
+        trace_id: tid, span_id: sid, service: SERVICE,
+        name: `${system} ${op || 'query'}`, kind: 'client',
+        start_ms: start, end_ms: Date.now(),
+        status: status || 'ok', error: error || undefined, tags,
+      });
+    };
+    try {
+      const ret = exec();
+      if (ret && typeof ret.then === 'function') {
+        return ret.then(v => { finish('ok'); return v; },
+                         e => { finish('error', e && e.message); throw e; });
+      }
+      finish('ok');
+      return ret;
+    } catch (e) { finish('error', e && e.message); throw e; }
+  }
+
+  // Wrap a method so the last callback arg (if any) settles the span; otherwise
+  // the returned promise/value is timed by dbSpan.
+  function wrap(obj, method, system, stmtOf, opOf) {
+    if (!obj || typeof obj[method] !== 'function' || obj[method].__offdock) return;
+    const orig = obj[method];
+    const wrapped = function (...args) {
+      let statement = '', op = '';
+      try { statement = stmtOf(args); op = opOf ? opOf(args, statement) : ''; } catch {}
+      // Callback style: the driver invokes a trailing function(err, res).
+      const cbIdx = args.length - 1;
+      if (typeof args[cbIdx] === 'function') {
+        const start = Date.now(), tid = genTraceId(), sid = genSpanId();
+        const cb = args[cbIdx];
+        args[cbIdx] = function (err) {
+          try {
+            send({
+              trace_id: tid, span_id: sid, service: SERVICE,
+              name: `${system} ${op || 'query'}`, kind: 'client',
+              start_ms: start, end_ms: Date.now(),
+              status: err ? 'error' : 'ok', error: err && err.message,
+              tags: { 'db.system': system, 'db.statement': String(statement).slice(0, 4096), ...(op ? { 'db.operation': op } : {}) },
+            });
+          } catch {}
+          return cb.apply(this, arguments);
+        };
+        return orig.apply(this, args);
+      }
+      return dbSpan(system, statement, op, () => orig.apply(this, args));
+    };
+    wrapped.__offdock = true;
+    try { obj[method] = wrapped; } catch {}
+  }
+
+  const sqlStmt = a => (typeof a[0] === 'string' ? a[0] : (a[0] && (a[0].sql || a[0].text)) || '');
+  const sqlOp = (_a, s) => (String(s).trim().split(/\s+/)[0] || '').toUpperCase();
+
+  const patchers = {
+    pg(m) {
+      if (m.Client) wrap(m.Client.prototype, 'query', 'postgresql', sqlStmt, sqlOp);
+      if (m.Pool) wrap(m.Pool.prototype, 'query', 'postgresql', sqlStmt, sqlOp);
+    },
+    mysql(m) { if (m.createConnection) hookFactory(m, 'mysql'); },
+    mysql2(m) { if (m.createConnection) hookFactory(m, 'mysql'); },
+    ioredis(m) {
+      const proto = (m && (m.prototype || (m.default && m.default.prototype)));
+      if (proto) wrap(proto, 'sendCommand', 'redis', a => {
+        const c = a[0]; return c && c.name ? (c.name + (c.args ? ' ' + c.args.slice(0, 4).join(' ') : '')) : 'redis';
+      }, a => (a[0] && a[0].name ? String(a[0].name).toUpperCase() : 'CMD'));
+    },
+    redis(m) {
+      // node-redis v4 returns a client factory; patch its commandsQueue at use-time is hard,
+      // so wrap the low-level sendCommand on the client prototype when exposed.
+      const C = m && (m.RedisClient || (m.default && m.default.RedisClient));
+      if (C && C.prototype) wrap(C.prototype, 'sendCommand', 'redis',
+        a => Array.isArray(a[0]) ? a[0].join(' ') : String(a[0] || 'redis'),
+        a => (Array.isArray(a[0]) && a[0][0] ? String(a[0][0]).toUpperCase() : 'CMD'));
+    },
+    mongodb(m) {
+      const Col = m && m.Collection;
+      if (!Col || !Col.prototype) return;
+      for (const op of ['find', 'findOne', 'insertOne', 'insertMany', 'updateOne', 'updateMany', 'deleteOne', 'deleteMany', 'aggregate', 'countDocuments']) {
+        wrap(Col.prototype, op, 'mongodb',
+          function () { try { return op + ' ' + (this && this.collectionName ? this.collectionName : ''); } catch { return op; } },
+          () => op.toUpperCase());
+      }
+    },
+  };
+
+  function hookFactory(m, system) {
+    // mysql/mysql2: wrap query/execute on the connection objects returned by the factory.
+    for (const f of ['createConnection', 'createPool']) {
+      if (typeof m[f] !== 'function' || m[f].__offdock) continue;
+      const orig = m[f];
+      const wrapped = function () {
+        const conn = orig.apply(this, arguments);
+        try {
+          if (conn) {
+            wrap(conn, 'query', system, sqlStmt, sqlOp);
+            wrap(conn, 'execute', system, sqlStmt, sqlOp);
+          }
+        } catch {}
+        return conn;
+      };
+      wrapped.__offdock = true;
+      try { m[f] = wrapped; } catch {}
+    }
+  }
+
+  const load = function (request) {
+    const m = origLoad.apply(this, arguments);
+    try {
+      const base = String(request).split('/')[0];
+      if (patchers[base] && m && !m.__offdockDb) {
+        patchers[base](m);
+        try { Object.defineProperty(m, '__offdockDb', { value: true, enumerable: false }); } catch {}
+      }
+    } catch {}
+    return m;
+  };
+  load.__offdock = true;
+  Module._load = load;
+})();
