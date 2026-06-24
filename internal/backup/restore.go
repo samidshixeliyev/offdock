@@ -17,6 +17,7 @@ type RestorePlan struct {
 	Manifest  Manifest `json:"manifest"`
 	Projects  []string `json:"projects"`
 	Volumes   []string `json:"volumes"`
+	Images    []string `json:"images"`
 	HasConfig bool     `json:"has_config"`
 	HasDB     bool     `json:"has_db"`
 	HasNginx  bool     `json:"has_nginx"`
@@ -30,12 +31,14 @@ type RestoreOptions struct {
 	DB       bool
 	Nginx    bool
 	Certs    bool
+	Images   bool
 }
 
 // RestoreResult reports what was restored.
 type RestoreResult struct {
 	RestoredProjects []string `json:"restored_projects"`
 	RestoredVolumes  []string `json:"restored_volumes"`
+	RestoredImages   []string `json:"restored_images"`
 	RestoredConfig   bool     `json:"restored_config"`
 	RestoredDB       bool     `json:"restored_db"`
 	Errors           []string `json:"errors"`
@@ -63,6 +66,9 @@ func (b *Builder) Inspect(archivePath string) (RestorePlan, error) {
 		case strings.HasPrefix(name, "volumes/"):
 			base := strings.TrimSuffix(filepath.Base(name), ".tar.gz")
 			plan.Volumes = appendUnique(plan.Volumes, base)
+		case strings.HasPrefix(name, "images/"):
+			base := strings.TrimSuffix(filepath.Base(name), ".tar.gz")
+			plan.Images = appendUnique(plan.Images, base)
 		}
 		return nil
 	})
@@ -125,6 +131,21 @@ func (b *Builder) Restore(ctx context.Context, archivePath string, opts RestoreO
 					res.Errors = append(res.Errors, "import "+vol+": "+err.Error())
 				} else {
 					res.RestoredVolumes = appendUnique(res.RestoredVolumes, vol)
+				}
+			}
+		case opts.Images && strings.HasPrefix(name, "images/"):
+			// Stage the image tarball, then `docker load` (tags come from the tar).
+			img := strings.TrimSuffix(filepath.Base(name), ".tar.gz")
+			tmpFile := filepath.Join(tmpDir, filepath.Base(name))
+			if err := stageFile(tmpFile, r); err != nil {
+				res.Errors = append(res.Errors, "stage image "+img+": "+err.Error())
+				return nil
+			}
+			if b.Docker != nil {
+				if _, err := b.Docker.LoadImageCtx(ctx, tmpFile); err != nil {
+					res.Errors = append(res.Errors, "load image "+img+": "+err.Error())
+				} else {
+					res.RestoredImages = appendUnique(res.RestoredImages, img)
 				}
 			}
 		}

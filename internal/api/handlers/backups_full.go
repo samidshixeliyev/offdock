@@ -37,6 +37,34 @@ func (h *H) backupBuilder() *backup.Builder {
 	}
 }
 
+// trackedImageRefs returns the name:tag of tracked Docker images to export with a
+// backup. For project scope only that project's images are included; otherwise
+// all tracked images. Refs missing a name are skipped (cannot `docker save`).
+func (h *H) trackedImageRefs(scope, projectID string) []string {
+	images, _ := h.db.Images.FindAll()
+	refs := make([]string, 0, len(images))
+	seen := map[string]bool{}
+	for _, img := range images {
+		if scope == "project" && projectID != "" && img.ProjectID != projectID {
+			continue
+		}
+		if img.ImageName == "" || img.ImageName == "unknown" || img.ImageName == "<none>" {
+			continue
+		}
+		tag := img.ImageTag
+		if tag == "" {
+			tag = "latest"
+		}
+		ref := img.ImageName + ":" + tag
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
 // CreateBackup builds a new backup archive and records it.
 // POST /api/v1/system/backups  {scope, project_id, include_volumes, include_config, encrypt}
 func (h *H) CreateBackup(w http.ResponseWriter, r *http.Request) {
@@ -46,6 +74,7 @@ func (h *H) CreateBackup(w http.ResponseWriter, r *http.Request) {
 		ProjectID      string `json:"project_id"`
 		IncludeVolumes bool   `json:"include_volumes"`
 		IncludeConfig  bool   `json:"include_config"`
+		IncludeImages  bool   `json:"include_images"`
 		Encrypt        bool   `json:"encrypt"`
 	}
 	_ = decodeJSON(r, &req)
@@ -58,7 +87,11 @@ func (h *H) CreateBackup(w http.ResponseWriter, r *http.Request) {
 		ProjectID:      req.ProjectID,
 		IncludeVolumes: req.IncludeVolumes,
 		IncludeConfig:  req.IncludeConfig,
+		IncludeImages:  req.IncludeImages,
 		Encrypt:        req.Encrypt,
+	}
+	if req.IncludeImages {
+		opts.ImageRefs = h.trackedImageRefs(req.Scope, req.ProjectID)
 	}
 	// For project scope, derive the docker compose volume prefix.
 	if req.Scope == "project" && req.ProjectID != "" {
@@ -87,6 +120,7 @@ func (h *H) CreateBackup(w http.ResponseWriter, r *http.Request) {
 		SizeBytes:   result.Size,
 		Contents:    result.Contents,
 		Volumes:     result.Volumes,
+		Images:      result.Images,
 		Encrypted:   result.Encrypted,
 		Sensitive:   result.Sensitive,
 		TriggeredBy: claims.Username,

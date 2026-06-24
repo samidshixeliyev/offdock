@@ -43,6 +43,63 @@ func (c *Client) LoadImage(tarPath string) (string, error) {
 	return run(ctx, "load", "-i", tarPath)
 }
 
+// TagImage applies an additional tag (target = name:tag) to an existing image
+// identified by source (image ID or an existing ref).
+func (c *Client) TagImage(source, target string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)
+	defer cancel()
+	_, err := run(ctx, "tag", source, target)
+	return err
+}
+
+// SaveImage exports an image (by ref or ID) to a gzip-compressed tar at destTarGz
+// via `docker save <ref> | gzip`. Uses its own long timeout — large images.
+func (c *Client) SaveImage(ctx context.Context, ref, destTarGz string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+
+	out, err := os.OpenFile(destTarGz, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	save := exec.CommandContext(ctx, "docker", "save", ref)
+	gzip := exec.CommandContext(ctx, "gzip", "-c")
+	var errBuf bytes.Buffer
+	save.Stderr = &errBuf
+	gzip.Stderr = &errBuf
+
+	pipe, err := save.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	gzip.Stdin = pipe
+	gzip.Stdout = out
+
+	if err := gzip.Start(); err != nil {
+		return err
+	}
+	if err := save.Start(); err != nil {
+		return err
+	}
+	saveErr := save.Wait()
+	gzipErr := gzip.Wait()
+	if saveErr != nil || gzipErr != nil {
+		_ = os.Remove(destTarGz)
+		return fmt.Errorf("save image %s: save=%v gzip=%v\n%s", ref, saveErr, gzipErr, errBuf.String())
+	}
+	return nil
+}
+
+// LoadImageCtx loads a (optionally gzip) tar archive into Docker honouring the
+// supplied context. `docker load` auto-detects gzip/bzip2/xz compression.
+func (c *Client) LoadImageCtx(ctx context.Context, tarPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	return run(ctx, "load", "-i", tarPath)
+}
+
 // RemoveImage removes a Docker image by ID or name:tag.
 func (c *Client) RemoveImage(imageRef string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTimeout)

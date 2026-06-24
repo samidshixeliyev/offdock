@@ -1301,7 +1301,7 @@ export const api = {
 
   // --- Backups (Tier 2) ---
   listBackups: () => request<BackupRecord[]>('/api/v1/system/backups'),
-  createBackup: (body: { scope: string; project_id?: string; include_volumes?: boolean; include_config?: boolean; encrypt?: boolean }) =>
+  createBackup: (body: { scope: string; project_id?: string; include_volumes?: boolean; include_config?: boolean; include_images?: boolean; encrypt?: boolean }) =>
     request<BackupRecord>('/api/v1/system/backups', { method: 'POST', body: JSON.stringify(body) }),
   inspectBackup: (id: string) => request<RestorePlan>(`/api/v1/system/backups/${id}/inspect`),
   restoreBackup: (id: string, opts: RestoreOptions) =>
@@ -1352,27 +1352,27 @@ export interface OptimizeResult {
 }
 export interface BackupRecord {
   id: string; created_at: string; scope: string; project_id: string; path: string
-  size_bytes: number; contents: string[]; volumes: string[]; encrypted: boolean
+  size_bytes: number; contents: string[]; volumes: string[]; images: string[]; encrypted: boolean
   sensitive: boolean; triggered_by: string; status: string; note: string
 }
 export interface BackupSchedule {
   id: string; enabled: boolean; time_of_day: string; scope: string
-  include_volumes: boolean; include_config: boolean; encrypt: boolean
+  include_volumes: boolean; include_config: boolean; include_images: boolean; encrypt: boolean
   retention: number; dest_path: string; last_run_at?: string | null; updated_at: string
 }
 export interface BackupManifest {
   version: number; created_at: string; scope: string; project_id: string
-  volumes: string[]; encrypted: boolean; has_config: boolean
+  volumes: string[]; images: string[]; encrypted: boolean; has_config: boolean
 }
 export interface RestorePlan {
-  manifest: BackupManifest; projects: string[]; volumes: string[]
+  manifest: BackupManifest; projects: string[]; volumes: string[]; images: string[]
   has_config: boolean; has_db: boolean; has_nginx: boolean
 }
 export interface RestoreOptions {
-  volumes?: boolean; projects?: boolean; config?: boolean; db?: boolean; nginx?: boolean; certs?: boolean
+  volumes?: boolean; projects?: boolean; config?: boolean; db?: boolean; nginx?: boolean; certs?: boolean; images?: boolean
 }
 export interface RestoreResult {
-  restored_projects: string[]; restored_volumes: string[]
+  restored_projects: string[]; restored_volumes: string[]; restored_images: string[]
   restored_config: boolean; restored_db: boolean; errors: string[]
 }
 export interface TerminalPolicy {

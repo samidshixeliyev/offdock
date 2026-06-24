@@ -40,6 +40,30 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
+// trackedImageRefs returns name:tag of all tracked Docker images for scheduled
+// (always full-scope) backups. Mirrors the handler's logic.
+func (s *Scheduler) trackedImageRefs() []string {
+	images, _ := s.db.Images.FindAll()
+	refs := make([]string, 0, len(images))
+	seen := map[string]bool{}
+	for _, img := range images {
+		if img.ImageName == "" || img.ImageName == "unknown" || img.ImageName == "<none>" {
+			continue
+		}
+		tag := img.ImageTag
+		if tag == "" {
+			tag = "latest"
+		}
+		ref := img.ImageName + ":" + tag
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
 func (s *Scheduler) tick() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -66,12 +90,17 @@ func (s *Scheduler) tick() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 
-	res, err := s.builder.Create(ctx, outPath, Options{
+	opts := Options{
 		Scope:          sched.Scope,
 		IncludeVolumes: sched.IncludeVolumes,
 		IncludeConfig:  sched.IncludeConfig,
+		IncludeImages:  sched.IncludeImages,
 		Encrypt:        sched.Encrypt,
-	})
+	}
+	if sched.IncludeImages {
+		opts.ImageRefs = s.trackedImageRefs()
+	}
+	res, err := s.builder.Create(ctx, outPath, opts)
 	if err != nil {
 		slog.Error("scheduled backup failed", "err", err)
 		return
@@ -80,7 +109,7 @@ func (s *Scheduler) tick() {
 	rec := store.BackupRecord{
 		ID: id, CreatedAt: time.Now().UTC(), Scope: sched.Scope,
 		Path: res.Path, SizeBytes: res.Size, Contents: res.Contents,
-		Volumes: res.Volumes, Encrypted: res.Encrypted, Sensitive: res.Sensitive,
+		Volumes: res.Volumes, Images: res.Images, Encrypted: res.Encrypted, Sensitive: res.Sensitive,
 		TriggeredBy: "scheduler", Status: res.Status, Note: res.Note,
 	}
 	_ = s.db.Backups.Save(rec)

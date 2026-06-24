@@ -84,11 +84,17 @@ function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => v
   const [progress, setProgress] = useState(0)
   const [phase, setPhase] = useState<'idle' | 'uploading' | 'loading' | 'done'>('idle')
   const [serverPath, setServerPath] = useState('/var/offdock/uploads/')
+  const [customName, setCustomName] = useState('')
+  const [customTag, setCustomTag] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
 
   const loadIntoDocker = async (path: string, label: string) => {
     setPhase('loading')
-    const res = await api.loadImage({ tar_file_path: path })
+    const res = await api.loadImage({
+      tar_file_path: path,
+      image_name: customName.trim() || undefined,
+      image_tag: customTag.trim() || undefined,
+    })
     setPhase('done')
     const n = res.images?.length ?? 0
     toast.success(n > 0 ? `Loaded ${n} image${n !== 1 ? 's' : ''} from ${label}` : `Loaded ${label} (no new images — already present)`)
@@ -138,6 +144,22 @@ function UploadModal({ onDone, onClose }: { onDone: () => void; onClose: () => v
               {label}
             </button>
           ))}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Image name <span className="text-slate-600">(optional override)</span></label>
+            <input className="input font-mono text-xs" value={customName} disabled={busy}
+              onChange={e => setCustomName(e.target.value)} placeholder="e.g. myregistry/app" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Tag <span className="text-slate-600">(optional)</span></label>
+            <input className="input font-mono text-xs" value={customTag} disabled={busy}
+              onChange={e => setCustomTag(e.target.value)} placeholder="e.g. v1.2.3" />
+          </div>
+          <p className="sm:col-span-2 text-[10px] text-slate-600">
+            When set, OffDock applies <code>docker tag</code> to the loaded image so it can be referenced by this name:tag (image rollback, compose overrides, and backup export).
+          </p>
         </div>
 
         {tab === 'computer' ? (

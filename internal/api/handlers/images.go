@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -155,6 +156,14 @@ func (h *H) LoadImage(w http.ResponseWriter, r *http.Request) {
 		if req.ImageTag != "" {
 			tag = req.ImageTag
 		}
+		// Apply the requested ref to the actual Docker image so it can be referenced
+		// by the chosen name:tag (image rollback / compose overrides / backup export).
+		if (req.ImageName != "" || req.ImageTag != "") && name != "" && name != "<none>" {
+			target := name + ":" + tag
+			if err := h.docker.TagImage(img.ID, target); err != nil {
+				slog.Warn("tag loaded image", "image", img.ID, "target", target, "err", err)
+			}
+		}
 		newImages = append(newImages, store.DockerImage{
 			ID:            store.NewULID(),
 			ProjectID:     req.ProjectID,
@@ -178,6 +187,14 @@ func (h *H) LoadImage(w http.ResponseWriter, r *http.Request) {
 		}
 		if name == "" {
 			name = "unknown"
+		}
+		if (req.ImageName != "" || req.ImageTag != "") && name != "unknown" {
+			target := name + ":" + tag
+			if id := parseLoadedImageID(out); id != "" {
+				if err := h.docker.TagImage(id, target); err != nil {
+					slog.Warn("tag loaded image (fallback)", "target", target, "err", err)
+				}
+			}
 		}
 		newImages = append(newImages, store.DockerImage{
 			ID:            store.NewULID(),

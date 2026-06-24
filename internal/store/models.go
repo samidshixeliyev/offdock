@@ -646,6 +646,7 @@ type BackupRecord struct {
 	SizeBytes   int64     `json:"size_bytes"`
 	Contents    []string  `json:"contents"` // member categories included
 	Volumes     []string  `json:"volumes"`
+	Images      []string  `json:"images"`
 	Encrypted   bool      `json:"encrypted"`
 	Sensitive   bool      `json:"sensitive"` // includes config.yaml / secrets
 	TriggeredBy string    `json:"triggered_by"`
@@ -663,6 +664,7 @@ type BackupSchedule struct {
 	Scope          string    `json:"scope"`       // "full" | "db" | "config"
 	IncludeVolumes bool      `json:"include_volumes"`
 	IncludeConfig  bool      `json:"include_config"`
+	IncludeImages  bool      `json:"include_images"`
 	Encrypt        bool      `json:"encrypt"`
 	Retention      int       `json:"retention"` // keep last N, 0 = unlimited
 	DestPath       string    `json:"dest_path"` // optional off-box copy dir

@@ -39,7 +39,9 @@ type Options struct {
 	VolumePrefix   string // docker compose volume name prefix for project scope
 	IncludeVolumes bool
 	IncludeConfig  bool
-	Encrypt        bool // encrypt the (small) config.yaml member at rest
+	IncludeImages  bool     // export tracked Docker images as tarballs
+	ImageRefs      []string // image refs (name:tag) to `docker save` when IncludeImages
+	Encrypt        bool     // encrypt the (small) config.yaml member at rest
 }
 
 // Manifest is written into every archive for validation on restore.
@@ -49,6 +51,7 @@ type Manifest struct {
 	Scope      string    `json:"scope"`
 	ProjectID  string    `json:"project_id"`
 	Volumes    []string  `json:"volumes"`
+	Images     []string  `json:"images"`
 	Encrypted  bool      `json:"encrypted"`
 	HasConfig  bool      `json:"has_config"`
 }
@@ -59,6 +62,7 @@ type Result struct {
 	Size      int64
 	Contents  []string
 	Volumes   []string
+	Images    []string
 	Encrypted bool
 	Sensitive bool
 	Status    string // "ok" | "partial"
@@ -175,7 +179,39 @@ func (b *Builder) Create(ctx context.Context, outPath string, opts Options) (Res
 		}
 	}
 
+	// Images (docker save → images/<sanitized>.tar.gz).
+	if opts.IncludeImages && b.Docker != nil && len(opts.ImageRefs) > 0 {
+		tmpDir, _ := os.MkdirTemp("", "offdock-img-*")
+		defer os.RemoveAll(tmpDir)
+		seen := map[string]bool{}
+		for _, ref := range opts.ImageRefs {
+			if ref == "" || seen[ref] {
+				continue
+			}
+			seen[ref] = true
+			fname := sanitizeImageRef(ref) + ".tar.gz"
+			tmpFile := filepath.Join(tmpDir, fname)
+			if err := b.Docker.SaveImage(ctx, ref, tmpFile); err != nil {
+				res.Status = "partial"
+				res.Note += fmt.Sprintf("image %s: %v; ", ref, err)
+				continue
+			}
+			// Store the original ref in the tar member's leading comment file so
+			// restore knows the exact name:tag without parsing the filename.
+			if err := addFileFromPath(tw, "images/"+fname, tmpFile); err != nil {
+				res.Status = "partial"
+				res.Note += fmt.Sprintf("image %s: archive write failed: %v; ", ref, err)
+				continue
+			}
+			res.Images = append(res.Images, ref)
+		}
+		if len(res.Images) > 0 {
+			res.Contents = append(res.Contents, "images")
+		}
+	}
+
 	man.Volumes = res.Volumes
+	man.Images = res.Images
 	manBytes, _ := json.MarshalIndent(man, "", "  ")
 	_ = addBytes(tw, "MANIFEST.json", manBytes)
 
@@ -192,6 +228,15 @@ func (b *Builder) Create(ctx context.Context, outPath string, opts Options) (Res
 		res.Size = fi.Size()
 	}
 	return res, nil
+}
+
+// sanitizeImageRef turns an image ref (e.g. "registry.io/app:1.2") into a safe
+// archive-member basename ("registry.io_app_1.2"). The original tags are
+// preserved inside the `docker save` tar itself, so restore relies on that, not
+// this name.
+func sanitizeImageRef(ref string) string {
+	repl := strings.NewReplacer("/", "_", ":", "_", "@", "_", " ", "_")
+	return repl.Replace(ref)
 }
 
 // --- tar helpers ----------------------------------------------------------------

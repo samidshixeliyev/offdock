@@ -686,7 +686,7 @@ function BackupsSection() {
   const [list, setList] = useState<import('../api/client').BackupRecord[]>([])
   const [sched, setSched] = useState<import('../api/client').BackupSchedule | null>(null)
   const [creating, setCreating] = useState(false)
-  const [opts, setOpts] = useState({ scope: 'full', include_volumes: true, include_config: false, encrypt: true })
+  const [opts, setOpts] = useState({ scope: 'full', include_volumes: true, include_config: false, include_images: false, encrypt: true })
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [restorePlan, setRestorePlan] = useState<{ id: string; plan: import('../api/client').RestorePlan } | null>(null)
 
@@ -698,7 +698,7 @@ function BackupsSection() {
     try {
       const r = await api.createBackup(opts)
       const note = r.status === 'partial' && r.note ? ` — note: ${r.note}` : ''
-      setMsg({ kind: r.status === 'partial' ? 'err' : 'ok', text: `Backup ${r.status} — ${fmtBytes(r.size_bytes)}, ${r.volumes.length} volume(s)${note}` })
+      setMsg({ kind: r.status === 'partial' ? 'err' : 'ok', text: `Backup ${r.status} — ${fmtBytes(r.size_bytes)}, ${r.volumes.length} volume(s), ${r.images?.length ?? 0} image(s)${note}` })
       reload()
     } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) } finally { setCreating(false) }
   }
@@ -715,8 +715,8 @@ function BackupsSection() {
     const { id, plan } = restorePlan
     setRestorePlan(null)
     try {
-      const r = await api.restoreBackup(id, { volumes: true, projects: true, config: plan.has_config, nginx: true, certs: true })
-      setMsg({ kind: 'ok', text: `Restored: ${r.result.restored_volumes.length} volume(s), ${r.result.restored_projects.length} project(s).${r.warning ? ' ' + r.warning : ''}` })
+      const r = await api.restoreBackup(id, { volumes: true, projects: true, config: plan.has_config, nginx: true, certs: true, images: (plan.images?.length ?? 0) > 0 })
+      setMsg({ kind: 'ok', text: `Restored: ${r.result.restored_volumes.length} volume(s), ${r.result.restored_images?.length ?? 0} image(s), ${r.result.restored_projects.length} project(s).${r.warning ? ' ' + r.warning : ''}` })
     } catch (e) { setMsg({ kind: 'err', text: (e as Error).message }) }
   }
 
@@ -743,6 +743,7 @@ function BackupsSection() {
           </div>
           <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={opts.include_volumes} onChange={e => setOpts({ ...opts, include_volumes: e.target.checked })} />Volume data</label>
           <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={opts.include_config} onChange={e => setOpts({ ...opts, include_config: e.target.checked })} />config.yaml</label>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={opts.include_images} onChange={e => setOpts({ ...opts, include_images: e.target.checked })} />Docker images</label>
           <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={opts.encrypt} onChange={e => setOpts({ ...opts, encrypt: e.target.checked })} />Encrypt config</label>
           <button onClick={create} disabled={creating} className="btn-primary text-xs disabled:opacity-50">{creating ? 'Creating…' : 'Create Backup'}</button>
         </div>
@@ -758,7 +759,7 @@ function BackupsSection() {
           <div className="border-t border-slate-800 pt-3 overflow-x-auto">
             <table className="w-full text-xs">
               <thead><tr className="text-slate-500 text-left">
-                <th className="py-1.5 pr-3">Created</th><th className="pr-3">Scope</th><th className="pr-3">Size</th><th className="pr-3">Volumes</th><th className="pr-3">Status</th><th></th>
+                <th className="py-1.5 pr-3">Created</th><th className="pr-3">Scope</th><th className="pr-3">Size</th><th className="pr-3">Volumes</th><th className="pr-3">Images</th><th className="pr-3">Status</th><th></th>
               </tr></thead>
               <tbody>
                 {list.map(b => (
@@ -767,6 +768,7 @@ function BackupsSection() {
                     <td className="pr-3 text-slate-400">{b.scope}{b.sensitive && <span title="contains config.yaml" className="ml-1 text-amber-500">●</span>}</td>
                     <td className="pr-3 text-slate-400 tabular-nums">{fmtBytes(b.size_bytes)}</td>
                     <td className="pr-3 text-slate-500">{b.volumes?.length ?? 0}</td>
+                    <td className="pr-3 text-slate-500">{b.images?.length ?? 0}</td>
                     <td className="pr-3"><span className={clsx(b.status === 'ok' ? 'text-emerald-400' : 'text-amber-400')}>{b.status}</span></td>
                     <td className="text-right whitespace-nowrap">
                       <a href={api.downloadBackupURL(b.id)} className="btn-ghost text-xs">Download</a>
@@ -794,6 +796,7 @@ function BackupsSection() {
                   className="w-20 bg-slate-900 border border-slate-800 rounded px-2 py-1.5 text-sm text-slate-200" /></div>
               <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={sched.include_volumes} onChange={e => setSched({ ...sched, include_volumes: e.target.checked })} />Volumes</label>
               <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={sched.include_config} onChange={e => setSched({ ...sched, include_config: e.target.checked })} />config.yaml</label>
+              <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={sched.include_images} onChange={e => setSched({ ...sched, include_images: e.target.checked })} />Images</label>
               <label className="inline-flex items-center gap-2 text-xs text-slate-400"><input type="checkbox" checked={sched.encrypt} onChange={e => setSched({ ...sched, encrypt: e.target.checked })} />Encrypt</label>
               <div className="flex-1 min-w-[180px]"><label className="block text-xs text-slate-500 mb-1">Off-box copy dir (optional)</label>
                 <input type="text" value={sched.dest_path} onChange={e => setSched({ ...sched, dest_path: e.target.value })} placeholder="/mnt/usb/backups"
@@ -808,7 +811,7 @@ function BackupsSection() {
         <ConfirmModal
           danger
           title="Restore this backup?"
-          message={`This overwrites ${restorePlan.plan.projects.length} project dir(s) and ${restorePlan.plan.volumes.length} volume(s)${restorePlan.plan.volumes.length ? ` (${restorePlan.plan.volumes.join(', ')})` : ''}${restorePlan.plan.has_config ? ', plus config.yaml' : ''}. The database is restored on next restart. This cannot be undone.`}
+          message={`This overwrites ${restorePlan.plan.projects.length} project dir(s) and ${restorePlan.plan.volumes.length} volume(s)${restorePlan.plan.volumes.length ? ` (${restorePlan.plan.volumes.join(', ')})` : ''}${(restorePlan.plan.images?.length ?? 0) ? `, loads ${restorePlan.plan.images.length} docker image(s)` : ''}${restorePlan.plan.has_config ? ', plus config.yaml' : ''}. The database is restored on next restart. This cannot be undone.`}
           confirmLabel="Restore backup"
           onConfirm={doRestore}
           onCancel={() => setRestorePlan(null)}
